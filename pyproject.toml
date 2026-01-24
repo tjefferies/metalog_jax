@@ -1,0 +1,169 @@
+[project]
+name = "metalog-jax"
+version = "1.0.0"
+description = "A JAX implementation of the Metalog distribution for flexible probability modeling."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Travis Jefferies" }
+]
+maintainers = [
+    { name = "Travis Jefferies" }
+]
+keywords = ["jax", "metalog", "probability", "distribution", "quantile", "statistics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "chex>=0.1.91",
+    "flax>=0.12.0",
+    "jax>=0.8.0",
+    "plotly>=6.4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["metalog_jax*"]
+
+[dependency-groups]
+dev = [
+    "marimo>=0.18.4",
+]
+lint = [
+    "ruff>=0.14.3",
+    "ty>=0.0.5",
+]
+security = [
+    "bandit[toml]>=1.8.0",
+    "semgrep>=1.100.0",
+]
+license = [
+    "pip-licenses>=5.0.0",
+]
+test = [
+    "absl-py>=2.3.1",
+    "anybadge>=1.16.0",
+    "coverage>=7.11.0",
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "pytest-sugar>=1.1.1",
+    "radon>=6.0.1",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.16.3",
+]
+docs = [
+    "sphinx>=8.0.0",
+    "sphinx-material>=0.0.36",
+    "sphinx-autodoc-typehints>=2.0.0",
+    "sphinx-autobuild>=2024.0.0",
+    "nbsphinx>=0.9.8",
+    "ipython>=9.8.0",
+    "ipykernel>=7.0.0",
+    "kaleido>=1.0.0",
+]
+
+[tool.ruff.lint]
+select = ["D", "I", "F"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["metalog_jax"]
+
+[tool.ty.environment]
+python-version = "3.11"
+root = ["metalog_jax"]
+
+[tool.ty.src]
+include = ["metalog_jax"]
+exclude = ["tests", "*.ipynb"]
+respect-ignore-files = true
+
+[tool.ty.rules]
+# JAX/Chex/Flax relaxations (incomplete type stubs)
+unsupported-operator = "ignore"  # JAX arrays lack operator type stubs
+invalid-return-type = "ignore"  # JAX Array vs float/int mismatches
+invalid-argument-type = "ignore"  # JAX array type mismatches
+invalid-assignment = "ignore"  # JAX array assignments
+unknown-argument = "ignore"  # Flax struct.dataclass fields
+unresolved-import = "ignore"  # Some JAX/internal imports
+unresolved-attribute = "ignore"  # JAX array attributes
+
+# Type resolution (relaxed for JAX ecosystem)
+unresolved-reference = "warn"
+unresolved-global = "warn"
+possibly-unresolved-reference = "warn"
+possibly-missing-import = "warn"
+possibly-missing-attribute = "ignore"
+
+# Type safety (keep some checks)
+invalid-type-form = "error"
+invalid-type-arguments = "error"
+call-non-callable = "warn"
+non-subscriptable = "ignore"  # JAX arrays are subscriptable at runtime
+not-iterable = "warn"
+
+# Method and class correctness (Google: proper inheritance)
+invalid-method-override = "error"
+invalid-base = "error"
+invalid-metaclass = "error"
+override-of-final-method = "error"
+subclass-of-final-class = "error"
+conflicting-declarations = "error"
+conflicting-metaclass = "error"
+
+# Function signature errors (relaxed for JAX)
+missing-argument = "warn"
+too-many-positional-arguments = "warn"
+parameter-already-assigned = "error"
+positional-only-parameter-as-kwarg = "error"
+invalid-parameter-default = "warn"
+
+# Runtime safety
+division-by-zero = "error"
+index-out-of-bounds = "warn"
+invalid-context-manager = "error"
+invalid-exception-caught = "error"
+invalid-raise = "error"
+
+# Type annotation quality
+byte-string-type-annotation = "error"
+fstring-type-annotation = "error"
+raw-string-type-annotation = "error"
+implicit-concatenated-string-type-annotation = "error"
+invalid-syntax-in-forward-annotation = "error"
+
+# Code quality
+redundant-cast = "warn"
+unused-ignore-comment = "warn"
+deprecated = "warn"
+
+[tool.ty.terminal]
+output-format = "full"
+error-on-warning = false
+
+# Bandit Security Scanner Configuration
+# See: https://bandit.readthedocs.io/en/latest/config.html
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "build", "dist"]
+skips = [
+    "B101",  # assert_used - we use asserts for internal validation
+]
+
+[tool.bandit.assert_used]
+skips = ["*_test.py", "*test*.py"]
+
+# License Compliance Configuration
+# Using pip-licenses with --allow-only for BSD, MIT, Apache variants
+# See: https://pypi.org/project/pip-licenses/
+# Allowed license patterns (used with --partial-match --allow-only):
+#   MIT;BSD;Apache;PSF;Python;ISC;Unlicense;CC0;Public Domain;Zlib

@@ -1,0 +1,266 @@
+# Custom Semgrep Security Rules
+# Aligned with Google Secure Coding Practices and OWASP Top 10
+# References:
+#   - https://owasp.org/www-project-secure-coding-practices-quick-reference-guide/
+#   - CWE Top 25 Most Dangerous Software Weaknesses
+#   - Google Python Style Guide Security Section
+
+rules:
+  # ============================================================================
+  # A03:2021 - Injection (OWASP Top 10)
+  # CWE-78: OS Command Injection
+  # ============================================================================
+  - id: dangerous-subprocess-shell
+    languages: [python]
+    message: |
+      Subprocess call with shell=True detected. This can lead to command injection
+      if user input is passed to the command. Use shell=False and pass arguments
+      as a list instead.
+      CWE-78: Improper Neutralization of Special Elements used in an OS Command
+    pattern-either:
+      - pattern: subprocess.call(..., shell=True, ...)
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.Popen(..., shell=True, ...)
+      - pattern: subprocess.check_output(..., shell=True, ...)
+      - pattern: subprocess.check_call(..., shell=True, ...)
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021 Injection"
+      category: security
+      confidence: HIGH
+
+  - id: dangerous-os-system
+    languages: [python]
+    message: |
+      os.system() executes commands in a shell and is vulnerable to command injection.
+      Use subprocess with shell=False instead.
+      CWE-78: Improper Neutralization of Special Elements used in an OS Command
+    pattern: os.system(...)
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021 Injection"
+      category: security
+      confidence: HIGH
+
+  - id: dangerous-eval
+    languages: [python]
+    message: |
+      eval() executes arbitrary Python code and is extremely dangerous if used with
+      untrusted input. Consider using ast.literal_eval() for parsing literals or
+      find an alternative approach.
+      CWE-94: Improper Control of Generation of Code
+    pattern: eval(...)
+    severity: CRITICAL
+    metadata:
+      cwe: "CWE-94"
+      owasp: "A03:2021 Injection"
+      category: security
+      confidence: HIGH
+
+  - id: dangerous-exec
+    languages: [python]
+    message: |
+      exec() executes arbitrary Python code and is extremely dangerous if used with
+      untrusted input. Find an alternative approach that doesn't require dynamic
+      code execution.
+      CWE-94: Improper Control of Generation of Code
+    pattern: exec(...)
+    severity: CRITICAL
+    metadata:
+      cwe: "CWE-94"
+      owasp: "A03:2021 Injection"
+      category: security
+      confidence: HIGH
+
+  # ============================================================================
+  # A02:2021 - Cryptographic Failures (OWASP Top 10)
+  # CWE-327: Use of a Broken or Risky Cryptographic Algorithm
+  # ============================================================================
+  - id: insecure-hash-md5
+    languages: [python]
+    message: |
+      MD5 is cryptographically broken and should not be used for security purposes.
+      Use SHA-256 or SHA-3 instead: hashlib.sha256()
+      CWE-327: Use of a Broken or Risky Cryptographic Algorithm
+    pattern-either:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.new("md5", ...)
+    severity: HIGH
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A02:2021 Cryptographic Failures"
+      category: security
+      confidence: HIGH
+
+  - id: insecure-hash-sha1
+    languages: [python]
+    message: |
+      SHA-1 is cryptographically weak and should not be used for security purposes.
+      Use SHA-256 or SHA-3 instead: hashlib.sha256()
+      CWE-327: Use of a Broken or Risky Cryptographic Algorithm
+    pattern-either:
+      - pattern: hashlib.sha1(...)
+      - pattern: hashlib.new("sha1", ...)
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A02:2021 Cryptographic Failures"
+      category: security
+      confidence: HIGH
+
+  - id: insecure-random
+    languages: [python]
+    message: |
+      The 'random' module is not cryptographically secure. For security-sensitive
+      applications (tokens, keys, passwords), use the 'secrets' module instead.
+      CWE-330: Use of Insufficiently Random Values
+    pattern-either:
+      - pattern: random.random()
+      - pattern: random.randint(...)
+      - pattern: random.choice(...)
+      - pattern: random.choices(...)
+      - pattern: random.randrange(...)
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-330"
+      owasp: "A02:2021 Cryptographic Failures"
+      category: security
+      confidence: MEDIUM
+
+  # ============================================================================
+  # A08:2021 - Software and Data Integrity Failures (OWASP Top 10)
+  # CWE-502: Deserialization of Untrusted Data
+  # ============================================================================
+  - id: dangerous-pickle-load
+    languages: [python]
+    message: |
+      pickle.load() can execute arbitrary code during deserialization. Never use
+      pickle with untrusted data. Consider using JSON or a safe serialization format.
+      CWE-502: Deserialization of Untrusted Data
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: _pickle.load(...)
+      - pattern: _pickle.loads(...)
+    severity: CRITICAL
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 Software and Data Integrity Failures"
+      category: security
+      confidence: HIGH
+
+  - id: dangerous-yaml-load
+    languages: [python]
+    message: |
+      yaml.load() without a safe Loader can execute arbitrary code. Use
+      yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader) instead.
+      CWE-502: Deserialization of Untrusted Data
+    patterns:
+      - pattern: yaml.load($DATA)
+      - pattern-not: yaml.load($DATA, Loader=yaml.SafeLoader)
+      - pattern-not: yaml.load($DATA, Loader=yaml.FullLoader)
+    severity: HIGH
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 Software and Data Integrity Failures"
+      category: security
+      confidence: HIGH
+
+  # ============================================================================
+  # A07:2021 - Identification and Authentication Failures (OWASP Top 10)
+  # CWE-798: Use of Hard-coded Credentials
+  # ============================================================================
+  - id: hardcoded-password-assignment
+    languages: [python]
+    message: |
+      Possible hardcoded password detected. Passwords should be stored in
+      environment variables or a secrets management system, never in source code.
+      CWE-798: Use of Hard-coded Credentials
+    pattern-either:
+      - pattern: password = "..."
+      - pattern: PASSWORD = "..."
+      - pattern: passwd = "..."
+      - pattern: secret = "..."
+      - pattern: SECRET = "..."
+      - pattern: api_key = "..."
+      - pattern: API_KEY = "..."
+      - pattern: apikey = "..."
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2021 Identification and Authentication Failures"
+      category: security
+      confidence: MEDIUM
+
+  # ============================================================================
+  # A05:2021 - Security Misconfiguration (OWASP Top 10)
+  # CWE-489: Active Debug Code
+  # ============================================================================
+  - id: debug-breakpoint
+    languages: [python]
+    message: |
+      Debug breakpoint detected. Remove breakpoint() and pdb calls before
+      deploying to production.
+      CWE-489: Active Debug Code
+    pattern-either:
+      - pattern: breakpoint()
+      - pattern: pdb.set_trace()
+      - pattern: ipdb.set_trace()
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-489"
+      owasp: "A05:2021 Security Misconfiguration"
+      category: security
+      confidence: HIGH
+
+  - id: assert-in-production
+    languages: [python]
+    message: |
+      Assert statements are removed when Python is run with optimization (-O flag).
+      Do not rely on assert for security checks or input validation in production.
+      CWE-617: Reachable Assertion
+    pattern: assert $CONDITION
+    severity: LOW
+    metadata:
+      cwe: "CWE-617"
+      owasp: "A05:2021 Security Misconfiguration"
+      category: security
+      confidence: LOW
+
+  # ============================================================================
+  # A04:2021 - Insecure Design (OWASP Top 10)
+  # CWE-676: Use of Potentially Dangerous Function
+  # ============================================================================
+  - id: dangerous-tempfile
+    languages: [python]
+    message: |
+      tempfile.mktemp() is vulnerable to race conditions (TOCTOU). Use
+      tempfile.mkstemp() or tempfile.TemporaryFile() instead.
+      CWE-377: Insecure Temporary File
+    pattern: tempfile.mktemp(...)
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-377"
+      owasp: "A04:2021 Insecure Design"
+      category: security
+      confidence: HIGH
+
+  # ============================================================================
+  # A06:2021 - Vulnerable and Outdated Components (OWASP Top 10)
+  # CWE-1104: Use of Unmaintained Third Party Components
+  # ============================================================================
+  - id: deprecated-ssl-context
+    languages: [python]
+    message: |
+      Creating an SSL context without proper verification is insecure.
+      Use ssl.create_default_context() which has secure defaults.
+      CWE-295: Improper Certificate Validation
+    pattern: ssl.SSLContext(ssl.PROTOCOL_SSLv2)
+    severity: HIGH
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A06:2021 Vulnerable and Outdated Components"
+      category: security
+      confidence: HIGH

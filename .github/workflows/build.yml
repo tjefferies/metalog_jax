@@ -1,0 +1,35 @@
+# Equivalent to: stages/build.yml → build job
+# Depends on quality-gate workflow completing successfully
+name: Build
+
+on:
+  workflow_run:
+    workflows: [Quality Gate]
+    types: [completed]
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Only run if quality-gate succeeded (for workflow_run trigger)
+    # Always run for pull_request (quality-gate runs in same PR)
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*.whl
+          retention-days: 7

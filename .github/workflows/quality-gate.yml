@@ -1,0 +1,302 @@
+# Consolidated quality checks - all run in parallel
+# Equivalent to GitLab stages: lint, typing, test, license, sast, sbom
+# Depends on Docker workflow completing successfully
+name: Quality Gate
+
+on:
+  workflow_run:
+    workflows: [Docker]
+    types: [completed]
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  UV_CACHE_DIR: .uv-cache
+
+jobs:
+  # === LINT STAGE ===
+
+  ruff:
+    # Equivalent to: stages/lint.yml → ruff job
+    runs-on: ubuntu-latest
+    # Only run if Docker succeeded (for workflow_run trigger)
+    # Always run for pull_request
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Check formatting
+        run: uv run ruff format --check metalog_jax/ tests/
+
+      - name: Run linter
+        run: uv run ruff check metalog_jax/ tests/
+
+  radon:
+    # Equivalent to: stages/lint.yml → radon job
+    # Runs in PARALLEL (no dependency on ruff)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Maintainability Index
+        run: uv run radon mi metalog_jax/ -s
+
+      - name: Cyclomatic Complexity
+        run: uv run radon cc metalog_jax/ -s --average
+
+      - name: Check MI Grade A
+        run: |
+          uv run radon mi metalog_jax/ -s > /tmp/mi_output.txt 2>&1 || true
+          if grep -E "^metalog_jax.* - [B-F]" /tmp/mi_output.txt; then
+            echo "ERROR: Found files with Maintainability Index below Grade A"
+            exit 1
+          fi
+          echo "All files have Grade A maintainability!"
+
+      - name: Check CC Grade A/B
+        run: |
+          uv run radon cc metalog_jax/ -s > /tmp/cc_output.txt 2>&1 || true
+          if grep -E " - [C-F] " /tmp/cc_output.txt; then
+            echo "ERROR: Found functions with Cyclomatic Complexity Grade C or worse"
+            exit 1
+          fi
+          echo "All functions have Grade A or B complexity!"
+
+  # === TYPING STAGE ===
+
+  ty:
+    # Equivalent to: stages/typing.yml → ty job
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Type check
+        run: uv run ty check
+
+  # === TEST STAGE ===
+
+  pytest:
+    # Equivalent to: stages/test.yml → pytest job
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Run tests with coverage
+        run: |
+          uv run pytest tests/ \
+            --cov=metalog_jax \
+            --cov-report=term \
+            --cov-branch \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:coverage_html \
+            --cov-fail-under=75
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload coverage HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage_html/
+
+  # === LICENSE STAGE ===
+
+  license-check:
+    # Equivalent to: stages/license.yml → license-check job
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Check licenses
+        run: |
+          echo "=== License Compliance Check ==="
+
+          # Packages to ignore (dev/docs/security tools, not runtime dependencies)
+          # --ignore-packages requires space-separated list
+          IGNORE_PKGS="metalog-jax Unidecode text-unidecode css-html-js-minify semgrep docutils loro matplotlib-inline"
+
+          uv run pip-licenses --format=markdown --ignore-packages $IGNORE_PKGS
+
+          ALLOWED="MIT;BSD;Apache;PSF;Python Software Foundation;ISC;Unlicense;Public Domain;CC0;Zlib;Historical Permission Notice and Disclaimer;Mozilla Public License;Academic Free License;0BSD"
+          uv run pip-licenses --ignore-packages $IGNORE_PKGS --partial-match --allow-only="${ALLOWED}"
+
+          echo "All runtime dependencies have approved licenses!"
+
+  # === SAST STAGE ===
+
+  semgrep:
+    # Equivalent to: stages/sast.yml → semgrep job
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Run Semgrep scan
+        run: |
+          uv run semgrep scan \
+            --config=p/python \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/cwe-top-25 \
+            --config=p/secrets \
+            --config=.semgrep.yml \
+            --json --output=semgrep-results.json \
+            --no-git-ignore metalog_jax/ || true
+
+      - name: Check for high severity issues
+        run: |
+          uv run semgrep scan \
+            --config=p/python \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/cwe-top-25 \
+            --config=p/secrets \
+            --config=.semgrep.yml \
+            --severity=ERROR --error \
+            --no-git-ignore metalog_jax/
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+
+  bandit:
+    # Equivalent to: stages/sast.yml → bandit job
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Run Bandit scan
+        run: |
+          uv run bandit -r metalog_jax/ -f json -o bandit-results.json \
+            --severity-level medium --confidence-level medium || true
+          uv run bandit -r metalog_jax/ -f txt \
+            --severity-level medium --confidence-level medium
+
+      - name: Check for high severity issues
+        run: |
+          uv run bandit -r metalog_jax/ \
+            --severity-level high --confidence-level high -q
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-results
+          path: bandit-results.json
+
+  # === SBOM STAGE ===
+
+  sbom:
+    # Equivalent to: stages/sbom.yml → sbom job
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+
+      - name: Install Syft and Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (CycloneDX)
+        run: syft scan dir:.venv -o cyclonedx-json=sbom-cyclonedx.json
+
+      - name: Generate SBOM (SPDX)
+        run: syft scan dir:.venv -o spdx-json=sbom-spdx.json
+
+      - name: Scan for vulnerabilities
+        run: |
+          grype sbom:sbom-cyclonedx.json -o json > grype-vulnerabilities.json || true
+          grype sbom:sbom-cyclonedx.json -o table || true
+
+      - name: Check for critical vulnerabilities
+        run: |
+          CRITICAL=$(python3 -c "import json; data=json.load(open('grype-vulnerabilities.json')); print(sum(1 for m in data.get('matches', []) if m.get('vulnerability', {}).get('severity', '').upper() == 'CRITICAL'))" 2>/dev/null || echo "0")
+          if [ "${CRITICAL}" -gt 0 ]; then
+            echo "ERROR: Critical vulnerabilities found!"
+            exit 1
+          fi
+          echo "No critical vulnerabilities found."
+
+      - name: Upload SBOM reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sbom-reports
+          path: |
+            sbom-cyclonedx.json
+            sbom-spdx.json
+            grype-vulnerabilities.json
+
+  # === GATE JOB ===
+
+  quality-gate:
+    # This job only passes if ALL parallel jobs succeed
+    # Used by downstream workflows (build, docs, publish)
+    needs: [ruff, radon, ty, pytest, license-check, semgrep, bandit, sbom]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All quality checks passed
+        run: echo "All quality checks passed successfully!"

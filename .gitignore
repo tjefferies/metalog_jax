@@ -1,0 +1,31 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.vscode/launch.json
+.ipynb_checkpoints/
+.DS_Store
+
+# coverage
+htmlcov/
+.coverage
+
+# ruff
+.ruff_cache/
+
+# pytest
+.pytest_cache/
+
+# sbom
+grype-vulnerabilities.json
+sbom-cyclonedx.json
+sbom-spdx.json
+
+# marimo
+__marimo__/
