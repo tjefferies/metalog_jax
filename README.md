@@ -251,7 +251,7 @@ metalog = fit(data, params, regression_hyperparams=lasso_params)
 
 ### SPT Metalog (3-Term Analytical Fitting)
 
-For rapid approximation with minimal data, use the Symmetric Percentile Triplet method. SPT metalog computes coefficients analytically from just three quantiles and **validates feasibility upfront**—ensuring the resulting distribution has a valid (non-negative) PDF before returning. This fail-fast behavior prevents downstream errors from infeasible fits.
+For rapid approximation with minimal data, use the Symmetric Percentile Triplet method. SPT metalog computes coefficients analytically from just three quantiles and **validates feasibility upfront** - ensuring the resulting distribution has a valid (non-negative) PDF before returning. This fail-fast behavior prevents downstream errors from infeasible fits.
 
 ```python
 import jax.numpy as jnp
@@ -717,7 +717,7 @@ And the original metalog paper:
 ### Metalog Distributions
 
 - Keelin, T. W. (2016). [The Metalog Distributions](https://doi.org/10.1287/deca.2016.0338). *Decision Analysis*, 13(4), 243-277.
-- [Metalog Distributions Website](http://metalogdistributions.com/) — Official resource by Tom Keelin
+- [Metalog Distributions Website](http://metalogdistributions.com/) - Official resource by Tom Keelin
 
 ### Regression Methods
 
