@@ -59,7 +59,7 @@ Traditional probability distributions often fail to model real-world data accura
 
 ## The Solution
 
-**metalog-jax** implements the [Metalog distribution](http://metalogdistributions.com/)&mdash;a revolutionary approach to probability modeling introduced by Tom Keelin (2016). Metalogs are a continuous, semi-parametric family that can represent virtually any probability distribution through quantile-based fitting.
+**metalog-jax** implements the [Metalog distribution](http://metalogdistributions.com/) - a revolutionary approach to probability modeling introduced by Tom Keelin (2016). Metalogs are a continuous, semi-parametric family that can represent virtually any probability distribution through quantile-based fitting.
 
 ```python
 import jax.numpy as jnp
