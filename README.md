@@ -119,6 +119,18 @@ pip install metalog-jax
 uv add metalog-jax
 ```
 
+### With GPU support (CUDA 12)
+
+```bash
+# pip
+pip install "metalog-jax[gpu]"
+
+# uv
+uv add "metalog-jax[gpu]"
+```
+
+> **Note:** GPU support requires Linux (or WSL2 on Windows) with CUDA 12. JAX does not publish CUDA wheels for native Windows.
+
 ### From source
 
 ```bash

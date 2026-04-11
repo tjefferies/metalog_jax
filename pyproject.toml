@@ -30,6 +30,11 @@ dependencies = [
     "plotly>=6.4.0",
 ]
 
+[project.optional-dependencies]
+gpu = [
+    "jax[cuda12]>=0.8.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["metalog_jax*"]
 
