@@ -1,0 +1,58 @@
+# Keeps uv.lock and workflow actions current so the sbom (grype) job does not
+# fail on advisories published after the last lock.
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Include transitive packages: most grype findings are indirect dependencies
+    # of dev tooling (e.g. anyio via semgrep/marimo/sphinx-autobuild).
+    allow:
+      - dependency-type: "all"
+    groups:
+      # JAX stack changes numerics, so it gets its own PR.
+      jax:
+        applies-to: version-updates
+        patterns:
+          - "jax"
+          - "jaxlib"
+          - "jax-*"
+          - "flax"
+          - "chex"
+          - "optax"
+          - "orbax-*"
+          - "ml-dtypes"
+      python:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "jax"
+          - "jaxlib"
+          - "jax-*"
+          - "flax"
+          - "chex"
+          - "optax"
+          - "orbax-*"
+          - "ml-dtypes"
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"

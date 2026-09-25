@@ -150,8 +150,26 @@ def _eta(jmax: int) -> dict[int, Fraction]:
     return eta
 
 
-@lru_cache(maxsize=None)
-def _i_table(mmax: int, umax: int) -> dict[tuple[int, int], PiPoly]:
+def _s_entry(S: dict[tuple[int, int], PiPoly], n: int, u: int) -> PiPoly:
+    """Recurrence for ``S(n, u)`` from entries with smaller ``n`` or ``u``."""
+    acc: PiPoly = {0: Fraction(1, n) - Fraction(1, (n + 1) ** 2)}
+    for k in range(1, u + 1):
+        acc = _vadd(
+            acc,
+            _vadd(S[(n - 1, k)], S[(n, k - 1)], Fraction(-1)),
+            Fraction(n, n + 1),
+        )
+    for k in range(1, u):
+        acc = _vadd(
+            acc,
+            _vadd(S[(n - 1, k)], S[(n, k)], Fraction(-1)),
+            Fraction(1, n + 1),
+        )
+    return acc
+
+
+def _s_table(mmax: int, umax: int) -> dict[tuple[int, int], PiPoly]:
+    """``S(n, u)`` (moments about y = 0, scaled by 1/u!) for ``n <= mmax, u <= umax``."""
     eta = _eta(max(1, umax // 2))
     S: dict[tuple[int, int], PiPoly] = {}
     for n in range(mmax + 1):
@@ -162,33 +180,28 @@ def _i_table(mmax: int, umax: int) -> dict[tuple[int, int], PiPoly]:
         )
     for n in range(1, mmax + 1):
         for u in range(1, umax + 1):
-            acc: PiPoly = {0: Fraction(1, n) - Fraction(1, (n + 1) ** 2)}
-            for k in range(1, u + 1):
-                acc = _vadd(
-                    acc,
-                    _vadd(S[(n - 1, k)], S[(n, k - 1)], Fraction(-1)),
-                    Fraction(n, n + 1),
-                )
-            for k in range(1, u):
-                acc = _vadd(
-                    acc,
-                    _vadd(S[(n - 1, k)], S[(n, k)], Fraction(-1)),
-                    Fraction(1, n + 1),
-                )
-            S[(n, u)] = acc
-    table: dict[tuple[int, int], PiPoly] = {}
-    for m in range(mmax + 1):
-        for u in range(umax + 1):
-            if (m + u) % 2:
-                table[(m, u)] = {}
-                continue
-            acc = {}
-            for n in range(m + 1):
-                acc = _vadd(
-                    acc, S[(n, u)], Fraction(comb(m, n)) * Fraction(-1, 2) ** (m - n)
-                )
-            table[(m, u)] = {e: q * factorial(u) for e, q in acc.items()}
-    return table
+            S[(n, u)] = _s_entry(S, n, u)
+    return S
+
+
+def _centered_entry(S: dict[tuple[int, int], PiPoly], m: int, u: int) -> PiPoly:
+    """``I(m, u)``: shift ``S(., u)`` from y^n to (y - 1/2)^m by the binomial theorem."""
+    if (m + u) % 2:
+        return {}  # odd integrand about y = 1/2
+    acc: PiPoly = {}
+    for n in range(m + 1):
+        acc = _vadd(acc, S[(n, u)], Fraction(comb(m, n)) * Fraction(-1, 2) ** (m - n))
+    return {e: q * factorial(u) for e, q in acc.items()}
+
+
+@lru_cache(maxsize=None)
+def _i_table(mmax: int, umax: int) -> dict[tuple[int, int], PiPoly]:
+    S = _s_table(mmax, umax)
+    return {
+        (m, u): _centered_entry(S, m, u)
+        for m in range(mmax + 1)
+        for u in range(umax + 1)
+    }
 
 
 def i_matrix(mmax: int, umax: int) -> list[list[float]]:
