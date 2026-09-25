@@ -261,6 +261,38 @@ params = MetalogParameters(
 metalog = fit(data, params, regression_hyperparams=lasso_params)
 ```
 
+### Always-Feasible Fitting (Metalog 2.0)
+
+Least squares can return coefficients whose "density" goes negative somewhere, which
+`fit` rejects. `MetalogFitMethod.Feasible` instead returns the best fit *among valid
+metalogs*: the coefficient vector a* from Baucells, Chrisman, Keelin and Xu (2025),
+["On the Properties of the Metalog Distribution"](https://doi.org/10.2139/ssrn.5279416),
+solved as a semi-infinite QP by the exchange method. It works with every boundedness option.
+
+```python
+params = MetalogParameters(
+    boundedness=MetalogBoundedness.UNBOUNDED,
+    method=MetalogFitMethod.Feasible,
+    lower_bound=0.0,
+    upper_bound=0.0,
+    num_terms=4,
+)
+metalog = fit(input_data, params)  # density is non-negative everywhere
+```
+
+`metalog_jax.feasibility` also exposes the underlying tools, all `jit`/`vmap` compatible:
+
+```python
+from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine, summary_stats
+
+res = best_feasible_fit(x, y, num_terms=6)            # a*, RSS, iterations, certificate
+report = check_feasibility(get_engine(6), res.a_star)  # exact test: roots of M'', modes, tails
+stats = summary_stats(get_engine(6), res.a_star)       # exact mean/variance/skewness/kurtosis
+```
+
+`check_feasibility` is exact rather than grid-based (Algorithm 1 of the paper), so it
+cannot miss a negative-density region, including ones within 1e-7 of either tail.
+
 ### SPT Metalog (3-Term Analytical Fitting)
 
 For rapid approximation with minimal data, use the Symmetric Percentile Triplet method. SPT metalog computes coefficients analytically from just three quantiles and **validates feasibility upfront** - ensuring the resulting distribution has a valid (non-negative) PDF before returning. This fail-fast behavior prevents downstream errors from infeasible fits.
@@ -318,9 +350,15 @@ isf_values = metalog.isf(jnp.array([0.1, 0.05, 0.01]))
 mean = metalog.mean
 variance = metalog.var
 std_dev = metalog.std
+skewness = metalog.skewness
+kurtosis = metalog.kurtosis  # Pearson (normal = 3); subtract 3 for excess kurtosis
 mode = metalog.mode
 median = metalog.median
 ```
+
+Mean, variance, standard deviation, skewness and kurtosis are exact (closed form)
+for unbounded metalogs, using the moment formulas of Baucells, Chrisman, Keelin and
+Xu (2025) (Lemma 1, Proposition 3), and estimated from 20,000 draws for bounded ones.
 
 ### Random Sampling
 
@@ -724,11 +762,27 @@ And the original metalog paper:
 }
 ```
 
+And, if you use `MetalogFitMethod.Feasible`, `metalog_jax.feasibility` or the exact moments, the Metalog 2.0 paper:
+
+```bibtex
+@techreport{baucells2025properties,
+  author = {Baucells, Manel and Chrisman, Lonnie and Keelin, Thomas W. and Xu, Zixin Stephen},
+  title = {On the Properties of the Metalog Distribution},
+  institution = {Darden Business School},
+  type = {Working Paper},
+  number = {5279416},
+  year = {2025},
+  doi = {10.2139/ssrn.5279416}
+}
+```
+
 ## References
 
 ### Metalog Distributions
 
 - Keelin, T. W. (2016). [The Metalog Distributions](https://doi.org/10.1287/deca.2016.0338). *Decision Analysis*, 13(4), 243-277.
+- Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). [On the Properties of the Metalog Distribution](https://doi.org/10.2139/ssrn.5279416). Darden Business School Working Paper No. 5279416.
+- Xu, Z. S. [metalog_algorithm](https://github.com/Stephenxuu/metalog_algorithm) - Reference implementation of the Metalog 2.0 algorithms ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); adapted in `metalog_jax.feasibility`, see [NOTICE](NOTICE))
 - [Metalog Distributions Website](http://metalogdistributions.com/) - Official resource by Tom Keelin
 
 ### Regression Methods
@@ -753,6 +807,11 @@ And the original metalog paper:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+`metalog_jax/feasibility` includes code adapted from Zixin (Stephen) Xu's
+[metalog_algorithm](https://github.com/Stephenxuu/metalog_algorithm), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See [NOTICE](NOTICE) for
+attribution and a description of the changes.
 
 ---
 

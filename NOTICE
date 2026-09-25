@@ -1,0 +1,41 @@
+metalog-jax
+Copyright (c) 2026 Travis Jefferies
+
+metalog-jax is licensed under the MIT License (see LICENSE). It includes
+material adapted from the third-party work listed below, which remains under
+its own license. Keep this notice with any redistribution of that material.
+
+===============================================================================
+metalog_algorithm
+===============================================================================
+
+Author:   Zixin (Stephen) Xu
+Source:   https://github.com/Stephenxuu/metalog_algorithm
+          (algo_astar.py, feasibility_stats.py)
+License:  Creative Commons Attribution 4.0 International (CC BY 4.0)
+          https://creativecommons.org/licenses/by/4.0/
+Used in:  metalog_jax/feasibility/
+
+Changes:  Modified. The NumPy/SciPy/SymPy/cvxopt implementation was ported to
+          JAX and restructured: static shapes so every routine runs under
+          jit/vmap, a whitened interior-point QP in place of cvxopt, logit-space
+          evaluation of the derivative cascade, exact rational tables in place
+          of SymPy, and support for the Keelin (2016) term ordering used by
+          metalog-jax.
+
+The original source files carry the following notice:
+
+    This code is written by Zixin Stephen Xu. This code is provided freely
+    for any purpose, including academic, commercial, and personal use. There
+    are no restrictions on modification, redistribution, or incorporation into
+    other projects. If you find this useful, we kindly request that you cite
+    the above paper.
+
+The work is provided "as is", without warranties of any kind; see Section 5
+(Disclaimer of Warranties and Limitation of Liability) of CC BY 4.0.
+
+The author requests citation of the accompanying paper:
+
+    Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
+    Properties of the Metalog Distribution. Darden Business School Working
+    Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416

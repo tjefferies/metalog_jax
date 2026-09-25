@@ -44,6 +44,8 @@ from metalog_jax.base.parameters import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
+from metalog_jax.feasibility.analysis import mean_and_variance, summary_stats
+from metalog_jax.feasibility.engine import TermOrder, get_engine
 from metalog_jax.utils import (
     DEFAULT_Y,
     DEFAULT_Y_FULL,
@@ -743,21 +745,57 @@ class MetalogBase:
         """
         return self.ppf(1 - q)
 
-    @property
-    def mean(self) -> chex.Scalar:
-        """Compute the mean (expected value) of the metalog distribution.
+    def _has_exact_moments(self) -> bool:
+        """Whether closed-form moments apply (unbounded metalogs only)."""
+        return self.boundedness == MetalogBoundedness.UNBOUNDED
 
-        Estimated via Monte Carlo sampling with 20,000 draws.
+    def _exact_mean_and_variance(self) -> tuple[chex.Scalar, chex.Scalar]:
+        """Exact mean and variance of an unbounded metalog."""
+        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        return mean_and_variance(engine, jnp.asarray(self.a, jnp.float64))
 
-        Returns:
-            chex.Scalar: The estimated mean of the distribution.
-        """
-        rv = self.rvs(
+    def _exact_shape(self) -> tuple[chex.Scalar, chex.Scalar]:
+        """Exact skewness and (Pearson) kurtosis of an unbounded metalog."""
+        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        stats = summary_stats(engine, jnp.asarray(self.a, jnp.float64))
+        return stats["skewness"], stats["kurtosis"]
+
+    def _sampled_shape(self) -> tuple[chex.Scalar, chex.Scalar]:
+        """Skewness and kurtosis of the 20,000 moment draws (biased, as scipy)."""
+        c = self._moment_samples()
+        c = c - jnp.mean(c)
+        m2 = jnp.mean(c**2)
+        return jnp.mean(c**3) / m2**1.5, jnp.mean(c**4) / m2**2
+
+    def _moment_samples(self) -> chex.Numeric:
+        """20,000 draws used to estimate moments of bounded metalogs."""
+        return self.rvs(
             MetalogRandomVariableParameters(
                 prng_params=JaxUniformDistributionParameters(seed=0), size=20_000
             )
         )
-        return jnp.mean(rv)
+
+    @property
+    def mean(self) -> chex.Scalar:
+        """Compute the mean (expected value) of the metalog distribution.
+
+        Exact for unbounded metalogs, via the closed-form integrals of Baucells,
+        Chrisman, Keelin and Xu (2025) (Lemma 1, Proposition 3). Bounded and
+        semi-bounded metalogs have no closed form after the log/logit
+        back-transform, so their mean is estimated by Monte Carlo sampling with
+        20,000 draws.
+
+        Returns:
+            chex.Scalar: The mean of the distribution.
+
+        References:
+            Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
+            Properties of the Metalog Distribution. Darden Business School Working
+            Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
+        """
+        if self._has_exact_moments():
+            return self._exact_mean_and_variance()[0]
+        return jnp.mean(self._moment_samples())
 
     @property
     def median(self) -> chex.Scalar:
@@ -774,33 +812,60 @@ class MetalogBase:
     def var(self) -> chex.Scalar:
         """Compute the variance of the metalog distribution.
 
-        Estimated via Monte Carlo sampling with 20,000 draws.
+        Exact for unbounded metalogs (see ``mean``); estimated by Monte Carlo
+        sampling with 20,000 draws for bounded and semi-bounded metalogs.
 
         Returns:
-            chex.Scalar: The estimated variance of the distribution.
+            chex.Scalar: The variance of the distribution.
         """
-        rv = self.rvs(
-            MetalogRandomVariableParameters(
-                prng_params=JaxUniformDistributionParameters(seed=0), size=20_000
-            )
-        )
-        return jnp.var(rv)
+        if self._has_exact_moments():
+            return self._exact_mean_and_variance()[1]
+        return jnp.var(self._moment_samples())
 
     @property
     def std(self) -> chex.Scalar:
         """Compute the standard deviation of the metalog distribution.
 
-        Estimated via Monte Carlo sampling with 20,000 draws.
+        Exact for unbounded metalogs (see ``mean``); estimated by Monte Carlo
+        sampling with 20,000 draws for bounded and semi-bounded metalogs.
 
         Returns:
-            chex.Scalar: The estimated standard deviation of the distribution.
+            chex.Scalar: The standard deviation of the distribution.
         """
-        rv = self.rvs(
-            MetalogRandomVariableParameters(
-                prng_params=JaxUniformDistributionParameters(seed=0), size=20_000
-            )
-        )
-        return jnp.std(rv)
+        if self._has_exact_moments():
+            return jnp.sqrt(self._exact_mean_and_variance()[1])
+        return jnp.std(self._moment_samples())
+
+    @property
+    def skewness(self) -> chex.Scalar:
+        """Compute the skewness of the metalog distribution.
+
+        Skewness is the third standardized central moment, E[(X - mean)^3] / std^3.
+        Exact for unbounded metalogs (see ``mean``); estimated from 20,000 draws
+        for bounded and semi-bounded metalogs.
+
+        Returns:
+            chex.Scalar: The skewness of the distribution.
+        """
+        if self._has_exact_moments():
+            return self._exact_shape()[0]
+        return self._sampled_shape()[0]
+
+    @property
+    def kurtosis(self) -> chex.Scalar:
+        """Compute the kurtosis of the metalog distribution.
+
+        Pearson kurtosis, E[(X - mean)^4] / var^2: 3 for a normal distribution and
+        4.2 for the logistic. Subtract 3 for excess kurtosis (scipy's default
+        convention). Exact for unbounded metalogs (see ``mean``); estimated from
+        20,000 draws for bounded and semi-bounded metalogs.
+
+        Returns:
+            chex.Scalar: The kurtosis of the distribution.
+        """
+        if self._has_exact_moments():
+            return self._exact_shape()[1]
+        return self._sampled_shape()[1]
 
     @property
     def mode(self) -> chex.Scalar:

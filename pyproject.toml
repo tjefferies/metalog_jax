@@ -1,9 +1,10 @@
 [project]
 name = "metalog-jax"
-version = "1.0.2"
+version = "2.0.0"
 description = "A JAX implementation of the Metalog distribution for flexible probability modeling."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 authors = [
     { name = "Travis Jefferies" }
@@ -34,6 +35,12 @@ dependencies = [
 gpu = [
     "jax[cuda12]>=0.8.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tjefferies/metalog_jax"
+Documentation = "https://tjefferies.github.io/metalog_jax/"
+Repository = "https://github.com/tjefferies/metalog_jax"
+Issues = "https://github.com/tjefferies/metalog_jax/issues"
 
 [tool.setuptools.packages.find]
 include = ["metalog_jax*"]

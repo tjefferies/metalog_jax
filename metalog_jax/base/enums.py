@@ -96,15 +96,26 @@ class MetalogFitMethod(CustomIntEnum):
             Implementation: metalog_jax.regression.ols.fit_ordinary_least_squares
         Lasso: LASSO regression (L1 regularization via proximal gradient descent).
             Implementation: metalog_jax.regression.lasso.fit_lasso
+        Feasible: Best feasible least-squares fit a* (Metalog 2.0; Baucells,
+            Chrisman, Keelin and Xu, 2025): the closest coefficients whose density
+            is non-negative everywhere.
+            Implementation: metalog_jax.feasibility.a_star.fit_feasible
 
     See Also:
         metalog_jax.regression: Module containing all regression implementations.
         metalog_jax.regression.ols: OLS regression implementation.
         metalog_jax.regression.lasso: LASSO regression implementation.
+        metalog_jax.feasibility: Best feasible fit implementation.
+
+    References:
+        Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
+        Properties of the Metalog Distribution. Darden Business School Working
+        Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
     """
 
     OLS = auto()
     Lasso = auto()
+    Feasible = auto()
 
 
 class MetalogPlotOptions(IntEnum):

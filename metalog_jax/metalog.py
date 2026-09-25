@@ -38,6 +38,7 @@ from metalog_jax.base import (
     MetalogParameters,
     SPTMetalogParameters,
 )
+from metalog_jax.feasibility.a_star import fit_feasible
 from metalog_jax.regression import (
     RegularizedParameters,
     fit_lasso,
@@ -51,6 +52,7 @@ from metalog_jax.utils import (
 _FIT_METHOD_DISPATCH = {
     MetalogFitMethod.OLS: fit_ordinary_least_squares,
     MetalogFitMethod.Lasso: fit_lasso,
+    MetalogFitMethod.Feasible: fit_feasible,
 }
 
 
@@ -67,6 +69,7 @@ def _get_fit_function(
     The dispatch table (_FIT_METHOD_DISPATCH) maps:
         - MetalogFitMethod.OLS -> fit_ordinary_least_squares (from regression.ols)
         - MetalogFitMethod.Lasso -> fit_lasso (from regression.lasso)
+        - MetalogFitMethod.Feasible -> fit_feasible (from feasibility.a_star)
 
     Args:
         method: The regression method to use. Must be a valid MetalogFitMethod enum.
@@ -347,6 +350,8 @@ def fit(
             approach is used:
             - MetalogFitMethod.OLS: Ordinary Least Squares (no regularization)
             - MetalogFitMethod.Lasso: L1 regularization
+            - MetalogFitMethod.Feasible: Best feasible least-squares fit a*
+              (always returns a valid metalog)
         regression_hyperparams: Optional regularization hyperparameters for controlling
             the fitting process when using LASSO regression method.
             This parameter is ignored when method=OLS. If None, default hyperparameters
@@ -403,6 +408,15 @@ def fit(
         fit_spt_metalog: Alternative fitting method using Symmetric Percentile Triplet.
         MetalogInputData.from_values: Required method for creating validated input data.
         metalog_jax.regression.lasso.LassoParameters: Hyperparameters for LASSO regression.
+        metalog_jax.feasibility.best_feasible_fit: Best feasible fit (Metalog 2.0).
+
+    References:
+        Keelin, T. W. (2016). The Metalog Distributions. Decision Analysis, 13(4),
+        243-277. https://doi.org/10.1287/deca.2016.0338
+
+        Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
+        Properties of the Metalog Distribution. Darden Business School Working
+        Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
     """
     quantiles = Metalog.get_quantiles(data=data, metalog_params=metalog_params)
     target = Metalog.get_target(data=data, metalog_params=metalog_params)

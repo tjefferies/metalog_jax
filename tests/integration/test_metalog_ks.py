@@ -36,6 +36,10 @@ from metalog_jax.utils import DEFAULT_Y, JaxUniformDistributionParameters
 
 SEED: int = 0
 SIZE: int = 90_000
+# Keelin's tables report KS distances to 4 decimals and several fits reproduce them
+# exactly; float32 evaluation then lands a few ulps (~4e-8) above the tabulated value.
+KS_ROUNDING_TOL = 1e-6
+
 METALOG_RV_PARAMS = MetalogRandomVariableParameters(
     JaxUniformDistributionParameters(SEED), size=SIZE
 )
@@ -661,7 +665,7 @@ class MetalogUnboundedDistributionTest(parameterized.TestCase):
         expected_ks_dist = self.table58_acceptable_results[distribution][num_terms]
 
         ks_dist = calculate_ks_distance(dist, metalog_params)
-        self.assertLessEqual(ks_dist, expected_ks_dist)
+        self.assertLessEqual(float(ks_dist), expected_ks_dist + KS_ROUNDING_TOL)
 
 
 class MetalogSemiboundedDistributionTest(parameterized.TestCase):
@@ -2588,7 +2592,7 @@ class MetalogSemiboundedDistributionTest(parameterized.TestCase):
         expected_ks_dist = self.table68_acceptable_results[distribution][num_terms]
 
         ks_dist = calculate_ks_distance(dist, metalog_params)
-        self.assertLessEqual(ks_dist, expected_ks_dist)
+        self.assertLessEqual(float(ks_dist), expected_ks_dist + KS_ROUNDING_TOL)
 
 
 class MetalogBoundedDistributionTest(parameterized.TestCase):
@@ -3566,7 +3570,7 @@ class MetalogBoundedDistributionTest(parameterized.TestCase):
         expected_ks_dist = self.table78_acceptable_results[distribution][num_terms]
 
         ks_dist = calculate_ks_distance(dist, metalog_params)
-        self.assertLessEqual(ks_dist, expected_ks_dist)
+        self.assertLessEqual(float(ks_dist), expected_ks_dist + KS_ROUNDING_TOL)
 
 
 if __name__ == "__main__":

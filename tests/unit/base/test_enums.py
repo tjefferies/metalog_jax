@@ -95,12 +95,13 @@ class TestMetalogFitMethod(unittest.TestCase):
 
         self.assertTrue(hasattr(MetalogFitMethod, "OLS"))
         self.assertTrue(hasattr(MetalogFitMethod, "Lasso"))
+        self.assertTrue(hasattr(MetalogFitMethod, "Feasible"))
 
     def test_enum_member_count(self):
-        """Test the enum has exactly 2 members."""
+        """Test the enum has exactly 3 members."""
         from metalog_jax.base.enums import MetalogFitMethod
 
-        self.assertEqual(len(MetalogFitMethod), 2)
+        self.assertEqual(len(MetalogFitMethod), 3)
 
     def test_from_value_roundtrip(self):
         """Test from_value works for all members."""
