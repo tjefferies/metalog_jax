@@ -39,6 +39,27 @@ from metalog_jax.utils import DEFAULT_Y, ks_distance
 # Pre-allocating to this size allows num_terms to be traced (non-static) for vmap.
 MAX_TERMS = 30
 
+# Fit methods that support a traced (vmapped) number of terms
+_GRID_METHODS = (MetalogFitMethod.OLS, MetalogFitMethod.Lasso)
+
+
+def _check_grid_method(method: MetalogFitMethod) -> None:
+    """Raise if ``method`` cannot run inside the vmapped grid search.
+
+    Grid fits build the design matrix with a traced number of terms, which OLS and
+    Lasso support. The feasible solver needs the number of terms fixed at trace time.
+
+    Raises:
+        ValueError: If ``method`` is not OLS or Lasso.
+    """
+    if method not in _GRID_METHODS:
+        name = getattr(method, "name", method)
+        raise ValueError(
+            f"Grid search supports MetalogFitMethod.OLS and MetalogFitMethod.Lasso, "
+            f"not {name}. For MetalogFitMethod.Feasible, use fit() for one dataset or "
+            "fit_grid_datasets() for a batch."
+        )
+
 
 @jax.jit
 def _get_target_vmap(y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.ndarray:
@@ -358,7 +379,13 @@ def fit_grid(
 
     Returns:
         GridResult with metalog fits and KS distances. Shape depends on active axes.
+
+    Raises:
+        ValueError: If params.method is MetalogFitMethod.Feasible, which cannot run
+            inside the vmapped grid (use fit or fit_grid_datasets instead).
     """
+    _check_grid_method(params.method)
+
     # Detect which axes are active
     has_datasets = x.ndim == 2
     has_l1 = l1_penalties is not None
@@ -662,16 +689,17 @@ def _get_fit_function_for_method(
 
     Returns:
         A function that takes (target, quantiles) and returns a regression model.
+
+    Raises:
+        ValueError: If method is not OLS or Lasso.
     """
-    if method == MetalogFitMethod.OLS:
-        return fit_ordinary_least_squares
-    elif method == MetalogFitMethod.Lasso:
+    _check_grid_method(method)
+    if method == MetalogFitMethod.Lasso:
         from metalog_jax.regression.lasso import DEFAULT_LASSO_PARAMETERS
 
         params = regression_params or DEFAULT_LASSO_PARAMETERS
         return lambda target, quantiles: fit_lasso(target, quantiles, params)
-    else:
-        raise ValueError(f"Unsupported method: {method}")
+    return fit_ordinary_least_squares
 
 
 def fit_grid_num_terms(
@@ -705,6 +733,9 @@ def fit_grid_num_terms(
 
         Where max_terms = max(num_terms_list) and coefficients for smaller term
         counts are zero-padded.
+
+    Raises:
+        ValueError: If params.method is not OLS or Lasso.
     """
     max_terms_output = max(num_terms_list)
     num_terms_array = jnp.array(num_terms_list)
@@ -839,6 +870,9 @@ def fit_grid_datasets_num_terms(
 
         Where max_terms = max(num_terms_list) and coefficients for smaller term
         counts are zero-padded.
+
+    Raises:
+        ValueError: If params.method is not OLS or Lasso.
     """
     max_terms_output = max(num_terms_list)
     num_terms_array = jnp.array(num_terms_list)

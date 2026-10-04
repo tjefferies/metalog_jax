@@ -74,12 +74,12 @@ data = jnp.array([2.1, 3.5, 4.2, 5.8, 6.1, 7.3, 8.9, 12.4, 15.2, 18.7])
 # Create validated input data
 input_data = MetalogInputData.from_values(data, DEFAULT_Y, precomputed_quantiles=False)
 
-# Configure metalog parameters
+# Configure metalog parameters (Feasible always returns a valid distribution)
 params = MetalogParameters(
     boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
     lower_bound=0.0,
     upper_bound=0.0,
-    method=MetalogFitMethod.OLS,
+    method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
 
@@ -100,7 +100,8 @@ cumulative = metalog.cdf(10.0)           # CDF at x=10
 | Automatic differentiation | Yes | No |
 | JIT compilation | Yes | No |
 | Bounded distribution support | Yes | Yes |
-| Multiple regression methods | Yes (OLS, LASSO) | OLS only |
+| Multiple fit methods | Yes (OLS, LASSO, Feasible) | OLS only |
+| Always-feasible fitting (Baucells et al. 2025) | Yes | No |
 | Hyperparameter grid search | Yes (vectorized) | No |
 | Serialization (save/load) | Yes | No |
 | Active development | Yes | No |
@@ -172,7 +173,7 @@ params = MetalogParameters(
     boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
     lower_bound=0.0,
     upper_bound=0.0,
-    method=MetalogFitMethod.OLS,
+    method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
 
@@ -198,7 +199,7 @@ params = MetalogParameters(
     boundedness=MetalogBoundedness.UNBOUNDED,
     lower_bound=0.0,  # ignored
     upper_bound=0.0,  # ignored
-    method=MetalogFitMethod.OLS,
+    method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
 
@@ -208,7 +209,7 @@ params = MetalogParameters(
     boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
     lower_bound=0.0,
     upper_bound=0.0,  # ignored
-    method=MetalogFitMethod.OLS,
+    method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
 
@@ -218,7 +219,7 @@ params = MetalogParameters(
     boundedness=MetalogBoundedness.STRICTLY_UPPER_BOUND,
     lower_bound=0.0,  # ignored
     upper_bound=100.0,
-    method=MetalogFitMethod.OLS,
+    method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
 
@@ -228,9 +229,168 @@ params = MetalogParameters(
     boundedness=MetalogBoundedness.BOUNDED,
     lower_bound=0.0,
     upper_bound=100.0,
-    method=MetalogFitMethod.OLS,
+    method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
+```
+
+### Choosing a Fit Method
+
+Start with `MetalogFitMethod.Feasible`. Set `MetalogParameters.method` to one of:
+
+| Method | Use when | Hyperparameters |
+|--------|----------|-----------------|
+| `MetalogFitMethod.Feasible` | **Recommended default.** Always returns a valid distribution: the OLS fit when it is valid, otherwise the closest valid metalog | None |
+| `MetalogFitMethod.OLS` | You need `fit_grid`, which supports only OLS and LASSO. Closed-form least squares; `fit` raises if the density is negative on its check grid | None |
+| `MetalogFitMethod.Lasso` | Noisy data or many terms; L1 regularization shrinks unneeded coefficients | `LassoParameters` |
+
+### Always-Feasible Fitting
+
+`MetalogFitMethod.Feasible` is the recommended fit method. It returns the best
+least-squares fit *among valid metalogs*: the coefficient vector a* from Baucells,
+Chrisman, Keelin and Xu (2025),
+["On the Properties of the Metalog Distribution"](https://doi.org/10.2139/ssrn.5279416),
+solved as a semi-infinite QP by the exchange method. It works with every boundedness option.
+
+metalog-jax keeps the term assignment of Keelin (2016). The paper's Metalog 2.0
+assignment differs from the 7th term on: for 7, 11, 15, ... terms the two span
+different functions, and for other term counts the same functions with the
+coefficients in a different order. The feasibility algorithms apply to both, and
+`best_feasible_fit(x, y, k, order=TermOrder.METALOG_2)` fits the paper's
+parameterization. For bounded and semi-bounded metalogs the fit, like OLS, is least
+squares on the log- or logit-transformed quantiles (the paper's Section 4.10); the
+back-transform keeps it valid.
+
+Plain least squares (`OLS`) can return coefficients whose "density" goes negative
+somewhere, which is more likely as you add terms. `fit` checks OLS results on a grid of
+probabilities and raises. `Feasible` never returns an invalid distribution: every result
+is certified by the exact check below, and `fit` raises if certification fails.
+
+```python
+params = MetalogParameters(
+    boundedness=MetalogBoundedness.UNBOUNDED,
+    method=MetalogFitMethod.Feasible,
+    lower_bound=0.0,
+    upper_bound=0.0,
+    num_terms=4,
+)
+metalog = fit(input_data, params)  # density is non-negative everywhere
+```
+
+`metalog_jax.feasibility` also exposes the underlying tools, all `jit`/`vmap` compatible:
+
+```python
+from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine, summary_stats
+
+res = best_feasible_fit(x, y, num_terms=6)            # a*, RSS, iterations, certificate
+report = check_feasibility(get_engine(6), res.a_star)  # exact test: roots of M'', modes, tails
+stats = summary_stats(get_engine(6), res.a_star)       # exact mean/variance/skewness/kurtosis
+```
+
+`check_feasibility` is exact rather than grid-based (Algorithm 1 of the paper), so it
+cannot miss a negative-density region, including ones within 1e-7 of either tail. Every
+sign it tests is decided exactly up to floating-point rounding, whatever the scale of the
+coefficients.
+
+When the OLS fit is already valid, `Feasible` returns exactly the OLS coefficients, so
+choosing it costs nothing in fit quality; it only departs from OLS when OLS is invalid.
+It takes no `regression_hyperparams` (passing them raises a `TypeError`).
+
+#### Fitting Many Datasets with `Feasible`
+
+`fit_grid` raises a `ValueError` for `Feasible`, because it varies the number of terms
+inside `vmap` and the feasible solver needs it fixed at compile time. Use
+`fit_grid_datasets` instead: it fits a whole batch in one call, and you loop over term
+counts in Python.
+
+```python
+import jax.numpy as jnp
+from metalog_jax.grid_search import extract_metalog, fit_grid_datasets
+
+# batched_x, batched_y: shape (n_datasets, n_quantiles)
+params = MetalogParameters(
+    boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
+    lower_bound=0.0,
+    upper_bound=0.0,
+    method=MetalogFitMethod.Feasible,
+    num_terms=10,
+)
+
+# Fixed number of terms: one vmapped call over all datasets
+result = fit_grid_datasets(batched_x, batched_y, params)  # a: (n_datasets, 10)
+
+# Different numbers of terms: one call per term count (each compiles once)
+num_terms_list = [4, 6, 8, 10, 12]
+results = {
+    k: fit_grid_datasets(batched_x, batched_y, params.replace(num_terms=k))
+    for k in num_terms_list
+}
+ks = jnp.stack([results[k].ks_dist for k in num_terms_list], axis=1)  # (n_datasets, n_terms)
+
+# Best term count per dataset, as ready-to-use Metalog objects
+best = jnp.argmin(ks, axis=1)
+metalogs = [extract_metalog(results[num_terms_list[int(j)]], i) for i, j in enumerate(best)]
+```
+
+See [`examples/feasible_fits.py`](examples/feasible_fits.py) for a full walkthrough that
+also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 of the
+10-term OLS fits are invalid distributions; `Feasible` fixes all of them.
+
+#### Scaling to Many Datasets
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_dark.svg">
+  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid is about 20 times faster but does not check validity. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
+</picture>
+
+Measured with `fit_grid_datasets` on a **MacBook Pro (Apple M3, 8 cores: 4 performance
+and 4 efficiency, 8 GB unified memory), macOS 26.3.1, Python 3.13.7, JAX 0.8.0 on the
+CPU backend** (no GPU). Each dataset is 200 samples from one of the five distribution
+families in [`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the
+105 `DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
+compilation, which takes 2-6 s per term count and batch shape.
+
+| Datasets (10 terms) | Time | Per dataset | Peak memory |
+|---|---|---|---|
+| 5 | 0.08 s | 16.6 ms | 0.61 GB |
+| 50 | 0.22 s | 4.3 ms | 0.62 GB |
+| 500 | 1.24 s | 2.5 ms | 0.73 GB |
+| 2,000 | 4.51 s | 2.3 ms | 0.92 GB |
+| 5,000 | 9.41 s | 1.9 ms | 1.28 GB |
+| 10,000 | 17.8 s | 1.8 ms | 1.60 GB |
+| 20,000 | 39.7 s | 2.0 ms | 2.42 GB |
+| 50,000 (10 chunks of 5,000) | 96.3 s | 1.9 ms | 1.43 GB |
+
+The number of terms matters more than the number of datasets. At 5,000 datasets the time
+per dataset is:
+
+| Terms | 4 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|
+| Per dataset | 0.19 ms | 0.69 ms | 1.22 ms | 1.88 ms | 3.10 ms |
+
+**Extrapolating** (dashed lines in the chart; linear fits to batches of 500 or more):
+
+- **Throughput:** about 1.9 ms per dataset at 10 terms, or roughly 1.9 million datasets
+  per hour on this laptop; one million datasets take about 32 minutes. Comparing all five
+  term counts, as in the example's second case, costs about 7 ms per dataset (about
+  2 hours per million).
+- **Memory:** one batch needs about 0.76 GB plus 88 KB per dataset, so it would reach this
+  machine's 8 GB near 86,000 datasets. Split larger jobs into fixed-size chunks instead:
+  5,000-10,000 datasets per chunk was the fastest per dataset here, memory stays flat
+  (50,000 datasets in chunks of 5,000 peaked at 1.4 GB), and every chunk reuses one
+  compiled shape. Pad the last chunk to the same size to avoid a recompile.
+- **OLS for comparison:** `fit_grid` with OLS is about 20 times faster (0.09 ms per
+  dataset) but does not check validity. At 10 terms, 65% of these datasets' OLS fits
+  are invalid distributions, and `fit_grid_datasets` with OLS raises for the whole batch
+  if any one fit is invalid.
+
+GPU performance was not measured. To reproduce, or to rerun on your own hardware:
+
+```bash
+uv run python benchmarks/feasible_scaling/bench.py feasible 5000 10 3       # one batch
+uv run python benchmarks/feasible_scaling/bench_chunked.py 50000 5000 10    # chunked
+uv run --with matplotlib python benchmarks/feasible_scaling/plot.py \
+    benchmarks/feasible_scaling/results.json docs/source/_static           # redraw the chart
 ```
 
 ### Regularized Fitting
@@ -260,38 +420,6 @@ params = MetalogParameters(
 )
 metalog = fit(data, params, regression_hyperparams=lasso_params)
 ```
-
-### Always-Feasible Fitting (Metalog 2.0)
-
-Least squares can return coefficients whose "density" goes negative somewhere, which
-`fit` rejects. `MetalogFitMethod.Feasible` instead returns the best fit *among valid
-metalogs*: the coefficient vector a* from Baucells, Chrisman, Keelin and Xu (2025),
-["On the Properties of the Metalog Distribution"](https://doi.org/10.2139/ssrn.5279416),
-solved as a semi-infinite QP by the exchange method. It works with every boundedness option.
-
-```python
-params = MetalogParameters(
-    boundedness=MetalogBoundedness.UNBOUNDED,
-    method=MetalogFitMethod.Feasible,
-    lower_bound=0.0,
-    upper_bound=0.0,
-    num_terms=4,
-)
-metalog = fit(input_data, params)  # density is non-negative everywhere
-```
-
-`metalog_jax.feasibility` also exposes the underlying tools, all `jit`/`vmap` compatible:
-
-```python
-from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine, summary_stats
-
-res = best_feasible_fit(x, y, num_terms=6)            # a*, RSS, iterations, certificate
-report = check_feasibility(get_engine(6), res.a_star)  # exact test: roots of M'', modes, tails
-stats = summary_stats(get_engine(6), res.a_star)       # exact mean/variance/skewness/kurtosis
-```
-
-`check_feasibility` is exact rather than grid-based (Algorithm 1 of the paper), so it
-cannot miss a negative-density region, including ones within 1e-7 of either tail.
 
 ### SPT Metalog (3-Term Analytical Fitting)
 
@@ -359,6 +487,8 @@ median = metalog.median
 Mean, variance, standard deviation, skewness and kurtosis are exact (closed form)
 for unbounded metalogs, using the moment formulas of Baucells, Chrisman, Keelin and
 Xu (2025) (Lemma 1, Proposition 3), and estimated from 20,000 draws for bounded ones.
+For unbounded metalogs `mode` is exact too: the highest-density root of M'' (their
+Algorithm 1), which also finds modes too close to a tail for a grid search.
 
 ### Random Sampling
 
@@ -430,7 +560,9 @@ assert metalog == loaded == loaded2
 ### Unified Grid Search with `fit_grid`
 
 The `fit_grid` function provides a unified interface for hyperparameter optimization,
-automatically detecting which axes to search based on inputs.
+automatically detecting which axes to search based on inputs. It supports the OLS and
+LASSO fit methods and raises a `ValueError` for `MetalogFitMethod.Feasible`; use `fit`
+for one dataset or `fit_grid_datasets` to fit a batch of datasets with `Feasible`.
 
 #### Grid Search over L1 Penalties
 
@@ -611,6 +743,16 @@ gradient = gradient_fn(0.5)
 
 **Rule of thumb**: Use at least 3x observations per term.
 
+Higher term counts are more likely to give an invalid OLS fit (a density that goes
+negative), which `fit` rejects. `MetalogFitMethod.Feasible` handles this for you, which
+makes it the safer choice as you add terms.
+
+**As many quantiles as terms:** with symmetric probabilities (for example the 1st, 10th,
+25th, 50th, 75th, 90th and 99th percentiles) and exactly as many terms as quantiles,
+metalog-jax's term assignment (Keelin 2016) has no unique fit for 7, 11, 15, ... terms
+(Baucells, Chrisman, Keelin and Xu 2025, Proposition 2), so `fit` raises for OLS and
+Feasible. Use a different number of terms, or more quantiles than terms.
+
 ## Architecture
 
 ```
@@ -624,6 +766,11 @@ metalog_jax/
 │   ├── base.py             # RegressionModel, RegularizedParameters
 │   ├── ols.py              # Ordinary Least Squares
 │   └── lasso.py            # LASSO (L1 regularization)
+├── feasibility/             # Always-feasible fitting, exact moments and modes
+│   ├── a_star.py           # best_feasible_fit (a*), fit_feasible
+│   ├── analysis.py         # check_feasibility, exact moments
+│   ├── engine.py           # Coefficient layout, modes/anti-modes (Algorithm 1)
+│   └── _exact.py           # Exact rational tables for moments and derivatives
 ├── metalog.py              # Metalog, SPTMetalog, fit, fit_spt_metalog
 ├── grid_search.py          # Unified fit_grid for hyperparameter optimization
 └── utils.py                # HDRPRNG, KS distance, DEFAULT_Y, helpers
@@ -658,10 +805,12 @@ Interactive notebooks are available in two formats:
 **Jupyter Notebooks** (pre-executed, viewable in browser):
 - [Basic Usage](https://github.com/tjefferies/metalog_jax/blob/main/docs/source/basic_usage.ipynb) - Core API and distribution methods
 - [Grid Search](https://github.com/tjefferies/metalog_jax/blob/main/docs/source/fitting_grids.ipynb) - Hyperparameter optimization with `fit_grid`
+- [Feasible Fits](https://github.com/tjefferies/metalog_jax/blob/main/docs/source/feasible_fits.ipynb) - Batch fitting with `MetalogFitMethod.Feasible`
 
 **Marimo Notebooks** (interactive, run locally):
 - `marimo run examples/basic_usage.py`
 - `marimo run examples/fitting_grids.py`
+- `marimo run examples/feasible_fits.py` - Batch fitting with `MetalogFitMethod.Feasible`
 
 ## Contributing
 
@@ -762,7 +911,7 @@ And the original metalog paper:
 }
 ```
 
-And, if you use `MetalogFitMethod.Feasible`, `metalog_jax.feasibility` or the exact moments, the Metalog 2.0 paper:
+And, if you use `MetalogFitMethod.Feasible`, `metalog_jax.feasibility` or the exact moments and modes, the paper by Baucells, Chrisman, Keelin and Xu:
 
 ```bibtex
 @techreport{baucells2025properties,
@@ -782,7 +931,7 @@ And, if you use `MetalogFitMethod.Feasible`, `metalog_jax.feasibility` or the ex
 
 - Keelin, T. W. (2016). [The Metalog Distributions](https://doi.org/10.1287/deca.2016.0338). *Decision Analysis*, 13(4), 243-277.
 - Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). [On the Properties of the Metalog Distribution](https://doi.org/10.2139/ssrn.5279416). Darden Business School Working Paper No. 5279416.
-- Xu, Z. S. [metalog_algorithm](https://github.com/Stephenxuu/metalog_algorithm) - Reference implementation of the Metalog 2.0 algorithms ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); adapted in `metalog_jax.feasibility`, see [NOTICE](NOTICE))
+- Xu, Z. S. [metalog_algorithm](https://github.com/Stephenxuu/metalog_algorithm) - Reference implementation of the paper's algorithms ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); adapted in `metalog_jax.feasibility`, see [NOTICE](NOTICE))
 - [Metalog Distributions Website](http://metalogdistributions.com/) - Official resource by Tom Keelin
 
 ### Regression Methods

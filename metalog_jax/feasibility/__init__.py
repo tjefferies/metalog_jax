@@ -1,5 +1,5 @@
 # Copyright: Travis Jefferies 2026
-"""Metalog 2.0 feasibility tools (Baucells, Chrisman, Keelin and Xu).
+"""Feasibility tools of Baucells, Chrisman, Keelin and Xu (2025).
 
 JAX ports of the algorithms in "On the Properties of the Metalog Distribution" and
 its reference implementation by Zixin (Stephen) Xu (CC BY 4.0; see NOTICE):
@@ -7,9 +7,12 @@ its reference implementation by Zixin (Stephen) Xu (CC BY 4.0; see NOTICE):
 * :func:`best_feasible_fit` - the optimal feasible coefficients ``a*``.
 * :func:`check_feasibility` - air-tight feasibility test (Algorithm 1 + Prop. 5).
 * :func:`inflection_points` - all modes and anti-modes of the density.
+* :func:`highest_mode` - the highest-density mode (used by ``Metalog.mode``).
 * :func:`summary_stats` / :func:`raw_moment` - exact moments (Lemma 1, Prop. 3).
 
-Every function is jit-compatible and can be vmapped over batches.
+Every function is jit-compatible and can be vmapped over batches. They use the
+Keelin (2016) term assignment of ``metalog_jax`` by default; ``TermOrder.METALOG_2``
+selects the paper's Metalog 2.0 assignment, which differs from the 7th term on.
 
 References:
     Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
@@ -32,6 +35,7 @@ from metalog_jax.feasibility.analysis import (
     FeasibilityReport,
     check_feasibility,
     feasibility_function,
+    highest_mode,
     is_feasible,
     mean_and_variance,
     raw_moment,
@@ -58,6 +62,7 @@ __all__ = [
     "feasibility_function",
     "fit_feasible",
     "get_engine",
+    "highest_mode",
     "inflection_points",
     "is_feasible",
     "mean_and_variance",

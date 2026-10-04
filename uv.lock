@@ -1520,8 +1520,8 @@ wheels = [
 
 [[package]]
 name = "metalog-jax"
-version = "2.0.0"
-source = { virtual = "." }
+version = "2.0.1"
+source = { editable = "." }
 dependencies = [
     { name = "chex" },
     { name = "flax" },

@@ -46,6 +46,7 @@ class MetalogBaseData:
     which provides comprehensive validation and proper error handling.
 
     Use `MetalogBaseData` directly only when:
+
     - Working inside JAX-traced functions (vmap, jit, etc.) where validation
       functions would fail due to tracer boolean conversion issues
     - Data has already been validated externally

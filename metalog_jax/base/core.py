@@ -44,7 +44,11 @@ from metalog_jax.base.parameters import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.feasibility.analysis import mean_and_variance, summary_stats
+from metalog_jax.feasibility.analysis import (
+    highest_mode,
+    mean_and_variance,
+    summary_stats,
+)
 from metalog_jax.feasibility.engine import TermOrder, get_engine
 from metalog_jax.utils import (
     DEFAULT_Y,
@@ -203,6 +207,7 @@ class MetalogBase:
         """Validate that the metalog distribution has been fitted and is feasible.
 
         Performs two validation checks:
+
         1. Verifies that coefficients exist (distribution has been fit).
         2. Computes the PDF at standard quantile points to verify feasibility,
            which internally calls ``assert_fit_valid`` to ensure all PDF values
@@ -588,6 +593,10 @@ class MetalogBase:
         assert_float_array(x)
         assert_probability_range(x)
         self._assert_has_coefficients()
+        # Evaluate the basis in the coefficients' precision: float32 rounding of
+        # log(y / (1 - y)) times large coefficients can flip the sign of a small but
+        # positive density (e.g. DEFAULT_Y is float32 and the fit is float64).
+        x = jnp.asarray(x, dtype=jnp.result_type(x, self.a))
         num_terms = self.num_terms
         m = _pdf(x, num_terms)
         if self.boundedness != MetalogBoundedness.UNBOUNDED:
@@ -871,15 +880,24 @@ class MetalogBase:
     def mode(self) -> chex.Scalar:
         """Compute the mode (most likely value) of the fitted metalog distribution.
 
-        The mode is found by locating the maximum of the PDF over a fine grid
-        of probability values.
+        For unbounded metalogs the mode is exact: the highest-density root of
+        ``M''``, found by Algorithm 1 of Baucells, Chrisman, Keelin and Xu (2025).
+        This also finds modes that a grid misses, such as the binding modes of a
+        Feasible fit, which can sit at y < 0.001. Bounded and semi-bounded metalogs
+        (whose back-transform moves the modes) and metalogs without an interior mode
+        use the maximum of the PDF over a fine grid of probabilities.
 
         Returns:
             chex.Scalar: The mode of the distribution.
         """
         ppf = self.ppf(DEFAULT_Y_FULL)
         pdf = self.pdf(DEFAULT_Y_FULL)
-        return ppf[pdf.argmax()]
+        grid_mode = ppf[pdf.argmax()]
+        if not self._has_exact_moments():
+            return grid_mode
+        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        value, _, found = highest_mode(engine, jnp.asarray(self.a, jnp.float64))
+        return jnp.where(found, value, grid_mode)
 
     def plot(self, plot_option: MetalogPlotOptions) -> go.Figure:
         """Visualize the fitted metalog distribution using interactive Plotly plots.

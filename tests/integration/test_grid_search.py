@@ -17,6 +17,7 @@ from metalog_jax.base import (
     MetalogInputData,
     MetalogParameters,
 )
+from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine
 from metalog_jax.grid_search import (
     extract_best_from_grid,
     find_best_config,
@@ -1535,6 +1536,57 @@ class TestFitGridEdgeCases(absltest.TestCase):
         # Should still have grid dimension of 1
         self.assertEqual(result.ks_dist.shape, (1,))
         self.assertEqual(result.metalog.a.shape, (1, 7))
+
+
+class TestGridFeasibleMethod(absltest.TestCase):
+    """Grid search with MetalogFitMethod.Feasible: rejected by vmapped grids."""
+
+    def setUp(self):
+        """Paper data, whose 5-term OLS fit is infeasible."""
+        x = jnp.array([1.0, 2.0, 4.0, 8.0, 12.0])
+        y = jnp.array([0.1, 0.3, 0.5, 0.7, 0.9])
+        self.data = MetalogBaseData(x=x, y=y, precomputed_quantiles=True)
+        self.batched_x = jnp.stack([x, x + 1.0])
+        self.batched_y = jnp.stack([y, y])
+        self.params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            method=MetalogFitMethod.Feasible,
+            num_terms=5,
+        )
+
+    def test_fit_grid_rejects_feasible(self):
+        """fit_grid raises instead of silently fitting OLS."""
+        with self.assertRaises(ValueError) as ctx:
+            fit_grid(
+                self.batched_x, self.batched_y, self.params, precomputed_quantiles=True
+            )
+        self.assertIn("fit_grid_datasets()", str(ctx.exception))
+
+    def test_num_terms_grids_reject_feasible(self):
+        """fit_grid_num_terms and fit_grid_datasets_num_terms raise ValueError."""
+        with self.assertRaises(ValueError):
+            fit_grid_num_terms(self.data, self.params, [3, 4, 5])
+        with self.assertRaises(ValueError):
+            fit_grid_datasets_num_terms(
+                self.batched_x, self.batched_y, self.params, [3, 4, 5], True
+            )
+
+    def test_fit_grid_datasets_supports_feasible(self):
+        """fit_grid_datasets, the suggested alternative, returns feasible fits."""
+        result = fit_grid_datasets(
+            self.batched_x, self.batched_y, self.params, precomputed_quantiles=True
+        )
+        self.assertEqual(result.metalog.a.shape, (2, 5))
+        for i in range(2):
+            expected = best_feasible_fit(
+                self.batched_x[i], self.batched_y[i], num_terms=5
+            )
+            self.assertTrue(jnp.allclose(result.metalog.a[i], expected.a_star))
+            self.assertTrue(
+                check_feasibility(get_engine(5), result.metalog.a[i]).feasible
+            )
 
 
 if __name__ == "__main__":

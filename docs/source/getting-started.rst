@@ -42,10 +42,10 @@ the ``fit`` function from ``metalog_jax.metalog``:
        precomputed_quantiles=False  # Raw samples, not precomputed quantiles
    )
 
-   # Configure metalog parameters with OLS
+   # Configure metalog parameters (Feasible always returns a valid distribution)
    metalog_params = MetalogParameters(
        boundedness=MetalogBoundedness.UNBOUNDED,
-       method=MetalogFitMethod.OLS,
+       method=MetalogFitMethod.Feasible,
        lower_bound=0.0,
        upper_bound=0.0,
        num_terms=5
@@ -122,13 +122,21 @@ If you already have quantile values (e.g., from expert elicitation), use
 
    params = MetalogParameters(
        boundedness=MetalogBoundedness.UNBOUNDED,
-       method=MetalogFitMethod.OLS,
+       method=MetalogFitMethod.Feasible,
        lower_bound=0.0,
        upper_bound=0.0,
        num_terms=3
    )
 
    m = fit(data, params)
+
+.. note::
+
+   With symmetric probabilities (for example the 1st, 10th, 25th, 50th, 75th, 90th
+   and 99th percentiles) and exactly as many terms as quantiles, metalog-jax's term
+   assignment (Keelin 2016) has no unique fit for 7, 11, 15, ... terms (Baucells,
+   Chrisman, Keelin and Xu 2025, Proposition 2), so ``fit`` raises for OLS and
+   Feasible. Use a different number of terms, or more quantiles than terms.
 
 Bounded Distributions
 ---------------------
@@ -144,7 +152,7 @@ For data with known bounds, use bounded metalog variants:
    # Bounded metalog for data in [0, 100]
    params = MetalogParameters(
        boundedness=MetalogBoundedness.BOUNDED,
-       method=MetalogFitMethod.OLS,
+       method=MetalogFitMethod.Feasible,
        num_terms=5,
        lower_bound=0.0,
        upper_bound=100.0,
@@ -159,19 +167,82 @@ Boundedness options:
 - ``MetalogBoundedness.STRICTLY_UPPER_BOUND``: Support on (-∞, upper_bound)
 - ``MetalogBoundedness.BOUNDED``: Support on (lower_bound, upper_bound)
 
-Regression Methods
-------------------
+Fit Methods
+-----------
 
-metalog-jax supports two regression methods for fitting, organized in the
-``metalog_jax.regression`` module:
+Set ``MetalogParameters.method`` to choose how the coefficients are fitted. Start
+with ``MetalogFitMethod.Feasible``:
 
-- **OLS** (``metalog_jax.regression.ols``): No regularization, closed-form solution
+- **Feasible** (``metalog_jax.feasibility``, recommended): The best least-squares fit
+  among valid metalogs (Baucells et al. 2025). Always returns a valid distribution
+- **OLS** (``metalog_jax.regression.ols``): Closed-form least squares with no
+  regularization; needed for ``fit_grid``, which supports only OLS and LASSO
 - **LASSO** (``metalog_jax.regression.lasso``): L1 regularization for sparse solutions
+
+Always-Feasible Fitting
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``MetalogFitMethod.Feasible`` is the recommended fit method. It returns the best
+least-squares fit among valid metalogs: the coefficient vector a* from Baucells,
+Chrisman, Keelin and Xu (2025), `On the Properties of the Metalog Distribution
+<https://doi.org/10.2139/ssrn.5279416>`_. It works with every boundedness option.
+
+metalog-jax keeps the term assignment of Keelin (2016). The paper's Metalog 2.0
+assignment differs from the 7th term on: for 7, 11, 15, ... terms the two span
+different functions, and for other term counts the same functions with the
+coefficients in a different order. The feasibility algorithms apply to both, and
+``best_feasible_fit(x, y, k, order=TermOrder.METALOG_2)`` fits the paper's
+parameterization. For bounded and semi-bounded metalogs the fit, like OLS, is least
+squares on the log- or logit-transformed quantiles (the paper's Section 4.10); the
+back-transform keeps it valid.
+
+Plain least squares (OLS) can return coefficients whose density goes negative
+somewhere, which makes the fit an invalid distribution, and this is more likely as
+you add terms. ``fit`` checks OLS results on a grid of probabilities and raises.
+``Feasible`` never returns an invalid distribution: every result is certified by
+``check_feasibility``, and ``fit`` raises if certification fails.
+
+.. code-block:: python
+
+   from metalog_jax.base import MetalogInputData, MetalogParameters
+   from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
+   from metalog_jax.metalog import fit
+
+   metalog_params = MetalogParameters(
+       boundedness=MetalogBoundedness.UNBOUNDED,
+       method=MetalogFitMethod.Feasible,
+       lower_bound=0.0,
+       upper_bound=0.0,
+       num_terms=9
+   )
+
+   m = fit(data, metalog_params)  # density is non-negative everywhere
+
+When the OLS fit is already valid, ``Feasible`` returns exactly the OLS
+coefficients, so choosing it costs nothing in fit quality. It takes no
+``regression_hyperparams``; passing them raises a ``TypeError``.
+
+``metalog_jax.feasibility`` also exposes the underlying tools, all ``jit`` and
+``vmap`` compatible:
+
+.. code-block:: python
+
+   from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine
+
+   res = best_feasible_fit(x, y, num_terms=6)             # a*, RSS, iterations, certificate
+   report = check_feasibility(get_engine(6), res.a_star)  # exact: every mode and both tails
+
+``check_feasibility`` is exact rather than grid-based, so it cannot miss a region of
+negative density, including one in the far tails beyond the probabilities ``fit``
+checks. Every sign it tests is decided exactly up to floating-point rounding, whatever
+the scale of the coefficients.
 
 Ordinary Least Squares (OLS)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Default method, no regularization:
+Closed-form least squares with no regularization. Use it with ``fit_grid``, which
+supports only OLS and LASSO; ``fit`` raises if the density is negative at any of the
+probabilities it checks:
 
 .. code-block:: python
 
@@ -260,6 +331,47 @@ Use JAX's ``vmap`` for efficient hyperparameter search:
    vmapped_lasso_fit = jax.vmap(fit_with_lasso_penalty)
    lasso_results = vmapped_lasso_fit(l1_penalties)
 
+Fitting Many Datasets with Feasible
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``fit_grid`` supports OLS and LASSO only and raises a ``ValueError`` for
+``MetalogFitMethod.Feasible``: it varies the number of terms inside ``vmap``, while
+the feasible solver needs it fixed at compile time. Use ``fit_grid_datasets``
+instead, which fits a whole batch in one call, and loop over term counts in Python:
+
+.. code-block:: python
+
+   import jax.numpy as jnp
+   from metalog_jax.grid_search import extract_metalog, fit_grid_datasets
+
+   # batched_x, batched_y: shape (n_datasets, n_quantiles)
+   params = MetalogParameters(
+       boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
+       lower_bound=0.0,
+       upper_bound=0.0,
+       method=MetalogFitMethod.Feasible,
+       num_terms=10,
+   )
+
+   # Fixed number of terms: one vmapped call over all datasets
+   result = fit_grid_datasets(batched_x, batched_y, params)  # a: (n_datasets, 10)
+
+   # Different numbers of terms: one call per term count (each compiles once)
+   num_terms_list = [4, 6, 8, 10, 12]
+   results = {
+       k: fit_grid_datasets(batched_x, batched_y, params.replace(num_terms=k))
+       for k in num_terms_list
+   }
+   ks = jnp.stack([results[k].ks_dist for k in num_terms_list], axis=1)
+
+   # Best term count per dataset, as ready-to-use Metalog objects
+   best = jnp.argmin(ks, axis=1)
+   metalogs = [
+       extract_metalog(results[num_terms_list[int(j)]], i) for i, j in enumerate(best)
+   ]
+
+See the :doc:`feasible_fits` tutorial for a full walkthrough.
+
 Goodness of Fit
 ---------------
 
@@ -326,11 +438,17 @@ and properties:
 - ``median``: Median (50th percentile)
 - ``var``: Variance
 - ``std``: Standard deviation
-- ``mode``: Most likely value
+- ``skewness``: Third standardized moment
+- ``kurtosis``: Pearson kurtosis (3 for a normal distribution)
+- ``mode``: Most likely value (exact for unbounded metalogs)
 - ``num_terms``: Number of terms in the metalog expansion
 - ``boundedness``: Boundedness type
 - ``lower_bound``: Lower bound value
 - ``upper_bound``: Upper bound value
+
+For unbounded metalogs, ``mean``, ``var``, ``std``, ``skewness`` and ``kurtosis``
+are exact (closed form, Baucells, Chrisman, Keelin and Xu, 2025). For bounded and
+semi-bounded metalogs they are estimated from 20,000 draws.
 
 **R Compatibility Aliases:**
 
@@ -364,8 +482,21 @@ The library is organized into the following modules:
   - ``metalog_jax.regression.ols``: OLS regression
   - ``metalog_jax.regression.lasso``: LASSO regression
 
+- ``metalog_jax.feasibility``: Feasibility tools of Baucells et al. (2025)
+
+  - ``best_feasible_fit()``: Best feasible coefficients a*
+  - ``check_feasibility()``: Exact feasibility test (modes, anti-modes and tails)
+  - ``summary_stats()``, ``raw_moment()``: Exact moments of unbounded metalogs
+
+- ``metalog_jax.grid_search``: Vectorized grid search
+
+  - ``fit_grid()``: Grid over datasets, L1 penalties and term counts (OLS and LASSO)
+  - ``fit_grid_datasets()``: Fit a batch of datasets with any fit method
+  - ``find_best_config()``, ``extract_metalog()``: Pick and extract the best fit
+
 Next Steps
 ----------
 
+- Work through the :doc:`basic_usage`, :doc:`fitting_grids` and :doc:`feasible_fits`
+  tutorials
 - Explore the :doc:`api/modules` for detailed API documentation
-- Check out the examples in the repository

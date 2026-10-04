@@ -10,13 +10,27 @@ Classes:
     RegressionModel: Base class for trained regression model weights.
         Subclasses: OLSModel, LassoModel
 
+Functions:
+    has_full_column_rank: Whether a design matrix has full column rank.
+    assert_full_column_rank: Raise when least squares has no unique solution.
+
 See Also:
     metalog_jax.regression.ols: OLS regression implementation.
     metalog_jax.regression.lasso: LASSO regression implementation.
 """
 
 import chex
+import jax.numpy as jnp
 from flax import struct
+from jax.experimental import checkify
+
+RANK_DEFICIENT_MESSAGE = (
+    "The metalog basis matrix is rank deficient (numerically singular), so the "
+    "least-squares fit is not unique. Use fewer terms or more quantiles. A common "
+    "cause: with as many probabilities as terms, symmetric probabilities make the "
+    "Keelin (2016) term assignment used by metalog_jax singular for 7, 11, 15, ... "
+    "terms (Baucells et al. 2025, Proposition 2)."
+)
 
 
 @struct.dataclass
@@ -111,3 +125,34 @@ class RegressionModel:
     """
 
     weights: chex.Array
+
+
+def has_full_column_rank(X: chex.Array) -> chex.Array:
+    """Whether ``X`` of shape (n, k) has rank k, using numpy's default SVD tolerance.
+
+    Args:
+        X: Design matrix of shape (n_samples, n_features).
+
+    Returns:
+        Boolean scalar array; ``jit``/``vmap`` compatible.
+    """
+    return jnp.linalg.matrix_rank(X) == X.shape[-1]
+
+
+def assert_full_column_rank(X: chex.Array) -> None:
+    """Raise when ``X`` is rank deficient, so least squares has no unique solution.
+
+    Uses ``checkify`` so it also works under ``vmap`` (e.g. ``fit_grid_datasets``).
+
+    Args:
+        X: Design matrix of shape (n_samples, n_features).
+
+    Raises:
+        checkify.JaxRuntimeError: If ``X`` does not have full column rank.
+
+    References:
+        Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
+        Properties of the Metalog Distribution. Darden Business School Working
+        Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416 (Proposition 2).
+    """
+    checkify.check(has_full_column_rank(X), RANK_DEFICIENT_MESSAGE)

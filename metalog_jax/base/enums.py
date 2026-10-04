@@ -5,14 +5,14 @@ This module provides enumeration types for configuring metalog distributions:
 
 Classes:
     CustomIntEnum: Base class for integer enumerations with enhanced value lookup.
-    MetalogBoundedness: Enumeration of boundedness types (UNBOUNDED, STRICTLY_LOWER_BOUND,
-        STRICTLY_UPPER_BOUND, BOUNDED).
-    MetalogFitMethod: Enumeration of regression methods (OLS, Lasso).
+    MetalogBoundedness: Boundedness types (UNBOUNDED, STRICTLY_LOWER_BOUND, ...).
+    MetalogFitMethod: Fit methods (Feasible, OLS, Lasso).
     MetalogPlotOptions: Enumeration of plot types (PDF, CDF, SF).
 
 See Also:
     metalog_jax.base.parameters: Parameter configuration classes that use these enums.
-    metalog_jax.regression: Regression implementations for each MetalogFitMethod.
+    metalog_jax.regression: OLS and Lasso implementations.
+    metalog_jax.feasibility: Feasible implementation (Baucells et al. 2025).
 """
 
 from enum import IntEnum, auto
@@ -96,9 +96,10 @@ class MetalogFitMethod(CustomIntEnum):
             Implementation: metalog_jax.regression.ols.fit_ordinary_least_squares
         Lasso: LASSO regression (L1 regularization via proximal gradient descent).
             Implementation: metalog_jax.regression.lasso.fit_lasso
-        Feasible: Best feasible least-squares fit a* (Metalog 2.0; Baucells,
-            Chrisman, Keelin and Xu, 2025): the closest coefficients whose density
-            is non-negative everywhere.
+        Feasible: Best feasible least-squares fit a* (Baucells, Chrisman, Keelin
+            and Xu, 2025): the closest coefficients whose density is
+            non-negative everywhere. Recommended default; equals OLS whenever
+            the OLS fit is already valid.
             Implementation: metalog_jax.feasibility.a_star.fit_feasible
 
     See Also:

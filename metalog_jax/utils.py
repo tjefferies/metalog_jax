@@ -6,8 +6,6 @@ import jax
 import jax.numpy as jnp
 from flax import struct
 
-jax.config.update("jax_enable_x64", True)
-
 DEFAULT_Y: chex.Numeric = jnp.concatenate(
     [
         jnp.array([0.001, 0.003, 0.006], dtype=jnp.float32),
@@ -154,6 +152,7 @@ def assert_strictly_ascending(x: chex.Numeric, tol: float = 1e-12) -> None:
         AssertionError: If any consecutive difference is less than or equal to the
             tolerance threshold, indicating the array is not strictly ascending.
             This can occur if:
+
             - The array contains duplicate values (difference = 0)
             - The array is not sorted in ascending order (negative differences)
             - Consecutive values are too close together (difference < tol)
@@ -383,10 +382,9 @@ def ks_distance(x: chex.Numeric, y: chex.Numeric) -> chex.Scalar:
     statistic for the two-sample test, which measures the degree of dissimilarity
     between two probability distributions.
 
-    The KS distance is defined as:
-        D = sup |F_x(t) - F_y(t)|
-    where F_x and F_y are the empirical CDFs of samples x and y, and the supremum
-    is taken over all values t.
+    The KS distance is defined as ``D = sup_t |F_x(t) - F_y(t)|``, where F_x and F_y
+    are the empirical CDFs of samples x and y, and the supremum is taken over all
+    values t.
 
     This implementation is fully vectorized and JIT-compiled for efficient execution
     with JAX, making it suitable for use in gradient-based optimization and parallel

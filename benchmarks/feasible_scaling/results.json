@@ -1,0 +1,206 @@
+{
+ "machine": {
+  "model": "MacBook Pro",
+  "cpu": "Apple M3",
+  "cores": "8 cores (4 performance, 4 efficiency)",
+  "ram_gb": 8,
+  "os": "macOS 26.3.1",
+  "python": "3.13.7",
+  "jax": "0.8.0",
+  "backend": "CPU"
+ },
+ "workload": "Each dataset: 200 samples from one of the five families in examples/feasible_fits.py, quantiles at the 105 DEFAULT_Y probabilities, STRICTLY_LOWER_BOUND at 0. steady_s excludes compilation; first_s includes it.",
+ "runs": [
+  {
+   "mode": "ols_grid",
+   "N": 5,
+   "K": 10,
+   "first_s": 0.954,
+   "steady_s": 0.1977,
+   "per_dataset_ms": 39.5368,
+   "rss_before_mb": 239,
+   "rss_peak_mb": 314
+  },
+  {
+   "mode": "ols_grid",
+   "N": 50,
+   "K": 10,
+   "first_s": 1.063,
+   "steady_s": 0.1986,
+   "per_dataset_ms": 3.9717,
+   "rss_before_mb": 238,
+   "rss_peak_mb": 324
+  },
+  {
+   "mode": "ols_grid",
+   "N": 500,
+   "K": 10,
+   "first_s": 1.3,
+   "steady_s": 0.4241,
+   "per_dataset_ms": 0.8483,
+   "rss_before_mb": 243,
+   "rss_peak_mb": 422
+  },
+  {
+   "mode": "ols_grid",
+   "N": 2000,
+   "K": 10,
+   "first_s": 1.545,
+   "steady_s": 0.5286,
+   "per_dataset_ms": 0.2643,
+   "rss_before_mb": 248,
+   "rss_peak_mb": 727
+  },
+  {
+   "mode": "ols_grid",
+   "N": 5000,
+   "K": 10,
+   "first_s": 1.749,
+   "steady_s": 0.7541,
+   "per_dataset_ms": 0.1508,
+   "rss_before_mb": 269,
+   "rss_peak_mb": 1090
+  },
+  {
+   "mode": "ols_grid",
+   "N": 10000,
+   "K": 10,
+   "first_s": 1.957,
+   "steady_s": 1.2775,
+   "per_dataset_ms": 0.1277,
+   "rss_before_mb": 298,
+   "rss_peak_mb": 1895
+  },
+  {
+   "mode": "ols_grid",
+   "N": 20000,
+   "K": 10,
+   "first_s": 2.788,
+   "steady_s": 2.1405,
+   "per_dataset_ms": 0.107,
+   "rss_before_mb": 354,
+   "rss_peak_mb": 3020
+  },
+  {
+   "mode": "feasible",
+   "N": 5,
+   "K": 10,
+   "first_s": 4.528,
+   "steady_s": 0.0828,
+   "per_dataset_ms": 16.5681,
+   "rss_before_mb": 239,
+   "rss_peak_mb": 624
+  },
+  {
+   "mode": "feasible",
+   "N": 50,
+   "K": 10,
+   "first_s": 4.506,
+   "steady_s": 0.2168,
+   "per_dataset_ms": 4.3353,
+   "rss_before_mb": 240,
+   "rss_peak_mb": 640
+  },
+  {
+   "mode": "feasible",
+   "N": 500,
+   "K": 10,
+   "first_s": 5.872,
+   "steady_s": 1.2437,
+   "per_dataset_ms": 2.4875,
+   "rss_before_mb": 242,
+   "rss_peak_mb": 744
+  },
+  {
+   "mode": "feasible",
+   "N": 2000,
+   "K": 10,
+   "first_s": 9.583,
+   "steady_s": 4.5096,
+   "per_dataset_ms": 2.2548,
+   "rss_before_mb": 249,
+   "rss_peak_mb": 947
+  },
+  {
+   "mode": "feasible",
+   "N": 5000,
+   "K": 10,
+   "first_s": 14.089,
+   "steady_s": 9.4062,
+   "per_dataset_ms": 1.8812,
+   "rss_before_mb": 268,
+   "rss_peak_mb": 1311
+  },
+  {
+   "mode": "feasible",
+   "N": 10000,
+   "K": 10,
+   "first_s": 23.387,
+   "steady_s": 17.7687,
+   "per_dataset_ms": 1.7769,
+   "rss_before_mb": 298,
+   "rss_peak_mb": 1640
+  },
+  {
+   "mode": "feasible",
+   "N": 20000,
+   "K": 10,
+   "first_s": 45.848,
+   "steady_s": 39.7143,
+   "per_dataset_ms": 1.9857,
+   "rss_before_mb": 354,
+   "rss_peak_mb": 2481
+  },
+  {
+   "mode": "feasible_chunked",
+   "N": 50000,
+   "chunk": 5000,
+   "K": 10,
+   "first_chunk_s": 13.842,
+   "fit_s": 100.496,
+   "fit_s_excl_compile": 96.282,
+   "wall_s_incl_data_gen": 109.736,
+   "rss_peak_mb": 1462
+  },
+  {
+   "mode": "feasible",
+   "N": 5000,
+   "K": 4,
+   "first_s": 3.388,
+   "steady_s": 0.9408,
+   "per_dataset_ms": 0.1882,
+   "rss_before_mb": 267,
+   "rss_peak_mb": 1050
+  },
+  {
+   "mode": "feasible",
+   "N": 5000,
+   "K": 6,
+   "first_s": 6.557,
+   "steady_s": 3.4464,
+   "per_dataset_ms": 0.6893,
+   "rss_before_mb": 268,
+   "rss_peak_mb": 1171
+  },
+  {
+   "mode": "feasible",
+   "N": 5000,
+   "K": 8,
+   "first_s": 9.853,
+   "steady_s": 6.0749,
+   "per_dataset_ms": 1.215,
+   "rss_before_mb": 268,
+   "rss_peak_mb": 1315
+  },
+  {
+   "mode": "feasible",
+   "N": 5000,
+   "K": 12,
+   "first_s": 21.274,
+   "steady_s": 15.4982,
+   "per_dataset_ms": 3.0996,
+   "rss_before_mb": 270,
+   "rss_peak_mb": 1546
+  }
+ ]
+}

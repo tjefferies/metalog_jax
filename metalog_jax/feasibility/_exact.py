@@ -1,5 +1,5 @@
 # Copyright: Travis Jefferies 2026
-"""Exact rational tables used by the Metalog 2.0 feasibility and moment routines.
+"""Exact rational tables for the feasibility and moment routines of Baucells et al.
 
 Everything in this module runs in pure Python with ``fractions.Fraction`` at trace
 time, so the numbers baked into jitted code carry no accumulated rounding error.

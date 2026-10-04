@@ -15,6 +15,7 @@ The fit function uses a dispatch table pattern to route to the appropriate regre
 implementation based on the MetalogFitMethod specified in MetalogParameters:
     - MetalogFitMethod.OLS -> metalog_jax.regression.ols.fit_ordinary_least_squares
     - MetalogFitMethod.Lasso -> metalog_jax.regression.lasso.fit_lasso
+    - MetalogFitMethod.Feasible -> metalog_jax.feasibility.a_star.fit_feasible
 
 See Also:
     metalog_jax.base: Base classes and parameter configurations.
@@ -44,9 +45,15 @@ from metalog_jax.regression import (
     fit_lasso,
     fit_ordinary_least_squares,
 )
+from metalog_jax.regression.base import assert_full_column_rank
 from metalog_jax.utils import (
     assert_numeric_array,
 )
+
+# Largest feasible |a3| / a2 of a 3-term metalog: the unique positive root of
+# theta * ln((2 + theta) / (2 - theta)) = 4 (Baucells et al. 2025, Proposition 6;
+# Keelin 2016 rounds it to 1.66711).
+THETA_3 = 1.6671131192019295
 
 # Dispatch table mapping fit methods to their implementation functions
 _FIT_METHOD_DISPATCH = {
@@ -54,6 +61,9 @@ _FIT_METHOD_DISPATCH = {
     MetalogFitMethod.Lasso: fit_lasso,
     MetalogFitMethod.Feasible: fit_feasible,
 }
+
+# Fit methods whose implementation accepts regression hyperparameters (``params=``)
+_METHODS_WITH_HYPERPARAMS = frozenset({MetalogFitMethod.Lasso})
 
 
 def _get_fit_function(
@@ -76,13 +86,14 @@ def _get_fit_function(
         hyperparams: Optional regularization hyperparameters. When provided, the
             hyperparameters are bound to the fit function using functools.partial.
             Should be an instance of metalog_jax.regression.lasso.LassoParameters
-            for Lasso method. Ignored for OLS method.
+            for Lasso method. Must be None for OLS and Feasible, which take none.
 
     Returns:
         Callable fit function, optionally with hyperparams bound via partial.
 
     Raises:
-        TypeError: If method is not a valid MetalogFitMethod.
+        TypeError: If method is not a valid MetalogFitMethod, or if hyperparams are
+            given for a method that takes none.
     """
     try:
         fit_func = _FIT_METHOD_DISPATCH[method]
@@ -91,9 +102,15 @@ def _get_fit_function(
             f"method type {type(method)} not type MetalogFitMethod!"
         ) from None
 
-    if hyperparams is not None:
-        return partial(fit_func, params=hyperparams)
-    return fit_func
+    if hyperparams is None:
+        return fit_func
+    if method not in _METHODS_WITH_HYPERPARAMS:
+        raise TypeError(
+            f"regression_hyperparams is only supported for MetalogFitMethod.Lasso; "
+            f"MetalogFitMethod.{method.name} takes no hyperparameters, so pass "
+            "regression_hyperparams=None."
+        )
+    return partial(fit_func, params=hyperparams)
 
 
 @struct.dataclass
@@ -350,11 +367,10 @@ def fit(
             approach is used:
             - MetalogFitMethod.OLS: Ordinary Least Squares (no regularization)
             - MetalogFitMethod.Lasso: L1 regularization
-            - MetalogFitMethod.Feasible: Best feasible least-squares fit a*
-              (always returns a valid metalog)
+            - MetalogFitMethod.Feasible: Best least-squares fit among valid metalogs
         regression_hyperparams: Optional regularization hyperparameters for controlling
             the fitting process when using LASSO regression method.
-            This parameter is ignored when method=OLS. If None, default hyperparameters
+            Must be None for OLS and Feasible. If None, default hyperparameters
             are used. Must be an instance of LassoParameters for MetalogFitMethod.Lasso.
 
     Returns:
@@ -364,10 +380,15 @@ def fit(
         distribution with strictly positive PDF values.
 
     Raises:
-        TypeError: If metalog_params.method is not a valid MetalogFitMethod instance.
+        TypeError: If metalog_params.method is not a valid MetalogFitMethod instance,
+            or if regression_hyperparams is given for OLS or Feasible.
         checkify.JaxRuntimeError: If the fitted distribution produces non-positive
             PDF values, indicating an infeasible fit. This validation is performed
             by ``assert_fitted()`` before returning.
+        checkify.JaxRuntimeError: For OLS and Feasible, if the basis matrix is rank
+            deficient so the fit is not unique (e.g. n = k symmetric probabilities
+            with 7, 11, 15, ... terms; Baucells et al. 2025, Proposition 2), or if
+            Feasible cannot certify its result.
 
     Example:
         Basic usage with OLS (no regularization):
@@ -399,7 +420,7 @@ def fit(
 
     Note:
         - The regression_hyperparams parameter is only applicable for LASSO method.
-          It is ignored when using OLS.
+          Passing it with OLS or Feasible raises a TypeError.
         - If regression_hyperparams is None, sensible defaults are used for each method.
         - For production use, consider tuning regularization hyperparameters via
           cross-validation to prevent overfitting while maintaining good fit quality.
@@ -408,7 +429,7 @@ def fit(
         fit_spt_metalog: Alternative fitting method using Symmetric Percentile Triplet.
         MetalogInputData.from_values: Required method for creating validated input data.
         metalog_jax.regression.lasso.LassoParameters: Hyperparameters for LASSO regression.
-        metalog_jax.feasibility.best_feasible_fit: Best feasible fit (Metalog 2.0).
+        metalog_jax.feasibility.best_feasible_fit: Best feasible fit (Baucells et al.).
 
     References:
         Keelin, T. W. (2016). The Metalog Distributions. Decision Analysis, 13(4),
@@ -422,6 +443,8 @@ def fit(
     target = Metalog.get_target(data=data, metalog_params=metalog_params)
 
     fit_method = _get_fit_function(metalog_params.method, regression_hyperparams)
+    if metalog_params.method != MetalogFitMethod.Lasso:  # Lasso is regularized
+        assert_full_column_rank(target)
     model = fit_method(target, quantiles)
     metalog = Metalog(metalog_params=metalog_params, a=model.weights)
     metalog.assert_fitted()
@@ -544,29 +567,29 @@ def fit_spt_metalog(
     def _k_alpha(alpha) -> float:
         """Compute the k_alpha correction factor for SPT feasibility constraints.
 
-        Calculates a correction factor used in feasibility checks for bounded and
-        semi-bounded SPT metalog distributions. This factor appears in the constraints
-        that ensure the fitted distribution produces valid probability densities.
+        The SPT feasibility checks (for every boundedness) require the median's
+        relative position ``r`` to satisfy ``k_alpha < r < 1 - k_alpha``, which is
+        the 3-term feasibility condition ``|a3| / a2 < THETA_3`` rewritten for the
+        quantile triplet.
 
-        The formula is: k_alpha = 0.5 * (1 - 1.66711) * (0.5 - alpha)
-
-        The constant 1.66711 appears in Keelin's SPT formulation and represents
-        a theoretical bound related to the metalog basis functions.
+        The formula is: ``k_alpha = 0.5 * (1 - THETA_3 * (0.5 - alpha))``, where
+        ``THETA_3`` (about 1.667113) is the exact bound of Baucells et al. (2025),
+        which Keelin (2016) rounds to 1.66711.
 
         Args:
             alpha: Lower percentile parameter in (0, 0.5), representing the
                 symmetric percentile triplet's lower tail probability.
 
         Returns:
-            Correction factor k_alpha used in feasibility constraints. The value
-            is always negative for valid alpha in (0, 0.5).
+            Correction factor k_alpha used in feasibility constraints. It lies in
+            (0.0832, 0.5) for alpha in (0, 0.5).
 
         Note:
             This function is JIT-compiled for performance. The correction factor
             is used to check whether quantiles fall within acceptable ranges that
             guarantee a valid PDF (positive density everywhere).
         """
-        return 0.5 * (1 - (1.66711 * (0.5 - alpha)))
+        return 0.5 * (1 - (THETA_3 * (0.5 - alpha)))
 
     @jax.jit
     def _log_term(alpha: float) -> float:

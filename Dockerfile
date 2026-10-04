@@ -35,8 +35,9 @@ WORKDIR /app
 # Copy dependency files
 COPY pyproject.toml uv.lock ./
 
-# Install all dependencies (base + all groups)
-RUN uv sync --frozen --all-groups
+# Install all dependencies (base + all groups). The project source is not copied into
+# the image, so skip installing metalog-jax itself (pyproject sets tool.uv.package).
+RUN uv sync --frozen --no-install-project --all-groups
 
 # Default command
 CMD ["/bin/bash"]

@@ -641,6 +641,28 @@ class GetFitFunctionTest(absltest.TestCase):
             _get_fit_function("invalid")
         self.assertIn("not type MetalogFitMethod", str(ctx.exception))
 
+    def test_hyperparams_rejected_for_methods_without_them(self):
+        """Test OLS and Feasible raise a clear TypeError when given hyperparams."""
+        from metalog_jax.base import MetalogFitMethod
+        from metalog_jax.metalog import _get_fit_function
+        from metalog_jax.regression import LassoParameters
+
+        params = LassoParameters(
+            lam=0.1,
+            learning_rate=1e-3,
+            num_iters=1000,
+            tol=1e-6,
+            momentum=0.9,
+        )
+        for method in (MetalogFitMethod.OLS, MetalogFitMethod.Feasible):
+            with self.subTest(method=method.name):
+                with self.assertRaises(TypeError) as ctx:
+                    _get_fit_function(method, params)
+                self.assertIn(
+                    f"MetalogFitMethod.{method.name} takes no hyperparameters",
+                    str(ctx.exception),
+                )
+
     def test_all_methods_in_dispatch(self):
         """Test all MetalogFitMethod values are in dispatch table."""
         from metalog_jax.base import MetalogFitMethod

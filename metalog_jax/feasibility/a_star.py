@@ -14,9 +14,14 @@ mirrors ``find_a_star`` in the authors' reference code, with these differences:
   under ``jit`` and can be ``vmap``-ed over many datasets.
 * Violations are found on a logit grid (reaching y ~ 1e-16 from either edge) with
   golden-section refinement, then Algorithm 1 plus the Proposition 5 tail tests as
-  an exact fallback and final certificate.
-* ``epsilon`` and ``tol`` are relative to the spread of x, so results do not depend
-  on the units of the data.
+  an exact fallback. A point is a violation when G(y) < 0 beyond rounding, the same
+  sign test :func:`check_feasibility` uses, and the final certificate is
+  :func:`check_feasibility` itself.
+* As in the paper, each iteration adds every flagged point: all confirmed grid
+  minima (at least ``floor((k + 1) / 2) + 1`` are refined, the most G can have) or
+  every inflection point with ``M' < 0`` plus any infeasible tail.
+* ``epsilon`` is relative to the spread of x, so results do not depend on the units
+  of the data.
 
 Note: "a*" is the paper's name for the optimal coefficient vector; this is not the
 A* graph-search algorithm.
@@ -36,16 +41,25 @@ import chex
 import jax
 import jax.numpy as jnp
 from flax import struct
+from jax.experimental import checkify
 
-from metalog_jax.feasibility.analysis import tail_feasibility
+from metalog_jax.feasibility.analysis import (
+    check_feasibility,
+    tail_feasibility,
+    zero_test_width,
+)
 from metalog_jax.feasibility.engine import (
     Engine,
     TermOrder,
     get_engine,
     inflection_points,
 )
-from metalog_jax.regression.base import RegressionModel
+from metalog_jax.regression.base import RegressionModel, has_full_column_rank
 
+NOT_CERTIFIED_MESSAGE = (
+    "MetalogFitMethod.Feasible could not certify its fit as feasible: the exchange "
+    "method stopped (iteration or cut limit) with M'(y) < 0 somewhere."
+)
 UCORNER = 1000.0  # sigmoid(+-1000) is exactly 1/0 in float64, so G there is s(1)/s(0)
 _GOLD = 0.6180339887498949
 
@@ -61,7 +75,10 @@ class FeasibleFitResult:
         rss_ols: Residual sum of squares of ``a_ols``.
         iterations: Number of QP solves (0 when OLS is already feasible).
         converged: The exchange loop found no remaining violation.
-        feasible: Air-tight certificate (Algorithm 1 + tails) for ``a_star``.
+        feasible: Air-tight certificate for ``a_star``: :func:`check_feasibility`
+            (Algorithm 1 + Proposition 5, exact up to rounding).
+        full_rank: The basis matrix has full column rank, so ``a_ols`` and ``a_star``
+            are unique (Proposition 2 describes when it does not).
         cut_points: Probabilities where cuts were placed, NaN-padded.
     """
 
@@ -72,6 +89,7 @@ class FeasibleFitResult:
     iterations: chex.Array
     converged: chex.Array
     feasible: chex.Array
+    full_rank: chex.Array
     cut_points: chex.Array
 
 
@@ -96,6 +114,12 @@ def design_matrix(engine: Engine, y: chex.Array) -> chex.Array:
 def _G(engine, a, u):
     mu, s = engine.split(a)
     return engine.level(1, mu, s, u)
+
+
+def _G_sign(engine, a, u, width):
+    """Sign of G (and M') at sigmoid(u), 0 within rounding (see zero_test_width)."""
+    mu, s = engine.split(a)
+    return engine.level_sign(1, mu, s, u, width)
 
 
 def _cut_rows(engine, u):
@@ -174,28 +198,44 @@ def _golden_min(f, lo, hi, iters: int = 90):
 
 
 def _violations(engine, a, grid, n_new, tol):
-    """Up to ``n_new`` violated points (logit u) of G and a validity mask."""
+    """Points (logit u) where G(y) < 0 and a validity mask (Algorithm 2, Lines 5-6).
+
+    Line 5: the grid's negative local minima of G, most negative first, refined by
+    golden section. At least ``istar + 1 = floor((k + 1) / 2) + 1`` are refined, the
+    most G can have: G = y(1-y) M' is itself a metalog-type function with one more
+    term in each polynomial, so Proposition 1 bounds its critical points. Line 6, if
+    none is confirmed: every inflection point with ``M' < 0`` (Algorithm 1), plus any
+    infeasible tail (Proposition 5). As in the paper, all of them are returned. A
+    point counts only when G is negative beyond rounding, the test
+    :func:`check_feasibility` uses.
+    """
+    width = zero_test_width(tol)
     g = jax.vmap(lambda uu: _G(engine, a, uu))(grid)
     left = jnp.concatenate([jnp.array([jnp.inf]), g[:-1]])
     right = jnp.concatenate([g[1:], jnp.array([jnp.inf])])
-    score = jnp.where((g <= left) & (g <= right) & (g < -tol), g, jnp.inf)
-    _, idx = jax.lax.top_k(-score, n_new)
+    score = jnp.where((g <= left) & (g <= right) & (g < 0), g, jnp.inf)
+    _, idx = jax.lax.top_k(-score, max(n_new, engine.istar + 1))
     lo = jnp.concatenate([grid[:1], grid[:-1]])[idx]
     hi = jnp.concatenate([grid[1:], grid[-1:]])[idx]
     u_grid = jax.vmap(lambda l, h: _golden_min(lambda uu: _G(engine, a, uu), l, h))(
         lo, hi
     )
-    g_grid = jax.vmap(lambda uu: _G(engine, a, uu))(u_grid)
-    m_grid = jnp.isfinite(score[idx]) & (g_grid < -tol)
+    neg_grid = jax.vmap(lambda uu: _G_sign(engine, a, uu, width))(u_grid) < 0
+    m_grid = jnp.isfinite(score[idx]) & neg_grid
     # exact fallback: roots of M'' where M' < 0, and infeasible tails
     ur, mr = inflection_points(engine, a)
-    bad_root = mr & (jax.vmap(lambda uu: _G(engine, a, uu))(ur) < -tol)
+    bad_root = mr & (jax.vmap(lambda uu: _G_sign(engine, a, uu, width))(ur) < 0)
     t0, t1 = tail_feasibility(engine, a, tol)
     u_fb = jnp.concatenate([ur, jnp.array([-UCORNER, UCORNER])])
     m_fb = jnp.concatenate([bad_root, jnp.array([~t0, ~t1])])
-    pad = max(0, n_new - u_fb.shape[0])
-    u_fb = jnp.concatenate([u_fb, jnp.zeros(pad)])[:n_new]
-    m_fb = jnp.concatenate([m_fb, jnp.zeros(pad, bool)])[:n_new]
+    # One static width fits both paths, so no candidate is ever truncated
+    n_out = max(u_grid.shape[0], u_fb.shape[0])
+
+    def pad(v, fill):
+        return jnp.concatenate([v, jnp.full(n_out - v.shape[0], fill, v.dtype)])
+
+    u_grid, m_grid = pad(u_grid, 0.0), pad(m_grid, False)
+    u_fb, m_fb = pad(u_fb, 0.0), pad(m_fb, False)
     use_grid = jnp.any(m_grid)
     return jnp.where(use_grid, u_grid, u_fb), jnp.where(use_grid, m_grid, m_fb)
 
@@ -243,12 +283,6 @@ def _solve(
     )
     a, U, M, it, done = jax.lax.while_loop(cond, body, init)
 
-    ur, mr = inflection_points(engine, a)
-    roots_ok = jnp.all(
-        jnp.where(mr, jax.vmap(lambda uu: _G(engine, a, uu))(ur) >= -tol, True)
-    )
-    t0, t1 = tail_feasibility(engine, a, tol)
-
     shift = jnp.zeros(engine.num_terms).at[engine.mu_idx[0]].set(x_mid)
     a_star, a_ls = a * x_scale + shift, a_ols * x_scale + shift
     rss = lambda c: jnp.sum((x - Y @ c) ** 2)  # noqa: E731
@@ -259,7 +293,8 @@ def _solve(
         rss_ols=rss(a_ls),
         iterations=jnp.where(done, it - 1, it),
         converged=done,
-        feasible=roots_ok & t0 & t1,
+        feasible=check_feasibility(engine, a, tol).feasible,
+        full_rank=has_full_column_rank(Y),
         cut_points=jnp.where(M, jax.nn.sigmoid(U), jnp.nan),
     )
 
@@ -270,7 +305,7 @@ def best_feasible_fit(
     num_terms: int,
     order: TermOrder = TermOrder.KEELIN_2016,
     epsilon: float = 1e-6,
-    tol: float = 1e-9,
+    tol: float = 0.0,
     max_cuts: int = 64,
     n_new: int = 8,
     max_iter: int = 60,
@@ -285,14 +320,19 @@ def best_feasible_fit(
         order: Basis ordering (``KEELIN_2016`` matches ``metalog_jax``; use
             ``METALOG_2`` to reproduce the paper and the reference code).
         epsilon: Margin in ``G(y) >= epsilon``, relative to ``max|x - median(x)|``.
-        tol: Violation tolerance, in the same relative units.
+        tol: Extra slack for the violation and certificate sign tests, relative to
+            the magnitude of G's terms. With 0 (the default) a violation is any
+            ``G(y) < 0`` beyond rounding, as in the paper.
         max_cuts: Capacity of the cut buffer (static).
-        n_new: Maximum cuts added per iteration (static).
+        n_new: Minimum number of grid minima refined per iteration (static); at
+            least ``floor((k + 1) / 2) + 1`` are always refined.
         max_iter: Maximum number of exchange iterations (static).
         n_grid: Number of logit grid points used to locate violations (static).
 
     Returns:
-        FeasibleFitResult. Check ``feasible`` (the certificate) and ``converged``.
+        FeasibleFitResult. Check ``feasible`` (the certificate), ``converged`` and
+        ``full_rank`` (with n = k symmetric probabilities the Keelin 2016 basis is
+        singular for 7, 11, 15, ... terms; use ``METALOG_2`` or more quantiles).
 
     Example:
         >>> import jax.numpy as jnp
@@ -337,6 +377,10 @@ def fit_feasible(X: chex.Array, y: chex.Array) -> FeasibleModel:
     Returns:
         FeasibleModel whose ``weights`` are the best feasible coefficients.
 
+    Raises:
+        checkify.JaxRuntimeError: If the result cannot be certified feasible (the
+            exchange loop hit its iteration or cut limit). ``vmap`` compatible.
+
     References:
         Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
         Properties of the Metalog Distribution. Darden Business School Working
@@ -348,10 +392,11 @@ def fit_feasible(X: chex.Array, y: chex.Array) -> FeasibleModel:
         jnp.asarray(X, jnp.float64),
         jnp.asarray(y, jnp.float64),
         1e-6,
-        1e-9,
+        0.0,
         64,
         8,
         60,
         2049,
     )
+    checkify.check(res.feasible, NOT_CERTIFIED_MESSAGE)
     return FeasibleModel(weights=res.a_star)

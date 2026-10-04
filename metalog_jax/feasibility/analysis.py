@@ -21,7 +21,14 @@ import jax.numpy as jnp
 from flax import struct
 
 from metalog_jax.feasibility._exact import i_matrix
-from metalog_jax.feasibility.engine import Engine, _horner, _poly_der, inflection_points
+from metalog_jax.feasibility.engine import (
+    EPS,
+    Engine,
+    _horner,
+    _horner_abs,
+    _poly_der,
+    inflection_points,
+)
 
 
 @struct.dataclass
@@ -55,37 +62,67 @@ def feasibility_function(
     return engine.level(1, mu, s, u)
 
 
+def zero_test_width(tol: float = 0.0) -> chex.Numeric:
+    """Width of the zero tests, in machine epsilons of the terms' magnitude.
+
+    A value counts as zero when ``|v| <= width * eps * magnitude``, where
+    ``magnitude`` is the sum of the absolute values of the terms that produced ``v``
+    (a running bound on its rounding error). ``tol`` adds slack relative to the same
+    magnitude; ``tol = 0`` decides every sign exactly up to rounding.
+    """
+    return 64.0 + tol / EPS
+
+
+def _sign(v: chex.Numeric, mag: chex.Numeric, width: chex.Numeric) -> chex.Numeric:
+    """Sign of ``v``, or 0 when ``|v|`` is within ``width * eps * mag``."""
+    return jnp.where(jnp.abs(v) <= width * EPS * mag, 0.0, jnp.sign(v))
+
+
 def tail_feasibility(
-    engine: Engine, a: chex.Array, tol: float
+    engine: Engine, a: chex.Array, tol: float = 0.0
 ) -> tuple[chex.Array, chex.Array]:
-    """Proposition 5 tail conditions at y -> 0 and y -> 1."""
-    mu, s = engine.split(a)
-    out = []
-    for x0, sgn in ((-0.5, -1.0), (0.5, 1.0)):
-        s0 = _horner(s, x0)
-        s1 = _horner(_poly_der(s, 1), x0)
-        m1 = _horner(_poly_der(mu, 1), x0)
-        flat = jnp.abs(s0) <= tol
-        out.append(
-            (s0 > tol)
-            | (flat & (sgn * s1 > tol))
-            | (flat & (jnp.abs(s1) <= tol) & (m1 >= -tol))
-        )
-    return out[0], out[1]
+    """Proposition 5 tail conditions at y -> 0 and y -> 1.
 
-
-def check_feasibility(
-    engine: Engine, a: chex.Array, tol: float = 1e-9
-) -> FeasibilityReport:
-    """Air-tight feasibility test (Proposition 5 with Algorithm 1).
-
-    Unlike a grid test this cannot miss a negative-density region: ``M'`` is checked
-    exactly at every local minimum (the roots of ``M''``) plus both tails.
+    Each of ``s``, ``s'`` and ``mu'`` at the edge counts as zero only within its own
+    rounding error (see :func:`zero_test_width`), so a small but resolved ``s(0) > 0``
+    is tail feasible whatever the scale of ``a``.
 
     Args:
         engine: Engine for the coefficient layout.
         a: Coefficients, shape (k,).
-        tol: Tolerance, relative to ``max|a|``, for zero tests.
+        tol: Extra zero-test slack, relative to the terms' magnitude.
+
+    Returns:
+        ``(feasible at y -> 0, feasible at y -> 1)``.
+    """
+    width = zero_test_width(tol)
+    mu, s = engine.split(a)
+    ds, dmu = _poly_der(s, 1), _poly_der(mu, 1)
+    out = []
+    for x0, sgn in ((-0.5, -1.0), (0.5, 1.0)):
+        s0 = _sign(_horner(s, x0), _horner_abs(s, x0), width)
+        s1 = _sign(_horner(ds, x0), _horner_abs(ds, x0), width)
+        m1 = _sign(_horner(dmu, x0), _horner_abs(dmu, x0), width)
+        zero = s0 == 0
+        out.append((s0 > 0) | (zero & (sgn * s1 > 0)) | (zero & (s1 == 0) & (m1 >= 0)))
+    return out[0], out[1]
+
+
+def check_feasibility(
+    engine: Engine, a: chex.Array, tol: float = 0.0
+) -> FeasibilityReport:
+    """Air-tight feasibility test (Proposition 5 with Algorithm 1).
+
+    Unlike a grid test this cannot miss a negative-density region: ``M'`` is checked
+    at every root of ``M''`` (its local extrema) plus both tails. Every sign is
+    decided exactly up to rounding (see :func:`zero_test_width`), so the verdict does
+    not depend on the scale of ``a``.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        a: Coefficients, shape (k,).
+        tol: Extra zero-test slack, relative to the terms' magnitude (0: exact up
+            to rounding).
 
     Returns:
         FeasibilityReport.
@@ -95,16 +132,16 @@ def check_feasibility(
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
     """
+    width = zero_test_width(tol)
     scale = jnp.maximum(jnp.max(jnp.abs(a)), 1e-300)
-    an = a / scale  # scale-free: the check does not depend on the units of x
+    an = a / scale  # keeps Algorithm 1 in range; the sign tests are scale-free
     mu, s = engine.split(an)
     u, m = inflection_points(engine, an)
     g = jax.vmap(lambda uu: engine.level(1, mu, s, uu))(u)
+    g_sign = jax.vmap(lambda uu: engine.level_sign(1, mu, s, uu, width))(u)
     w = jax.nn.sigmoid(u) * jax.nn.sigmoid(-u)
     m3 = jax.vmap(lambda uu: engine.level_sign(3, mu, s, uu))(u)
-    interior = jnp.all(
-        jnp.where(m, g >= -tol * jnp.maximum(w, 1e-300) - 64 * 2.2e-16, True)
-    )
+    interior = jnp.all(jnp.where(m, g_sign >= 0, True))
     t0, t1 = tail_feasibility(engine, an, tol)
     nan = jnp.nan
     return FeasibilityReport(
@@ -118,9 +155,45 @@ def check_feasibility(
     )
 
 
-def is_feasible(engine: Engine, a: chex.Array, tol: float = 1e-9) -> chex.Array:
+def is_feasible(engine: Engine, a: chex.Array, tol: float = 0.0) -> chex.Array:
     """Shorthand for ``check_feasibility(engine, a, tol).feasible``."""
     return check_feasibility(engine, a, tol).feasible
+
+
+def highest_mode(
+    engine: Engine, a: chex.Array
+) -> tuple[chex.Numeric, chex.Numeric, chex.Array]:
+    """Highest-density interior mode of a feasible unbounded metalog (Algorithm 1).
+
+    The density is ``1 / M'(y)``, so among the modes (roots of ``M''`` where the
+    third derivative is non-negative) the highest has the smallest slope. A binding
+    mode of a best feasible fit, where ``M'(y)`` is close to 0, has the highest
+    density.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        a: Coefficients of a feasible unbounded metalog, shape (k,).
+
+    Returns:
+        ``(x, y, found)``: the mode's quantile ``M(y)``, its probability ``y``, and
+        whether an interior mode exists (a uniform metalog, for example, has none).
+
+    References:
+        Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
+        Properties of the Metalog Distribution. Darden Business School Working
+        Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
+    """
+    scale = jnp.maximum(jnp.max(jnp.abs(a)), 1e-300)
+    u, m = inflection_points(engine, a / scale)
+    mu, s = engine.split(a)
+    w = jnp.maximum(jax.nn.sigmoid(u) * jax.nn.sigmoid(-u), 1e-300)
+    slope = jax.vmap(lambda uu: engine.level(1, mu, s, uu))(u) / w
+    up = jax.vmap(lambda uu: engine.level_sign(3, mu, s, uu))(u) >= 0
+    is_mode = m & up
+    i = jnp.argmin(jnp.where(is_mode, slope, jnp.inf))
+    x = 0.5 * jnp.tanh(0.5 * u[i])
+    value = _horner(mu, x) + _horner(s, x) * u[i]
+    return value, jax.nn.sigmoid(u[i]), jnp.any(is_mode)
 
 
 # ----------------------------------------------------------------------------------

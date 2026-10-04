@@ -1,6 +1,6 @@
 [project]
 name = "metalog-jax"
-version = "2.0.0"
+version = "2.0.1"
 description = "A JAX implementation of the Metalog distribution for flexible probability modeling."
 readme = "README.md"
 license = "MIT"
@@ -44,6 +44,11 @@ Issues = "https://github.com/tjefferies/metalog_jax/issues"
 
 [tool.setuptools.packages.find]
 include = ["metalog_jax*"]
+
+# Install metalog-jax itself (editable) on `uv sync`, so examples and notebooks can
+# import it. Without a [build-system] table uv otherwise treats this as a virtual project.
+[tool.uv]
+package = true
 
 [dependency-groups]
 dev = [

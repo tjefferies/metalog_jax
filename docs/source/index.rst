@@ -11,7 +11,9 @@ differentiation support.
 Features
 --------
 
-- **Multiple regression methods**: OLS and LASSO
+- **Multiple fit methods**: OLS, LASSO, and always-feasible fitting (Baucells et al. 2025)
+- **Exact moments and modes**: Closed-form mean, variance, skewness and kurtosis, and
+  the exact mode, for unbounded metalogs
 - **JAX integration**: Full support for JIT compilation and autodiff
 - **Grid search**: Hyperparameter optimization for regularized methods
 - **Flexible fitting**: Support for bounded and unbounded distributions
@@ -34,10 +36,10 @@ Quick Example
        precomputed_quantiles=False  # Raw samples, not precomputed quantiles
    )
 
-   # Configure metalog parameters with OLS
+   # Configure metalog parameters (Feasible always returns a valid distribution)
    metalog_params = MetalogParameters(
        boundedness=MetalogBoundedness.UNBOUNDED,
-       method=MetalogFitMethod.OLS,
+       method=MetalogFitMethod.Feasible,
        lower_bound=0.0,
        upper_bound=0.0,
        num_terms=5
@@ -62,6 +64,7 @@ Contents
    getting-started
    basic_usage
    fitting_grids
+   feasible_fits
 
 .. toctree::
    :maxdepth: 2

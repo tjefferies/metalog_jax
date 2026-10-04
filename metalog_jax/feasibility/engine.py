@@ -1,5 +1,5 @@
 # Copyright: Travis Jefferies 2026
-"""Static-shape engine for Metalog 2.0 feasibility (Algorithm 1 of Baucells et al.).
+"""Static-shape engine for the feasibility algorithms of Baucells et al. (Algorithm 1).
 
 A k-term metalog is written as ``M(y) = mu(x) + s(x) * logit(y)`` with ``x = y - 1/2``.
 The engine splits a coefficient vector into the ascending coefficients of ``mu`` and
@@ -14,7 +14,7 @@ Two term orderings are supported:
 * ``TermOrder.METALOG_2`` - the Metalog 2.0 ordering of the paper:
   1, L, xL, x, x^2, x^2 L, x^3 L, x^3, x^4, ...
 
-They coincide for k <= 5.
+They coincide for k <= 6 and differ from the 7th term on (paper, footnote 2).
 
 All loops are over static sizes, so every public function here is ``jit``/``vmap``
 compatible.
@@ -41,7 +41,14 @@ BISECTION_STEPS = 200
 
 
 class TermOrder(IntEnum):
-    """Ordering of the metalog basis terms."""
+    """Ordering of the metalog basis terms.
+
+    Attributes:
+        KEELIN_2016: Ordering used by ``metalog_jax`` (Keelin 2016):
+            1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
+        METALOG_2: Metalog 2.0 ordering of the paper:
+            1, L, xL, x, x^2, x^2 L, x^3 L, x^3, x^4, ...
+    """
 
     KEELIN_2016 = auto()
     METALOG_2 = auto()
@@ -127,7 +134,11 @@ class Engine:
         trans = _horner(pm, x) + _horner(ps, x) * u
         trans_mag = _horner_abs(pm, x) + _horner_abs(ps, x) * jnp.abs(u)
         rat = jnp.where(y < 0.5, _horner(hy, y), _horner(hz, z))
-        rat_mag = jnp.where(y < 0.5, _horner_abs(hy, y), _horner_abs(hz, z))
+        # Rounding bound of the rational part: |s| @ |rows| keeps the size of the
+        # terms that cancel inside s @ rows (y, z >= 0, so Horner is already absolute)
+        abs_s = jnp.abs(s)
+        my, mz = abs_s @ jnp.abs(rows_y), abs_s @ jnp.abs(rows_z)
+        rat_mag = jnp.where(y < 0.5, _horner(my, y), _horner(mz, z))
         logw = -jax.nn.softplus(-u) - jax.nn.softplus(u)  # log(y(1-y)), stable
         return trans, trans_mag, rat, rat_mag, logw
 
@@ -282,7 +293,8 @@ def inflection_points(engine: Engine, a: chex.Array) -> tuple[chex.Array, chex.A
     Returns:
         ``(u, mask)`` - roots in logit coordinates (``y = sigmoid(u)``), sorted and
         padded with ``UMAX``, and a boolean mask of valid entries. The static capacity
-        is ``engine.istar + 1`` (Proposition 1 bounds the count well below it).
+        is ``2 * engine.istar - 3``, exactly Proposition 1's bound on the roots of
+        ``M''`` (``2 * floor((k - 1) / 2) - 1``), so no root can be dropped.
 
     References:
         Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
