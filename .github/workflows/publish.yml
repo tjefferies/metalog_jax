@@ -22,7 +22,7 @@ jobs:
       id-token: write
     steps:
       - name: Download wheel artifact from Build workflow
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v24
         with:
           workflow: build.yml
           run_id: ${{ github.event.workflow_run.id }}
