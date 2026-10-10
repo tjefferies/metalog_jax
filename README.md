@@ -860,7 +860,7 @@ This runs all 8 checks that CI will run: formatting, linting, type checking, com
 
 1. **Commit** with a clear message: `git commit -m 'Add amazing feature'`
 2. **Push** to your branch: `git push origin feature/amazing-feature`
-3. **Open** a Pull Request with a description of your changes
+3. **Open** a Pull Request against `development` with a description of your changes
 
 > **Note:** Pull Requests with failing CI will not be reviewed. Run `make quality-gate` locally first.
 

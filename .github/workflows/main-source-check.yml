@@ -1,0 +1,21 @@
+# Fails any PR into main whose head is not this repo's `development` branch.
+# GitHub has no "allowed source branches" setting, so the ruleset on main
+# requires this job (source-is-development) as a status check instead.
+name: Main Source Check
+
+on:
+  pull_request:
+    # edited: re-check when a PR is retargeted to main
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+jobs:
+  source-is-development:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require head branch to be development
+        # The repo check stops a fork's own `development` branch from passing
+        if: github.head_ref != 'development' || github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::PRs into main must come from development"
+          exit 1

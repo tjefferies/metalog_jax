@@ -1,0 +1,44 @@
+# Resets `development` to match `main` after every PR merged into main.
+# GitHub refuses to delete the default branch, so instead of delete + recreate
+# this force-moves `development` to the new main commit. The end state is the
+# same, and open PRs into development stay open instead of being auto-closed.
+name: Sync development
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-development
+  cancel-in-progress: false
+
+jobs:
+  reset-development:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      # Set DEV_SYNC_TOKEN only if a ruleset on development blocks GITHUB_TOKEN
+      GH_TOKEN: ${{ secrets.DEV_SYNC_TOKEN || github.token }}
+      MAIN_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Refuse if development has unreleased commits
+        run: |
+          DEV_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/development" --jq .object.sha)
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$DEV_SHA...$MAIN_SHA" --jq .status)
+
+          # identical/ahead: every development commit is already in main.
+          # DEV_SHA == PR head: development itself was just squash/rebase-merged.
+          if [ "$STATUS" != identical ] && [ "$STATUS" != ahead ] && [ "$DEV_SHA" != "$PR_HEAD_SHA" ]; then
+            echo "::error::development has commits that are not in main; not resetting. Merge main into development instead."
+            exit 1
+          fi
+
+      - name: Reset development to main
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/development" \
+            -f sha="$MAIN_SHA" -F force=true
