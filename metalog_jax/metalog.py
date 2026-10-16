@@ -140,7 +140,8 @@ class SPTMetalog(MetalogBase):
             that determines which quantiles are used (alpha, 0.5, 1-alpha).
         a: Coefficient vector of shape (3,) representing the three fitted
             metalog distribution parameters. These are computed using closed-form
-            formulas specific to the boundedness type.
+            formulas specific to the boundedness type. A list or tuple is
+            converted to a float JAX array on construction.
 
     Examples:
         Fit an unbounded SPT metalog from data:
@@ -246,7 +247,8 @@ class Metalog(MetalogBase):
         a: Coefficient vector of shape (num_terms,) representing the fitted
             metalog distribution parameters. Each coefficient corresponds to
             one basis function in the metalog expansion. These are computed
-            via regression from the input data.
+            via regression from the input data. A list or tuple is converted
+            to a float JAX array on construction.
 
     Examples:
         Fit an unbounded metalog with 9 terms using OLS:

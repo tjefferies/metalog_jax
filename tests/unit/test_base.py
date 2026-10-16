@@ -6,6 +6,7 @@ behavior across various configurations and edge cases.
 """
 # Copyright: Travis Jefferies 2026
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
@@ -15,9 +16,11 @@ from metalog_jax.base import (
     MetalogFitMethod,
     MetalogInputData,
     MetalogParameters,
+    MetalogRandomVariableParameters,
+    SPTMetalogParameters,
 )
-from metalog_jax.metalog import Metalog
-from metalog_jax.utils import DEFAULT_Y
+from metalog_jax.metalog import Metalog, SPTMetalog
+from metalog_jax.utils import DEFAULT_Y, JaxUniformDistributionParameters
 
 
 class MetalogBoundednessTest(parameterized.TestCase):
@@ -1093,6 +1096,147 @@ class MetalogBaseLoadsTest(parameterized.TestCase):
         self.assertIsInstance(loaded_results.boundedness, MetalogBoundedness)
         self.assertIsInstance(loaded_results.metalog_params.method, MetalogFitMethod)
         self.assertIsInstance(loaded_results.a, jnp.ndarray)
+
+
+class MetalogCoefficientCoercionTest(parameterized.TestCase):
+    """Regression tests for issue #9: list or tuple ``a`` must behave like an array."""
+
+    BOUNDED_PARAMS = MetalogParameters(
+        boundedness=MetalogBoundedness.BOUNDED,
+        method=MetalogFitMethod.OLS,
+        lower_bound=0.0,
+        upper_bound=100.0,
+        num_terms=9,
+    )
+    BOUNDED_COEFFICIENTS = [
+        0.05007640896849727,
+        -0.002588965892559015,
+        0.029259325649691956,
+        0.04859112402900226,
+        -0.11992935334985189,
+        0.031077557519399026,
+        0.0318654614286282,
+        -0.11876134898672946,
+        0.611456711514515,
+    ]
+
+    def setUp(self):
+        """Build the array-backed reference distribution."""
+        super().setUp()
+        self.reference = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=jnp.array(self.BOUNDED_COEFFICIENTS)
+        )
+        self.y = jnp.array([0.1, 0.5, 0.9])
+
+    @parameterized.named_parameters(
+        ("list", list),
+        ("tuple", tuple),
+    )
+    def test_sequence_coerced_to_float64_jax_array(self, container):
+        """Test that a list or tuple is stored as a float64 jax.Array."""
+        m = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=container(self.BOUNDED_COEFFICIENTS)
+        )
+
+        self.assertIsInstance(m.a, jax.Array)
+        self.assertEqual(m.a.dtype, jnp.float64)
+        self.assertEqual(m.a.shape, (9,))
+        np.testing.assert_array_equal(m.a, self.reference.a)
+
+    @parameterized.named_parameters(
+        ("numpy_array", np.array),
+        ("jax_array", jnp.array),
+    )
+    def test_array_passed_through_unchanged(self, array_fn):
+        """Test that array coefficients are stored as given, not copied."""
+        a = array_fn(self.BOUNDED_COEFFICIENTS)
+        m = Metalog(metalog_params=self.BOUNDED_PARAMS, a=a)
+
+        self.assertIs(m.a, a)
+
+    def test_integer_list_coerced_to_float(self):
+        """Test that integer coefficients become float64."""
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+        m = Metalog(metalog_params=params, a=[0, 1, 0])
+
+        self.assertEqual(m.a.dtype, jnp.float64)
+        np.testing.assert_allclose(m.ppf(self.y), jnp.log(self.y / (1 - self.y)))
+
+    @parameterized.named_parameters(
+        ("list", list),
+        ("tuple", tuple),
+    )
+    def test_sequence_matches_array(self, container):
+        """Test that every distribution method matches the array-backed reference."""
+        m = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=container(self.BOUNDED_COEFFICIENTS)
+        )
+        rv_params = MetalogRandomVariableParameters(
+            prng_params=JaxUniformDistributionParameters(seed=1),
+            size=10_000,
+        )
+
+        np.testing.assert_array_equal(m.rvs(rv_params), self.reference.rvs(rv_params))
+        np.testing.assert_array_equal(m.pdf(self.y), self.reference.pdf(self.y))
+        np.testing.assert_array_equal(m.ppf(self.y), self.reference.ppf(self.y))
+        np.testing.assert_array_equal(m.q(self.y), self.reference.q(self.y))
+        self.assertEqual(m.cdf(51.0), self.reference.cdf(51.0))
+        self.assertEqual(m.mean, self.reference.mean)
+        self.assertEqual(m.median, self.reference.median)
+        self.assertEqual(m.std, self.reference.std)
+        self.assertEqual(m.mode, self.reference.mode)
+
+    @parameterized.named_parameters(
+        ("list", list),
+        ("tuple", tuple),
+    )
+    def test_sequence_equality_and_serialization(self, container):
+        """Test __eq__ and a dumps/loads round trip."""
+        m = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=container(self.BOUNDED_COEFFICIENTS)
+        )
+
+        self.assertEqual(m, self.reference)
+        self.assertEqual(Metalog.loads(m.dumps()), m)
+
+    def test_spt_metalog_list_coerced(self):
+        """Test that SPTMetalog inherits the coercion."""
+        params = SPTMetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            alpha=0.1,
+        )
+        coefficients = [10.0, 2.0, 0.5]
+        m = SPTMetalog(metalog_params=params, a=coefficients)
+        reference = SPTMetalog(metalog_params=params, a=jnp.array(coefficients))
+
+        self.assertIsInstance(m.a, jax.Array)
+        np.testing.assert_array_equal(m.ppf(self.y), reference.ppf(self.y))
+
+    def test_pytree_transforms_still_work(self):
+        """Test jit, vmap, eval_shape and tree.map on a list-built distribution."""
+        m = Metalog(metalog_params=self.BOUNDED_PARAMS, a=self.BOUNDED_COEFFICIENTS)
+
+        total = jax.jit(lambda mm: mm.a.sum())(m)
+        np.testing.assert_allclose(total, sum(self.BOUNDED_COEFFICIENTS))
+
+        shape = jax.eval_shape(lambda mm: mm.a * 2, m)
+        self.assertEqual(shape.shape, (9,))
+        self.assertEqual(shape.dtype, jnp.float64)
+
+        self.assertIsNone(jax.tree.map(lambda _: None, m).a)
+
+        batched = jax.tree.map(lambda *xs: jnp.stack(xs), m, self.reference)
+        ppf = jax.vmap(lambda mm: mm._ppf(self.y, 9))(batched)
+        expected = self.reference._ppf(self.y, 9)
+        np.testing.assert_allclose(ppf, jnp.stack([expected, expected]))
 
 
 class MetalogInputDataTest(parameterized.TestCase):
