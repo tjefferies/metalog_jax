@@ -86,7 +86,8 @@ class MetalogBase:
             Can be MetalogParameters (for Metalog) or SPTMetalogParameters
             (for SPTMetalog). Defined in metalog_jax.base.parameters.
         a: Coefficient vector defining the metalog quantile function. Shape is
-            (num_terms,) where num_terms depends on the configuration.
+            (num_terms,) where num_terms depends on the configuration. A list or
+            tuple is converted to a float JAX array on construction.
 
     Example:
         MetalogBase is not instantiated directly. Use Metalog or SPTMetalog:
@@ -113,6 +114,19 @@ class MetalogBase:
 
     metalog_params: Union[SPTMetalogParameters, MetalogParameters]
     a: chex.Numeric
+
+    def __post_init__(self) -> None:
+        """Coerce a list or tuple of coefficients to a float JAX array.
+
+        Every method assumes ``a`` is an array (``jnp.result_type``, ``.shape``,
+        ``.tolist()``, ``@``), so a plain sequence such as hand-copied coefficients
+        would otherwise fail deep inside JAX (issue #9). Only lists and tuples are
+        converted: pytree unflattening under ``jit``/``vmap``/``tree.map`` re-runs
+        ``__init__`` with tracers, ``ShapeDtypeStruct`` or ``None`` as ``a``, and
+        those must pass through untouched.
+        """
+        if isinstance(self.a, (list, tuple)):
+            object.__setattr__(self, "a", jnp.asarray(self.a, dtype=float))
 
     def __eq__(self, other: object) -> bool:
         """Check equality between two metalog distribution instances.
