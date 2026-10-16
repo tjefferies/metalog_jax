@@ -19,7 +19,7 @@ from metalog_jax.base import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.metalog import Metalog, SPTMetalog
+from metalog_jax.metalog import Metalog, SPTMetalog, fit
 from metalog_jax.utils import DEFAULT_Y, JaxUniformDistributionParameters
 
 
@@ -1237,6 +1237,79 @@ class MetalogCoefficientCoercionTest(parameterized.TestCase):
         ppf = jax.vmap(lambda mm: mm._ppf(self.y, 9))(batched)
         expected = self.reference._ppf(self.y, 9)
         np.testing.assert_allclose(ppf, jnp.stack([expected, expected]))
+
+
+class MetalogQuantileAliasTest(parameterized.TestCase):
+    """Regression tests for issue #14: q() must match ppf() for every boundedness."""
+
+    LOWER_BOUND = 2.0
+    UPPER_BOUND = 10.0
+
+    def _params(self, boundedness, num_terms):
+        """Build OLS parameters on [LOWER_BOUND, UPPER_BOUND]."""
+        return MetalogParameters(
+            boundedness=boundedness,
+            method=MetalogFitMethod.OLS,
+            lower_bound=self.LOWER_BOUND,
+            upper_bound=self.UPPER_BOUND,
+            num_terms=num_terms,
+        )
+
+    @parameterized.named_parameters(
+        (
+            "unbounded",
+            MetalogBoundedness.UNBOUNDED,
+            lambda y, lo, hi: jnp.log(y / (1 - y)),
+        ),
+        (
+            "strictly_lower_bound",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            lambda y, lo, hi: lo + y / (1 - y),
+        ),
+        (
+            "strictly_upper_bound",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            lambda y, lo, hi: hi - (1 - y) / y,
+        ),
+        (
+            "bounded",
+            MetalogBoundedness.BOUNDED,
+            lambda y, lo, hi: lo + (hi - lo) * y,
+        ),
+    )
+    def test_q_matches_closed_form(self, boundedness, expected_fn):
+        """Test q() against exact quantiles of a = [0, 1, 0], where M(y) = logit(y)."""
+        m = Metalog(
+            metalog_params=self._params(boundedness, num_terms=3),
+            a=jnp.array([0.0, 1.0, 0.0]),
+        )
+        y = jnp.array([0.1, 0.25, 0.5, 0.75, 0.9])
+
+        np.testing.assert_allclose(
+            m.q(y), expected_fn(y, self.LOWER_BOUND, self.UPPER_BOUND)
+        )
+
+    @parameterized.named_parameters(
+        ("unbounded", MetalogBoundedness.UNBOUNDED),
+        ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND),
+        ("strictly_upper_bound", MetalogBoundedness.STRICTLY_UPPER_BOUND),
+        ("bounded", MetalogBoundedness.BOUNDED),
+    )
+    def test_q_matches_ppf_for_fitted_metalog(self, boundedness):
+        """Test that q() matches ppf() and stays inside the data's range for a fit."""
+        rng = np.random.default_rng(0)
+        x = self.LOWER_BOUND + (self.UPPER_BOUND - self.LOWER_BOUND) * rng.beta(
+            2.0, 5.0, size=1_000
+        )
+        data = MetalogInputData.from_values(
+            x=jnp.asarray(x), y=DEFAULT_Y, precomputed_quantiles=False
+        )
+        m = fit(data, self._params(boundedness, num_terms=5))
+        y = jnp.array([0.01, 0.1, 0.5, 0.9, 0.99])
+        q = m.q(y)
+
+        np.testing.assert_allclose(q, m.ppf(y))
+        self.assertTrue(jnp.all((q > self.LOWER_BOUND) & (q < self.UPPER_BOUND)))
 
 
 class MetalogInputDataTest(parameterized.TestCase):
