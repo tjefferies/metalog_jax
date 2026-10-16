@@ -24,8 +24,9 @@ DOCS_PORT := 5337
 # License allow list (from CI)
 LICENSE_ALLOWED := MIT;BSD;Apache;PSF;Python Software Foundation;ISC;Unlicense;Public Domain;CC0;Zlib;Historical Permission Notice and Disclaimer;Mozilla Public License;Academic Free License;0BSD
 
-# Packages to ignore in license check (dev/docs/security tools)
-LICENSE_IGNORE := metalog-jax Unidecode text-unidecode css-html-js-minify semgrep docutils loro matplotlib-inline
+# Runtime dependencies to license-check: the base install from uv.lock, without
+# dependency groups (dev/docs/security tools) or the gpu extra (NVIDIA CUDA wheels)
+RUNTIME_PKGS = $(shell uv export --frozen --no-default-groups --no-emit-project --no-hashes --no-header --no-annotate --format requirements.txt | sed -E 's/[ =;].*//' | sort -u)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Help Target
@@ -213,10 +214,11 @@ security: semgrep bandit
 # ══════════════════════════════════════════════════════════════════════════════
 
 license-check:
-	@echo "Checking license compliance..."
+	@echo "Checking license compliance of runtime dependencies..."
 	@echo "=== License Compliance Check ==="
-	uv run pip-licenses --format=markdown --ignore-packages $(LICENSE_IGNORE)
-	uv run pip-licenses --ignore-packages $(LICENSE_IGNORE) --partial-match --allow-only="$(LICENSE_ALLOWED)"
+	@test -n "$(RUNTIME_PKGS)" || { echo "ERROR: uv export listed no runtime packages"; exit 1; }
+	uv run pip-licenses --format=markdown --packages $(RUNTIME_PKGS)
+	uv run pip-licenses --packages $(RUNTIME_PKGS) --partial-match --allow-only="$(LICENSE_ALLOWED)"
 	@echo "All runtime dependencies have approved licenses!"
 
 # ══════════════════════════════════════════════════════════════════════════════

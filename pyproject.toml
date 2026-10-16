@@ -123,10 +123,10 @@ possibly-missing-import = "warn"
 possibly-missing-attribute = "ignore"
 
 # Type safety (keep some checks)
-invalid-type-form = "error"
+invalid-type-form = "error"  # includes bytes and f-string annotations
 invalid-type-arguments = "error"
 call-non-callable = "warn"
-non-subscriptable = "ignore"  # JAX arrays are subscriptable at runtime
+not-subscriptable = "ignore"  # JAX arrays are subscriptable at runtime
 not-iterable = "warn"
 
 # Method and class correctness (Google: proper inheritance)
@@ -153,8 +153,6 @@ invalid-exception-caught = "error"
 invalid-raise = "error"
 
 # Type annotation quality
-byte-string-type-annotation = "error"
-fstring-type-annotation = "error"
 raw-string-type-annotation = "error"
 implicit-concatenated-string-type-annotation = "error"
 invalid-syntax-in-forward-annotation = "error"

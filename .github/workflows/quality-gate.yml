@@ -151,14 +151,16 @@ jobs:
         run: |
           echo "=== License Compliance Check ==="
 
-          # Packages to ignore (dev/docs/security tools, not runtime dependencies)
-          # --ignore-packages requires space-separated list
-          IGNORE_PKGS="metalog-jax Unidecode text-unidecode css-html-js-minify semgrep docutils loro matplotlib-inline"
+          # Runtime dependencies only: the base install from uv.lock, without dependency
+          # groups (dev/docs/security tools) or the gpu extra (NVIDIA CUDA wheels)
+          RUNTIME_PKGS=$(uv export --frozen --no-default-groups --no-emit-project --no-hashes --no-header --no-annotate --format requirements.txt | sed -E 's/[ =;].*//' | sort -u)
+          test -n "$RUNTIME_PKGS" || { echo "::error::uv export listed no runtime packages"; exit 1; }
 
-          uv run pip-licenses --format=markdown --ignore-packages $IGNORE_PKGS
+          # --packages requires a space-separated list
+          uv run pip-licenses --format=markdown --packages $RUNTIME_PKGS
 
           ALLOWED="MIT;BSD;Apache;PSF;Python Software Foundation;ISC;Unlicense;Public Domain;CC0;Zlib;Historical Permission Notice and Disclaimer;Mozilla Public License;Academic Free License;0BSD"
-          uv run pip-licenses --ignore-packages $IGNORE_PKGS --partial-match --allow-only="${ALLOWED}"
+          uv run pip-licenses --packages $RUNTIME_PKGS --partial-match --allow-only="${ALLOWED}"
 
           echo "All runtime dependencies have approved licenses!"
 
