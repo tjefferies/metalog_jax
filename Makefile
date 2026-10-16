@@ -5,7 +5,7 @@
 # ║ to match the GitHub Actions pipeline exactly.                                ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-.PHONY: help install format format-check lint typecheck radon radon-mi radon-cc \
+.PHONY: help install format format-check lint typecheck interrogate pydoclint radon radon-mi radon-cc xenon \
         test test-quick coverage-html license-check semgrep bandit sbom security \
         build docs docs-html docs-clean docs-serve docs-live docs-rebuild \
         quality-gate ci clean
@@ -49,11 +49,14 @@ help:
 	@echo "  make format-check     Check formatting (CI: quality-gate.yml/ruff)"
 	@echo "  make lint             Run Ruff linter (CI: quality-gate.yml/ruff)"
 	@echo "  make typecheck        Run ty type checker (CI: quality-gate.yml/ty)"
+	@echo "  make interrogate      Docstring coverage (CI: quality-gate.yml/interrogate)"
+	@echo "  make pydoclint        Google docstring checks (CI: quality-gate.yml/pydoclint)"
 	@echo ""
 	@echo "CODE METRICS"
 	@echo "  make radon            Run both maintainability and complexity checks"
 	@echo "  make radon-mi         Maintainability Index (CI: quality-gate.yml/radon)"
 	@echo "  make radon-cc         Cyclomatic Complexity (CI: quality-gate.yml/radon)"
+	@echo "  make xenon            Fail on complexity thresholds (CI: quality-gate.yml/xenon)"
 	@echo ""
 	@echo "TESTING"
 	@echo "  make test             Run pytest with coverage (CI: quality-gate.yml/pytest)"
@@ -81,7 +84,7 @@ help:
 	@echo "  make docs-rebuild     Clean and rebuild documentation"
 	@echo ""
 	@echo "CI/CD COMPOSITES"
-	@echo "  make quality-gate     Run all 8 quality checks (matches CI quality-gate.yml)"
+	@echo "  make quality-gate     Run all 10 quality checks (matches CI quality-gate.yml)"
 	@echo "  make ci               Run full CI pipeline locally"
 	@echo ""
 	@echo "CLEANUP"
@@ -122,8 +125,16 @@ typecheck:
 	@echo "Running ty type checker..."
 	uv run ty check
 
+interrogate:
+	@echo "Checking docstring coverage (threshold in pyproject.toml)..."
+	uv run interrogate $(PACKAGE)/
+
+pydoclint:
+	@echo "Checking Google-style docstrings (config in pyproject.toml)..."
+	uv run pydoclint $(PACKAGE)/
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Code Metrics (radon)
+# Code Metrics (radon, xenon)
 # ══════════════════════════════════════════════════════════════════════════════
 
 radon-mi:
@@ -135,6 +146,10 @@ radon-cc:
 	uv run radon cc $(PACKAGE)/ -s --average
 
 radon: radon-mi radon-cc
+
+xenon:
+	@echo "Checking complexity thresholds (block B, module A, average A)..."
+	uv run xenon --max-absolute B --max-modules A --max-average A $(PACKAGE)/
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Testing & Coverage
@@ -260,7 +275,7 @@ docs-rebuild: docs-clean docs-html
 # CI/CD Composite Targets
 # ══════════════════════════════════════════════════════════════════════════════
 
-quality-gate: format-check lint typecheck radon test license-check semgrep bandit
+quality-gate: format-check lint typecheck interrogate pydoclint xenon test license-check semgrep bandit
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════════════════════╗"
 	@echo "║                       All quality checks passed!                              ║"

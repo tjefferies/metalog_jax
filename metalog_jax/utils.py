@@ -109,13 +109,13 @@ def assert_probability_range(array: chex.Array) -> None:
         array: Input array to validate.
 
     Raises:
-        AssertionError: If any value is <= 0 or >= 1.
+        ValueError: If any value is <= 0 or >= 1.
 
     Example:
         >>> valid_probs = jnp.array([0.1, 0.5, 0.9])
         >>> assert_probability_range(valid_probs)  # No error
         >>> invalid_probs = jnp.array([0.0, 0.5, 1.0])
-        >>> assert_probability_range(invalid_probs)  # Raises AssertionError
+        >>> assert_probability_range(invalid_probs)  # Raises ValueError
     """
     min_val = jnp.min(array)
     max_val = jnp.max(array)

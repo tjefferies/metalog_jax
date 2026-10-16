@@ -566,7 +566,7 @@ def fit_spt_metalog(
         chex.assert_scalar_positive(float(median - q_alpha))
 
     @jax.jit
-    def _k_alpha(alpha) -> float:
+    def _k_alpha(alpha: float) -> float:
         """Compute the k_alpha correction factor for SPT feasibility constraints.
 
         The SPT feasibility checks (for every boundedness) require the median's

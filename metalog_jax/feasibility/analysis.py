@@ -200,6 +200,7 @@ def highest_mode(
 # Exact moments (Lemma 1 / Proposition 3)
 # ----------------------------------------------------------------------------------
 def _poly_pow(c: chex.Array, n: int, length: int) -> chex.Array:
+    """Return ascending coefficients of ``c**n``, truncated to ``length``."""
     out = jnp.zeros(length).at[0].set(1.0)
     for _ in range(n):
         out = jnp.convolve(out, c)[:length]
