@@ -906,7 +906,7 @@ class MetalogBase:
         """
         ppf = self.ppf(DEFAULT_Y_FULL)
         pdf = self.pdf(DEFAULT_Y_FULL)
-        grid_mode = ppf[pdf.argmax()]
+        grid_mode = ppf[jnp.argmax(pdf)]
         if not self._has_exact_moments():
             return grid_mode
         engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
