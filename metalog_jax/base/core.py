@@ -1080,7 +1080,7 @@ class MetalogBase:
         """Quantile function alias for R metalog package compatibility.
 
         This method provides compatibility with the R metalog package's `qmetalog`
-        function naming convention.
+        function naming convention. Equivalent to ppf().
 
         Args:
             x: Probability values in (0, 1) at which to evaluate the quantile function.
@@ -1092,25 +1092,7 @@ class MetalogBase:
             ValueError: If x contains values outside (0, 1).
             NotFittedError: If the distribution has not been fitted.
         """
-        assert_float_array(x)
-        assert_probability_range(x)
-        self.assert_fitted()
-
-        boundedness = self.boundedness
-        target = MetalogBase._get_target(x, self.num_terms)
-        ppf = target @ self.a
-
-        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
-            lower_bound = self.lower_bound
-            ppf = MetalogBase.strictly_lower_bound_quantile_transform(ppf, lower_bound)
-        elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
-            upper_bound = self.upper_bound
-            ppf = MetalogBase.strictly_upper_bound_quantile_transform(ppf, upper_bound)
-        elif boundedness == MetalogBoundedness.BOUNDED:
-            lower_bound = self.lower_bound
-            upper_bound = self.upper_bound
-            ppf = MetalogBase.bounded_quantile_transform(ppf, lower_bound, upper_bound)
-        return ppf
+        return self.ppf(x)
 
     def p(self, q: chex.Numeric) -> chex.Numeric:
         """Probability function alias for R metalog package compatibility.
