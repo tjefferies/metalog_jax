@@ -31,6 +31,8 @@ import chex
 import jax
 import jax.numpy as jnp
 from flax import struct
+from jax.core import Tracer
+from jax.experimental import checkify
 
 from metalog_jax.base import (
     MetalogBase,
@@ -165,9 +167,9 @@ class SPTMetalog(MetalogBase):
             >>> # Fit the SPT metalog
             >>> spt = fit_spt_metalog(data, params)
             >>>
-            >>> # The median is the data's median
-            >>> float(spt.ppf(jnp.array([0.5]))[0])
-            4.1
+            >>> # The fit passes through the data's 10th, 50th and 90th percentiles
+            >>> spt.ppf(jnp.array([0.1, 0.5, 0.9])).round(2).tolist()
+            [2.08, 4.1, 8.06]
             >>>
             >>> # Summary statistics are properties
             >>> mean, std = spt.mean, spt.std
@@ -458,6 +460,106 @@ def fit(
     return metalog
 
 
+def _spt_check(predicate: chex.Array | bool, message: str) -> None:
+    """Check an SPT validation predicate, inside or outside JAX transforms.
+
+    Outside transforms the predicate is concrete, and a false one raises
+    AssertionError, as chex assertions do. Under ``jax.vmap`` or ``jax.jit`` it is
+    traced, so the check goes through ``checkify.check``: ``jax.vmap`` raises
+    ``checkify.JaxRuntimeError``, and ``jax.jit`` needs the caller to functionalize
+    it with ``checkify.checkify``. Comparisons with NaN are false, so NaN fails.
+
+    Args:
+        predicate: Scalar boolean that must be true.
+        message: Error message if it is false.
+
+    Raises:
+        AssertionError: If the predicate is concrete and false.
+        checkify.JaxRuntimeError: Under ``jax.vmap``, if the predicate is false
+            for any element of the batch.
+    """  # noqa: DOC503
+    if isinstance(predicate, Tracer):
+        checkify.check(predicate, message)
+    elif not bool(predicate):
+        raise AssertionError(message)
+
+
+@jax.jit
+def _spt_k_alpha(alpha: chex.Scalar) -> chex.Scalar:
+    """Return k_alpha, the SPT feasibility threshold for the median's position.
+
+    An SPT metalog is feasible exactly when the median's relative position ``r`` on
+    the metalog's unbounded scale satisfies ``k_alpha < r < 1 - k_alpha``: the
+    3-term condition ``|a3| / a2 < THETA_3`` rewritten for the triplet (Keelin 2016,
+    equation 18). ``k_alpha = 0.5 * (1 - THETA_3 * (0.5 - alpha))`` lies in
+    (0.0832, 0.5) for alpha in (0, 0.5).
+
+    Args:
+        alpha: Lower percentile parameter in (0, 0.5).
+
+    Returns:
+        The feasibility threshold k_alpha.
+    """
+    return 0.5 * (1 - (THETA_3 * (0.5 - alpha)))
+
+
+@jax.jit
+def _spt_median_position(z: chex.Array) -> chex.Scalar:
+    """Return the median's relative position between the outer SPT quantiles.
+
+    ``r = (z[1] - z[0]) / (z[2] - z[0])``. A symmetric triplet has r = 0.5. When
+    r < 0.5 the median is closer to the lower quantile and the distribution is
+    right-skewed; when r > 0.5 it is left-skewed.
+
+    Args:
+        z: Array of length 3 containing the alpha, 0.5 and 1 - alpha quantiles, in
+            ascending order.
+
+    Returns:
+        The relative position r, in (0, 1) for an ascending triplet.
+    """
+    return (z[1] - z[0]) / (z[2] - z[0])
+
+
+@jax.jit
+def _spt_coefficients(z: chex.Array, alpha: chex.Scalar) -> chex.Array:
+    """Return the 3-term metalog coefficients that pass through an SPT triplet.
+
+    Implements Keelin (2016), Proposition 1 (equations 16 and 17), with
+    ``L = log((1 - alpha) / alpha)`` and median position ``r``:
+
+    - a1 = z[1]
+    - a2 = (z[2] - z[0]) / (2L)
+    - a3 = (1 - 2r) * (z[2] - z[0]) / ((1 - 2 * alpha) * L)
+
+    Propositions 3 and 4 apply the same formulas to the log-transformed and
+    logit-transformed quantiles, so ``z`` is the triplet on the metalog's unbounded
+    scale for every boundedness type. Defined at module level so that it compiles
+    once, not on every fit.
+
+    Args:
+        z: Array of length 3 containing the alpha, 0.5 and 1 - alpha quantiles on
+            the metalog's unbounded scale, in ascending order.
+        alpha: Lower percentile parameter in (0, 0.5).
+
+    Returns:
+        Array of length 3 containing the coefficients [a1, a2, a3].
+
+    References:
+        Keelin, T. W. (2016). The Metalog Distributions. Decision Analysis, 13(4),
+        243-277. https://doi.org/10.1287/deca.2016.0338
+    """
+    log_odds = jnp.log((1 - alpha) / alpha)
+    # (1 - 2r) * (z[2] - z[0]) simplifies to z[2] + z[0] - 2 * z[1]
+    return jnp.array(
+        [
+            z[1],
+            (z[2] - z[0]) / (2 * log_odds),
+            (z[2] + z[0] - 2 * z[1]) / ((1 - 2 * alpha) * log_odds),
+        ]
+    )
+
+
 def fit_spt_metalog(
     array: chex.Numeric,
     spt_metalog_params: SPTMetalogParameters,
@@ -505,10 +607,16 @@ def fit_spt_metalog(
         AssertionError: If alpha is not positive or alpha >= 0.5.
         AssertionError: If the computed quantiles violate feasibility constraints
             (q_alpha < median < q_complement).
-        AssertionError: If boundedness-specific feasibility checks fail
-            (e.g., quantiles outside valid range for the given bounds).
+        AssertionError: If a quantile lies outside the support: at or below
+            lower_bound, or for BOUNDED at or above upper_bound.
+        AssertionError: If the triplet is infeasible for the boundedness type
+            (Keelin 2016, Propositions 2-4).
+        AssertionError: If the coefficients are not finite, for example because
+            the data or bounds contain NaN.
         NotImplementedError: If boundedness is STRICTLY_UPPER_BOUND, which is
             undefined in the SPT formulation.
+        checkify.JaxRuntimeError: Under ``jax.vmap``, for the value checks above
+            (array shape and type checks still raise AssertionError).
 
     Example:
         >>> import jax.numpy as jnp
@@ -527,6 +635,12 @@ def fit_spt_metalog(
         >>> spt_metalog = fit_spt_metalog(data, params)
         >>> # The result contains 3 coefficients
         >>> assert len(spt_metalog.a) == 3
+        >>>
+        >>> # Fit several datasets at once
+        >>> import jax
+        >>> batch = jnp.stack([data, 2 * data])
+        >>> jax.vmap(lambda d: fit_spt_metalog(d, params).a)(batch).shape
+        (2, 3)
 
     Note:
         - The SPT method always produces exactly 3 metalog terms, regardless of
@@ -539,6 +653,11 @@ def fit_spt_metalog(
         - For unbounded distributions, the median position ratio r must satisfy
           specific constraints related to k_alpha to ensure feasibility, where
           r = (median - q_alpha) / (q_complement - q_alpha).
+        - Works under ``jax.vmap`` and ``jax.jit`` over the data, alpha and
+          bounds. Close over the parameters rather than passing them as a jit
+          argument, because boundedness selects the formulas in Python. Inside
+          transforms the value checks use ``checkify``, so wrap a jitted call
+          with ``checkify.checkify`` and call ``throw()`` on the returned error.
 
     References:
         Keelin, T. W. (2016). The Metalog Distributions. Decision Analysis, 13(4).
@@ -558,103 +677,18 @@ def fit_spt_metalog(
                 - q_complement is the quantile at probability (1 - alpha)
 
         Raises:
-            AssertionError: If median <= q_alpha (violates q_alpha < median).
-            AssertionError: If q_complement <= median (violates median < q_complement).
+            AssertionError: If q_alpha < median < q_complement does not hold
+                (checkify.JaxRuntimeError under jax.vmap).
 
         Note:
             This is a fundamental requirement for any valid cumulative distribution
             function. If this check fails, the input data or alpha parameter
             produces quantiles that cannot represent a valid distribution.
         """  # noqa: DOC502
-        q_alpha = q[0]
-        median = q[1]
-        q_compliment = q[2]
-        chex.assert_scalar_positive(float(q_compliment - median))
-        chex.assert_scalar_positive(float(median - q_alpha))
-
-    @jax.jit
-    def _k_alpha(alpha: float) -> float:
-        """Compute the k_alpha correction factor for SPT feasibility constraints.
-
-        The SPT feasibility checks (for every boundedness) require the median's
-        relative position ``r`` to satisfy ``k_alpha < r < 1 - k_alpha``, which is
-        the 3-term feasibility condition ``|a3| / a2 < THETA_3`` rewritten for the
-        quantile triplet.
-
-        The formula is: ``k_alpha = 0.5 * (1 - THETA_3 * (0.5 - alpha))``, where
-        ``THETA_3`` (about 1.667113) is the exact bound of Baucells et al. (2025),
-        which Keelin (2016) rounds to 1.66711.
-
-        Args:
-            alpha: Lower percentile parameter in (0, 0.5), representing the
-                symmetric percentile triplet's lower tail probability.
-
-        Returns:
-            Correction factor k_alpha used in feasibility constraints. It lies in
-            (0.0832, 0.5) for alpha in (0, 0.5).
-
-        Note:
-            This function is JIT-compiled for performance. The correction factor
-            is used to check whether quantiles fall within acceptable ranges that
-            guarantee a valid PDF (positive density everywhere).
-        """
-        return 0.5 * (1 - (THETA_3 * (0.5 - alpha)))
-
-    @jax.jit
-    def _log_term(alpha: float) -> float:
-        """Compute log((1 - alpha) / alpha) for SPT coefficient calculations.
-
-        Calculates the natural logarithm of the odds ratio (1-alpha)/alpha,
-        which appears in the analytical formulas for SPT metalog coefficients.
-        This term captures the asymmetry in the symmetric percentile triplet.
-
-        Args:
-            alpha: Lower percentile parameter in (0, 0.5). Must be positive
-                and less than 0.5.
-
-        Returns:
-            Natural logarithm of (1 - alpha) / alpha. The value is always
-            positive for valid alpha in (0, 0.5), since (1-alpha)/alpha > 1.
-
-        Note:
-            This function is JIT-compiled for performance. It is used in
-            computing the second and third metalog coefficients for all
-            boundedness types.
-        """
-        return jnp.log((1 - alpha) / alpha)
-
-    @jax.jit
-    def _dist_symmetry(q: chex.Numeric) -> chex.Numeric:
-        """Compute the symmetry ratio of the distribution from quantiles.
-
-        Calculates r = (median - q_alpha) / (q_complement - q_alpha), which represents
-        where the median falls within the range between the lower and upper quantiles.
-        This ratio measures the symmetry of the distribution and is used in SPT metalog
-        feasibility checks and coefficient calculations.
-
-        When r = 0.5, the median is exactly centered between q_alpha and q_complement,
-        indicating a symmetric distribution. Values of r < 0.5 indicate left skew
-        (median closer to the lower quantile), while r > 0.5 indicates right skew
-        (median closer to the upper quantile).
-
-        Args:
-            q: Array of length 3 containing [q_alpha, median, q_complement] where:
-                - q[0] is the quantile at probability alpha
-                - q[1] is the median (quantile at 0.5)
-                - q[2] is the quantile at probability (1 - alpha)
-
-        Returns:
-            Symmetry ratio r = (median - q_alpha) / (q_complement - q_alpha), a value
-            in [0, 1] representing the relative position of the median. For a valid
-            SPT metalog distribution, this must be in the range (k_alpha, 1 - k_alpha)
-            where k_alpha is the feasibility threshold.
-
-        Note:
-            This function is JIT-compiled for performance. The function name reflects
-            that it measures distribution symmetry; r = 0.5 indicates perfect symmetry.
-            The actual quantile spread (range) is computed as (q[2] - q[0]).
-        """
-        return (q[1] - q[0]) / (q[2] - q[0])
+        _spt_check(
+            (q[0] < q[1]) & (q[1] < q[2]),
+            "SPT quantiles must be strictly ascending: q_alpha < median < q_complement",
+        )
 
     def _unbounded_fit(
         q: chex.Numeric,
@@ -666,10 +700,12 @@ def fit_spt_metalog(
         distribution using the analytical SPT formulas. An unbounded distribution
         has support on the entire real line (-∞, ∞).
 
-        The coefficients are computed as:
+        The coefficients are computed as (Keelin 2016, Proposition 1):
+
         - a1 = median (q[1])
-        - a2 = 0.5 * r / log((1-alpha)/alpha)
-        - a3 = r * (1 - 2r) / ((1 - 2*alpha) * log((1-alpha)/alpha))
+        - a2 = 0.5 * (q_complement - q_alpha) / log((1-alpha)/alpha)
+        - a3 = (1 - 2r) * (q_complement - q_alpha) /
+          ((1 - 2*alpha) * log((1-alpha)/alpha)),
           where r = (median - q_alpha) / (q_complement - q_alpha)
 
         Args:
@@ -711,8 +747,8 @@ def fit_spt_metalog(
                 alpha: Lower percentile parameter in (0, 0.5).
 
             Raises:
-                AssertionError: If (1 - k_alpha) - r <= 0.
-                AssertionError: If r - k_alpha <= 0.
+                AssertionError: If r is not in (k_alpha, 1 - k_alpha)
+                    (checkify.JaxRuntimeError under jax.vmap).
 
             Note:
                 This check is essential to prevent fitting infeasible distributions
@@ -720,71 +756,17 @@ def fit_spt_metalog(
                 the median position relative to the quantiles is too extreme for the
                 given alpha value.
             """  # noqa: DOC502
-            r = _dist_symmetry(q)
-            k_alpha = _k_alpha(alpha)
-            chex.assert_scalar_positive(float((1 - k_alpha) - r))
-            chex.assert_scalar_positive(float(r - k_alpha))
-
-        @jax.jit
-        def _second_term(q: chex.Numeric, alpha: float) -> float:
-            """Compute the second metalog coefficient (a2) for unbounded distributions.
-
-            Calculates a2 using the SPT formula for unbounded distributions:
-            a2 = 0.5 * r / log((1-alpha)/alpha)
-            where r = (median - q_alpha) / (q_complement - q_alpha)
-
-            This coefficient controls the scale/spread of the distribution. Larger
-            r values (median positioned more toward the upper quantile) result in
-            larger a2 values.
-
-            Args:
-                q: Array of length 3 containing [q_alpha, median, q_complement].
-                alpha: Lower percentile parameter in (0, 0.5).
-
-            Returns:
-                Second metalog coefficient a2. The value is always positive for
-                valid inputs since both r and log((1-alpha)/alpha) are positive.
-
-            Note:
-                This function is JIT-compiled and is only called for unbounded
-                distributions within _unbounded_fit.
-            """
-            return 0.5 * jnp.power(_log_term(alpha), -1) * _dist_symmetry(q)
-
-        @jax.jit
-        def _third_term(q: chex.Numeric, alpha: float) -> float:
-            """Compute the third metalog coefficient (a3) for unbounded distributions.
-
-            Calculates a3 using the SPT formula for unbounded distributions:
-            a3 = r * (1 - 2r) / ((1 - 2*alpha) * log((1-alpha)/alpha))
-            where r = (median - q_alpha) / (q_complement - q_alpha)
-
-            This coefficient controls the asymmetry/skewness of the distribution.
-            When r = 0.5 (median is centered), a3 = 0 and the distribution is symmetric.
-            Non-zero a3 values introduce skewness.
-
-            Args:
-                q: Array of length 3 containing [q_alpha, median, q_complement].
-                alpha: Lower percentile parameter in (0, 0.5).
-
-            Returns:
-                Third metalog coefficient a3. The value can be positive (right skew),
-                negative (left skew), or zero (symmetric).
-
-            Note:
-                This function is JIT-compiled and is only called for unbounded
-                distributions within _unbounded_fit.
-            """
-            r = (q[1] - q[0]) / (q[2] - q[0])
-            return (
-                jnp.power((1 - (2 * alpha)) * _log_term(alpha), -1)
-                * (1 - (2 * r))
-                * _dist_symmetry(q)
+            r = _spt_median_position(q)
+            k_alpha = _spt_k_alpha(alpha)
+            _spt_check(
+                (k_alpha < r) & (r < 1 - k_alpha),
+                "Infeasible SPT triplet: the median's position must lie in "
+                "(k_alpha, 1 - k_alpha) (Keelin 2016, Proposition 2)",
             )
 
         alpha = y[0]
         _unbounded_fit_feasibility_check(q, alpha)
-        return jnp.array([q[1], _second_term(q, alpha), _third_term(q, alpha)])
+        return _spt_coefficients(q, alpha)
 
     def _strictly_lower_bound_fit(
         q: chex.Numeric,
@@ -818,12 +800,13 @@ def fit_spt_metalog(
             in the transformed (log) space.
 
         Raises:
+            AssertionError: If q_alpha is not above lower_bound.
             AssertionError: If the transformed quantiles (gamma values) violate
                 feasibility constraints for the given lower bound.
 
         Note:
-            This function is JIT-compiled for performance. The coefficients are
-            computed in log-space after subtracting the lower bound from all quantiles.
+            The coefficients are those of Proposition 1 applied to log(gamma)
+            (Keelin 2016, Proposition 3), computed by _spt_coefficients.
         """  # noqa: DOC502
 
         def _strictly_lower_bound_fit_feasibility_check(
@@ -851,8 +834,8 @@ def fit_spt_metalog(
                 lower_bound: The lower boundary value of the distribution.
 
             Raises:
-                AssertionError: If lower_bound + geometric_mean_upper - median <= 0.
-                AssertionError: If median - lower_bound - geometric_mean_lower <= 0.
+                AssertionError: If the median is not strictly between the two
+                    limits (checkify.JaxRuntimeError under jax.vmap).
 
             Note:
                 This check uses weighted geometric means of the gamma values with
@@ -862,90 +845,16 @@ def fit_spt_metalog(
             gamma_alpha = gamma[0]
             gamma_compliment = gamma[2]
 
-            k_alpha = _k_alpha(alpha)
-            chex.assert_scalar_positive(
-                float(
-                    lower_bound
-                    + (
-                        jnp.power(gamma_alpha, k_alpha)
-                        * jnp.power(gamma_compliment, 1 - k_alpha)
-                    )
-                    - median
-                )
+            k_alpha = _spt_k_alpha(alpha)
+            lower_limit = lower_bound + jnp.power(gamma_alpha, 1 - k_alpha) * jnp.power(
+                gamma_compliment, k_alpha
             )
-            chex.assert_scalar_positive(
-                float(
-                    median
-                    - lower_bound
-                    + (
-                        jnp.power(gamma_alpha, 1 - k_alpha)
-                        * jnp.power(gamma_compliment, k_alpha)
-                    )
-                )
+            upper_limit = lower_bound + jnp.power(gamma_alpha, k_alpha) * jnp.power(
+                gamma_compliment, 1 - k_alpha
             )
-
-        @jax.jit
-        def _second_term(gamma: chex.Numeric, alpha: float) -> float:
-            """Compute the second coefficient (a2) for lower-bounded distributions.
-
-            Calculates a2 using the SPT formula for lower-bounded distributions:
-            a2 = 0.5 * log(gamma_complement / gamma_alpha) / log((1-alpha)/alpha)
-
-            where gamma values are the quantiles transformed by subtracting the
-            lower bound. This coefficient controls the scale/spread in log-space.
-
-            Args:
-                gamma: Array of length 3 containing transformed quantiles
-                    [gamma_alpha, gamma_median, gamma_complement] where
-                    gamma_i = q_i - lower_bound.
-                alpha: Lower percentile parameter in (0, 0.5).
-
-            Returns:
-                Second metalog coefficient a2 in log-space. Can be positive or
-                negative depending on the relative magnitudes of gamma values.
-
-            Note:
-                This function is JIT-compiled and is only called for lower-bounded
-                distributions within _strictly_lower_bound_fit.
-            """
-            gamma_alpha = gamma[0]
-            gamma_compliment = gamma[2]
-            return (
-                0.5
-                * jnp.power(_log_term(alpha), -1)
-                * jnp.log(gamma_compliment / gamma_alpha)
-            )
-
-        @jax.jit
-        def _third_term(gamma: chex.Numeric, alpha: float) -> float:
-            """Compute the third coefficient (a3) for lower-bounded distributions.
-
-            Calculates a3 using the SPT formula for lower-bounded distributions:
-            a3 = log((gamma_complement * gamma_alpha) / gamma_median^2) /
-                 ((1 - 2*alpha) * log((1-alpha)/alpha))
-
-            where gamma values are the quantiles transformed by subtracting the
-            lower bound. This coefficient controls asymmetry/skewness in log-space.
-
-            Args:
-                gamma: Array of length 3 containing transformed quantiles
-                    [gamma_alpha, gamma_median, gamma_complement] where
-                    gamma_i = q_i - lower_bound.
-                alpha: Lower percentile parameter in (0, 0.5).
-
-            Returns:
-                Third metalog coefficient a3 in log-space. Can be positive (right skew),
-                negative (left skew), or zero (log-symmetric).
-
-            Note:
-                This function is JIT-compiled and is only called for lower-bounded
-                distributions within _strictly_lower_bound_fit.
-            """
-            gamma_alpha = gamma[0]
-            gamma_median = gamma[1]
-            gamma_compliment = gamma[2]
-            return jnp.power((1 - (2 * alpha)) * _log_term(alpha), -1) * jnp.log(
-                (gamma_compliment * gamma_alpha) / jnp.power(gamma_median, 2)
+            _spt_check(
+                (lower_limit < median) & (median < upper_limit),
+                "Infeasible SPT triplet for a lower bound (Keelin 2016, Proposition 3)",
             )
 
         alpha = y[0]
@@ -954,19 +863,16 @@ def fit_spt_metalog(
         median = q[1]
         q_compliment = q[2]
 
+        # The quantiles ascend, so they all lie in the support if q_alpha does
+        _spt_check(q_alpha > lower_bound, "SPT quantiles must lie above lower_bound")
+
         gamma_alpha = q_alpha - lower_bound
         gamma_median = median - lower_bound
         gamma_compliment = q_compliment - lower_bound
 
         gamma = jnp.array([gamma_alpha, gamma_median, gamma_compliment])
         _strictly_lower_bound_fit_feasibility_check(q, gamma, alpha, lower_bound)
-        return jnp.array(
-            [
-                jnp.log(gamma_median),
-                _second_term(gamma, alpha),
-                _third_term(gamma, alpha),
-            ]
-        )
+        return _spt_coefficients(jnp.log(gamma), alpha)
 
     def _bounded_fit(
         q: chex.Numeric,
@@ -1004,13 +910,15 @@ def fit_spt_metalog(
             in the transformed (log) space.
 
         Raises:
+            AssertionError: If q_alpha is not above lower_bound, or q_complement
+                is not below upper_bound.
             AssertionError: If the transformed quantiles (gamma values) violate
                 feasibility constraints for the given bounds.
 
         Note:
-            This function is JIT-compiled for performance. The coefficients are
-            computed in log-space after applying the logit-like transformation
-            to map (lower_bound, upper_bound) to (0, ∞).
+            The logit-like transformation maps (lower_bound, upper_bound) to
+            (0, ∞). The coefficients are those of Proposition 1 applied to
+            log(gamma) (Keelin 2016, Proposition 4), computed by _spt_coefficients.
         """  # noqa: DOC502
 
         def _bounded_fit_feasibility_check(
@@ -1045,8 +953,8 @@ def fit_spt_metalog(
                 upper_bound: The upper boundary value of the distribution.
 
             Raises:
-                AssertionError: If upper_bound_ratio - median <= 0.
-                AssertionError: If median - lower_bound_ratio <= 0.
+                AssertionError: If the median is not strictly between the two
+                    limits (checkify.JaxRuntimeError under jax.vmap).
 
             Note:
                 This check uses weighted geometric means of the gamma values with
@@ -1056,121 +964,19 @@ def fit_spt_metalog(
             median = q[1]
             gamma_alpha = gamma[0]
             gamma_compliment = gamma[2]
-            k_alpha = _k_alpha(alpha)
-
-            chex.assert_scalar_positive(
-                float(
-                    (
-                        (
-                            lower_bound
-                            + (
-                                upper_bound
-                                * jnp.power(gamma_alpha, k_alpha)
-                                * jnp.power(gamma_compliment, 1 - k_alpha)
-                            )
-                        )
-                        / (
-                            1
-                            + (
-                                jnp.power(gamma_alpha, k_alpha)
-                                * jnp.power(gamma_compliment, 1 - k_alpha)
-                            )
-                        )
-                    )
-                    - median
-                )
+            k_alpha = _spt_k_alpha(alpha)
+            # Weighted geometric means of gamma, mapped back to (lower, upper)
+            g_lower = jnp.power(gamma_alpha, 1 - k_alpha) * jnp.power(
+                gamma_compliment, k_alpha
             )
-            chex.assert_scalar_positive(
-                float(
-                    median
-                    - (
-                        (
-                            lower_bound
-                            + (
-                                upper_bound
-                                * jnp.power(gamma_alpha, 1 - k_alpha)
-                                * jnp.power(gamma_compliment, k_alpha)
-                            )
-                        )
-                        / (
-                            1
-                            + (
-                                jnp.power(gamma_alpha, 1 - k_alpha)
-                                * jnp.power(gamma_compliment, k_alpha)
-                            )
-                        )
-                    )
-                )
+            g_upper = jnp.power(gamma_alpha, k_alpha) * jnp.power(
+                gamma_compliment, 1 - k_alpha
             )
-
-        @jax.jit
-        def _second_term(gamma: chex.Numeric, alpha: float) -> float:
-            """Compute the second coefficient (a2) for bounded distributions.
-
-            Calculates a2 using the SPT formula for bounded distributions:
-            a2 = 0.5 * log(gamma_complement / gamma_alpha) / log((1-alpha)/alpha)
-
-            where gamma values are the quantiles transformed using the logit-like
-            mapping: gamma_i = (q_i - lower) / (upper - q_i). This coefficient
-            controls the scale/spread in log-space.
-
-            Args:
-                gamma: Array of length 3 containing transformed quantiles
-                    [gamma_alpha, gamma_median, gamma_complement] where
-                    gamma_i = (q_i - lower_bound) / (upper_bound - q_i).
-                alpha: Lower percentile parameter in (0, 0.5).
-
-            Returns:
-                Second metalog coefficient a2 in log-space. Can be positive or
-                negative depending on the relative magnitudes of gamma values.
-
-            Note:
-                This function is JIT-compiled and is only called for bounded
-                distributions within _bounded_fit. The formula is identical to
-                that used for lower-bounded distributions, but operates on
-                differently transformed gamma values.
-            """
-            gamma_alpha = gamma[0]
-            gamma_compliment = gamma[2]
-            return (
-                0.5
-                * jnp.power(_log_term(alpha), -1)
-                * jnp.log(gamma_compliment / gamma_alpha)
-            )
-
-        @jax.jit
-        def _third_term(gamma: chex.Numeric, alpha: float) -> float:
-            """Compute the third coefficient (a3) for bounded distributions.
-
-            Calculates a3 using the SPT formula for bounded distributions:
-            a3 = log((gamma_complement * gamma_alpha) / gamma_median^2) /
-                 ((1 - 2*alpha) * log((1-alpha)/alpha))
-
-            where gamma values are the quantiles transformed using the logit-like
-            mapping: gamma_i = (q_i - lower) / (upper - q_i). This coefficient
-            controls asymmetry/skewness in log-space.
-
-            Args:
-                gamma: Array of length 3 containing transformed quantiles
-                    [gamma_alpha, gamma_median, gamma_complement] where
-                    gamma_i = (q_i - lower_bound) / (upper_bound - q_i).
-                alpha: Lower percentile parameter in (0, 0.5).
-
-            Returns:
-                Third metalog coefficient a3 in log-space. Can be positive (right skew),
-                negative (left skew), or zero (log-symmetric).
-
-            Note:
-                This function is JIT-compiled and is only called for bounded
-                distributions within _bounded_fit. The formula is identical to
-                that used for lower-bounded distributions, but operates on
-                differently transformed gamma values.
-            """
-            gamma_alpha = gamma[0]
-            gamma_median = gamma[1]
-            gamma_compliment = gamma[2]
-            return jnp.power((1 - (2 * alpha)) * _log_term(alpha), -1) * jnp.log(
-                (gamma_compliment * gamma_alpha) / jnp.power(gamma_median, 2)
+            lower_limit = (lower_bound + upper_bound * g_lower) / (1 + g_lower)
+            upper_limit = (lower_bound + upper_bound * g_upper) / (1 + g_upper)
+            _spt_check(
+                (lower_limit < median) & (median < upper_limit),
+                "Infeasible SPT triplet for bounds (Keelin 2016, Proposition 4)",
             )
 
         alpha = y[0]
@@ -1179,19 +985,20 @@ def fit_spt_metalog(
         median = q[1]
         q_compliment = q[2]
 
+        # The quantiles ascend, so they all lie in the support if q_alpha and
+        # q_complement do; this also requires upper_bound > lower_bound
+        _spt_check(q_alpha > lower_bound, "SPT quantiles must lie above lower_bound")
+        _spt_check(
+            q_compliment < upper_bound, "SPT quantiles must lie below upper_bound"
+        )
+
         gamma_alpha = (q_alpha - lower_bound) / (upper_bound - q_alpha)
         gamma_median = (median - lower_bound) / (upper_bound - median)
         gamma_compliment = (q_compliment - lower_bound) / (upper_bound - q_compliment)
 
         gamma = jnp.array([gamma_alpha, gamma_median, gamma_compliment])
         _bounded_fit_feasibility_check(q, gamma, alpha, lower_bound, upper_bound)
-        return jnp.array(
-            [
-                jnp.log(gamma_median),
-                _second_term(gamma, alpha),
-                _third_term(gamma, alpha),
-            ]
-        )
+        return _spt_coefficients(jnp.log(gamma), alpha)
 
     chex.assert_axis_dimension_gteq(array, 0, 3)
     chex.assert_rank(array, 1)
@@ -1200,8 +1007,7 @@ def fit_spt_metalog(
     alpha = spt_metalog_params.alpha
     median_percentile = 0.5
 
-    chex.assert_scalar_positive(alpha)
-    chex.assert_scalar_positive(float(median_percentile - alpha))
+    _spt_check((alpha > 0) & (alpha < median_percentile), "alpha must be in (0, 0.5)")
 
     compliment = 1.0 - alpha
     y = jnp.array([alpha, median_percentile, compliment])
@@ -1218,8 +1024,14 @@ def fit_spt_metalog(
         a = _strictly_lower_bound_fit(q, y, lower_bound)
     elif boundedness == MetalogBoundedness.BOUNDED:
         a = _bounded_fit(q, y, lower_bound, upper_bound)
-    elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+    else:  # MetalogBoundedness.STRICTLY_UPPER_BOUND
         raise NotImplementedError("This formulation is undefined in Keelin's paper!")
+
+    # Infinite data can pass the checks above and still give infinite coefficients
+    _spt_check(
+        jnp.all(jnp.isfinite(a)),
+        "SPT coefficients must be finite; check the data and bounds",
+    )
     return SPTMetalog(metalog_params=spt_metalog_params, a=a)
 
 
