@@ -56,8 +56,12 @@ class CustomIntEnum(IntEnum):
 
         Example:
             >>> boundedness = MetalogBoundedness.from_value(1)
-            >>> assert boundedness == MetalogBoundedness.UNBOUNDED
-            >>> MetalogBoundedness.from_value(99)  # Raises ValueError
+            >>> boundedness == MetalogBoundedness.UNBOUNDED
+            True
+            >>> MetalogBoundedness.from_value(99)
+            Traceback (most recent call last):
+                ...
+            ValueError: No enum member with value 99
         """
         for member in cls:
             if member.value == value:

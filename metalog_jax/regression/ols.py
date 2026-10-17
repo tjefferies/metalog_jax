@@ -18,8 +18,6 @@ See Also:
     metalog_jax.metalog.fit: High-level fitting function that dispatches to OLS.
 """
 
-from typing import Tuple
-
 import chex
 import jax
 import jax.numpy as jnp
@@ -71,7 +69,7 @@ def fit_ordinary_least_squares(
     def least_squares(
         X: chex.Array,
         y: chex.Array,
-    ) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array]:
+    ) -> tuple[chex.Array, chex.Array, chex.Array, chex.Array]:
         """Solve ordinary least squares using JAX's lstsq function.
 
         Computes the least-squares solution to the linear system Xw = y using
@@ -143,8 +141,12 @@ def predict_ordinary_least_squares(
         Predictions of shape (n_samples,).
 
     Example:
+        >>> import jax.numpy as jnp
+        >>> X = jnp.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        >>> model = fit_ordinary_least_squares(X, jnp.array([1.0, 2.0, 3.0]))
         >>> X_test = jnp.array([[2.0, 3.0], [4.0, 5.0]])
-        >>> predictions = predict_ordinary_least_squares(X_test, model)
+        >>> predict_ordinary_least_squares(X_test, model).round(4).tolist()
+        [1.5, 2.5]
     """
     if len(X.shape) == 1:
         X = jnp.expand_dims(X, axis=1)

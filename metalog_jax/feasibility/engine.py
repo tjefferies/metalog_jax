@@ -26,7 +26,7 @@ References:
 """
 
 from enum import IntEnum, auto
-from functools import lru_cache
+from functools import cache
 
 import chex
 import jax
@@ -228,7 +228,7 @@ class Engine:
         return jnp.where(found, sign, jnp.where(jnp.abs(muj) > tol, jnp.sign(muj), 0.0))
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_engine(num_terms: int, order: TermOrder = TermOrder.KEELIN_2016) -> Engine:
     """Cached :class:`Engine` (stable identity keeps ``jit`` caches warm)."""
     return Engine(num_terms, order)

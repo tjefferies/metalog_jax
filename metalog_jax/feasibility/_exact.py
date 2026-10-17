@@ -15,7 +15,7 @@ References:
 """
 
 from fractions import Fraction
-from functools import lru_cache
+from functools import cache
 from math import comb, factorial, pi
 
 Poly = list[Fraction]
@@ -79,7 +79,7 @@ def _to_one_minus_y_basis(p: Poly) -> Poly:
     return out
 
 
-@lru_cache(maxsize=None)
+@cache
 def rational_part_row(i: int, t: int) -> tuple[Fraction, ...]:
     """Polynomial (in y) multiplying ``s_t`` in the rational part of ``(y(1-y))^i M^(i)``.
 
@@ -218,7 +218,7 @@ def _centered_entry(S: dict[tuple[int, int], PiPoly], m: int, u: int) -> PiPoly:
     return {e: q * factorial(u) for e, q in acc.items()}
 
 
-@lru_cache(maxsize=None)
+@cache
 def _i_table(mmax: int, umax: int) -> dict[tuple[int, int], PiPoly]:
     """Return Lemma 1's ``I(m, u)`` as exact polynomials in pi^2 (cached).
 

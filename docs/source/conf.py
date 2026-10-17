@@ -41,6 +41,9 @@ napoleon_include_special_with_doc = True
 napoleon_use_admonition_for_examples = True
 napoleon_use_admonition_for_notes = True
 napoleon_use_admonition_for_references = True
+# Render Attributes sections as fields, so they don't duplicate autodoc's entries
+# for dataclass fields.
+napoleon_use_ivar = True
 
 # Autodoc settings
 autodoc_default_options = {
@@ -57,6 +60,10 @@ autodoc_typehints_description_target = "documented"
 typehints_fully_qualified = False
 always_document_param_types = True
 typehints_document_rtype = True
+
+# The sphinx_material theme puts an unpicklable value in html_context; it only
+# disables caching of that setting between builds.
+suppress_warnings = ["config.cache"]
 
 # Intersphinx mapping for external documentation
 intersphinx_mapping = {

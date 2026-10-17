@@ -156,9 +156,12 @@ class TestMoments:
         """Mean, variance, skewness and kurtosis agree with adaptive quadrature."""
         eng, a = get_engine(k, order), jnp.array(a)
         st = summary_stats(eng, a)
-        f = lambda y: quantile(eng, a, y)  # noqa: E731
+        f = lambda y: quantile(eng, a, y)
         mean = quad(f, 0, 1, limit=400)[0]
-        c = [quad(lambda y: (f(y) - mean) ** p, 0, 1, limit=400)[0] for p in (2, 3, 4)]
+        c = [
+            quad(lambda y, p=p: (f(y) - mean) ** p, 0, 1, limit=400)[0]
+            for p in (2, 3, 4)
+        ]
         np.testing.assert_allclose(float(st["mean"]), mean, rtol=1e-9)
         np.testing.assert_allclose(float(st["variance"]), c[0], rtol=1e-8)
         np.testing.assert_allclose(float(st["skewness"]), c[1] / c[0] ** 1.5, rtol=1e-6)

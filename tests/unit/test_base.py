@@ -6,6 +6,8 @@ behavior across various configurations and edge cases.
 """
 # Copyright: Travis Jefferies 2026
 
+from typing import ClassVar
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -272,7 +274,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             self.assertTrue(save_path.exists())
 
             # Load and verify content
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             # Check that JSON has expected structure
@@ -327,7 +329,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             results2.save(save_path)
 
             # Load and verify the file contains the second set of values
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             self.assertEqual(
@@ -362,7 +364,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             )
             results.save(save_path)
 
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             np.testing.assert_array_almost_equal(
@@ -395,7 +397,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             )
             results.save(save_path)
 
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             self.assertEqual(len(loaded_data["a"]), num_terms)
@@ -1108,7 +1110,7 @@ class MetalogCoefficientCoercionTest(parameterized.TestCase):
         upper_bound=100.0,
         num_terms=9,
     )
-    BOUNDED_COEFFICIENTS = [
+    BOUNDED_COEFFICIENTS: ClassVar[list[float]] = [
         0.05007640896849727,
         -0.002588965892559015,
         0.029259325649691956,
@@ -1440,7 +1442,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Array with insufficient elements.
             precomputed_quantiles: Flag for quantile type.
         """
-        with self.assertRaises(Exception):  # chex.assert_axis_dimension_gteq raises
+        with self.assertRaises(AssertionError):  # chex.assert_axis_dimension_gteq
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )
@@ -1516,7 +1518,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Array with non-ascending probabilities.
             precomputed_quantiles: Flag for quantile type.
         """
-        with self.assertRaises(Exception):  # assert_strictly_ascending raises
+        with self.assertRaises(AssertionError):  # assert_strictly_ascending
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )
@@ -1552,7 +1554,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Array of probability levels.
             precomputed_quantiles: Must be True for this test.
         """
-        with self.assertRaises(Exception):  # assert_strictly_ascending raises
+        with self.assertRaises(AssertionError):  # assert_strictly_ascending
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )
@@ -1586,7 +1588,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Input with potentially invalid type.
             precomputed_quantiles: Input with potentially invalid type.
         """
-        with self.assertRaises(Exception):  # Various assertion errors
+        with self.assertRaises((AssertionError, AttributeError)):
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )

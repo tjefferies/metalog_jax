@@ -115,7 +115,10 @@ def assert_probability_range(array: chex.Array) -> None:
         >>> valid_probs = jnp.array([0.1, 0.5, 0.9])
         >>> assert_probability_range(valid_probs)  # No error
         >>> invalid_probs = jnp.array([0.0, 0.5, 1.0])
-        >>> assert_probability_range(invalid_probs)  # Raises ValueError
+        >>> assert_probability_range(invalid_probs)
+        Traceback (most recent call last):
+            ...
+        ValueError: Array minimum 0.0 must be strictly greater than 0
     """
     min_val = jnp.min(array)
     max_val = jnp.max(array)
@@ -180,20 +183,27 @@ def assert_strictly_ascending(x: chex.Numeric, tol: float = 1e-12) -> None:
         Invalid array with duplicate values:
 
             >>> x_dup = jnp.array([0.1, 0.2, 0.2, 0.9])
-            >>> assert_strictly_ascending(x_dup)
-            >>> # Raises AssertionError: difference of 0.0 at index 2
+            >>> assert_strictly_ascending(x_dup)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            AssertionError: [Chex] Assertion assert_scalar_positive failed: ...
 
         Invalid array not in ascending order:
 
             >>> x_unsorted = jnp.array([0.1, 0.5, 0.2, 0.9])
-            >>> assert_strictly_ascending(x_unsorted)
-            >>> # Raises AssertionError: negative difference at index 2
+            >>> assert_strictly_ascending(x_unsorted)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            AssertionError: [Chex] Assertion assert_scalar_positive failed: ...
 
         Using custom tolerance:
 
-            >>> # Values very close together (within default tolerance)
+            >>> # Values closer together than the default tolerance (1e-12)
             >>> x_close = jnp.array([0.1, 0.1 + 1e-13, 0.2])
-            >>> assert_strictly_ascending(x_close)  # May fail with default tol
+            >>> assert_strictly_ascending(x_close)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            AssertionError: [Chex] Assertion assert_scalar_positive failed: ...
             >>> assert_strictly_ascending(x_close, tol=1e-14)  # Passes
 
     See Also:
@@ -424,8 +434,8 @@ def ks_distance(x: chex.Numeric, y: chex.Numeric) -> chex.Scalar:
             >>> # Two samples from the same distribution
             >>> x = jnp.array([0.1, 0.5, 0.3, 0.7, 0.9])
             >>> y = jnp.array([0.2, 0.4, 0.6, 0.8])
-            >>> distance = ks_distance(x, y)
-            >>> # Small distance indicates similar distributions
+            >>> round(float(ks_distance(x, y)), 2)  # Small: similar distributions
+            0.2
 
         Comparing different distributions:
 
@@ -433,25 +443,35 @@ def ks_distance(x: chex.Numeric, y: chex.Numeric) -> chex.Scalar:
             >>> uniform_sample = jnp.array([0.1, 0.3, 0.5, 0.7, 0.9])
             >>> # Sample from distribution concentrated near 0
             >>> skewed_sample = jnp.array([0.05, 0.1, 0.15, 0.2, 0.25])
-            >>> distance = ks_distance(uniform_sample, skewed_sample)
-            >>> # Larger distance indicates different distributions
+            >>> round(float(ks_distance(uniform_sample, skewed_sample)), 2)
+            0.8
 
         Using for metalog goodness-of-fit:
 
-            >>> from metalog_jax.metalog import fit
+            >>> from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
             >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> from metalog_jax.base import MetalogRandomVariableParameters
+            >>> from metalog_jax.metalog import fit
             >>>
             >>> # Fit metalog to data
-            >>> data = MetalogInputData.from_values(x, DEFAULT_Y, False)
-            >>> params = MetalogParameters(...)
+            >>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+            >>> data = MetalogInputData.from_values(samples, DEFAULT_Y, False)
+            >>> params = MetalogParameters(
+            ...     boundedness=MetalogBoundedness.UNBOUNDED,
+            ...     method=MetalogFitMethod.Feasible,
+            ...     num_terms=5, lower_bound=0.0, upper_bound=0.0
+            ... )
             >>> metalog = fit(data, params)
             >>>
-            >>> # Generate samples from fitted distribution
-            >>> fitted_samples = metalog.rvs(...)
+            >>> # Draw samples from the fitted distribution
+            >>> rv_params = MetalogRandomVariableParameters(
+            ...     prng_params=JaxUniformDistributionParameters(seed=0), size=1000
+            ... )
+            >>> fitted_samples = metalog.rvs(rv_params)
             >>>
-            >>> # Compare original vs fitted distribution
-            >>> ks_dist = ks_distance(x, fitted_samples)
-            >>> # Low KS distance indicates good fit
+            >>> # A low KS distance indicates a good fit
+            >>> bool(ks_distance(samples, fitted_samples) < 0.2)
+            True
 
     See Also:
         jnp.searchsorted: Efficient binary search used for CDF computation.

@@ -15,8 +15,6 @@ See Also:
     metalog_jax.metalog: Fitting functions that accept these parameter configurations.
 """
 
-from typing import Union
-
 import chex
 from flax import struct
 
@@ -38,7 +36,7 @@ class MetalogRandomVariableParameters:
         max_draws: Maximum number of draws for rejection sampling.
     """
 
-    prng_params: Union[JaxUniformDistributionParameters, HDRPRNGParameters]
+    prng_params: JaxUniformDistributionParameters | HDRPRNGParameters
     size: int
     max_draws: int = DEFAULT_MAX_NUMBER_RV_DRAWS
 
