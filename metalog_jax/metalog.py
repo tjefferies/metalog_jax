@@ -165,9 +165,9 @@ class SPTMetalog(MetalogBase):
             >>> # Fit the SPT metalog
             >>> spt = fit_spt_metalog(data, params)
             >>>
-            >>> # The median is the data's median
-            >>> float(spt.ppf(jnp.array([0.5]))[0])
-            4.1
+            >>> # The fit passes through the data's 10th, 50th and 90th percentiles
+            >>> spt.ppf(jnp.array([0.1, 0.5, 0.9])).round(2).tolist()
+            [2.08, 4.1, 8.06]
             >>>
             >>> # Summary statistics are properties
             >>> mean, std = spt.mean, spt.std
@@ -505,8 +505,12 @@ def fit_spt_metalog(
         AssertionError: If alpha is not positive or alpha >= 0.5.
         AssertionError: If the computed quantiles violate feasibility constraints
             (q_alpha < median < q_complement).
-        AssertionError: If boundedness-specific feasibility checks fail
-            (e.g., quantiles outside valid range for the given bounds).
+        AssertionError: If a quantile lies outside the support: at or below
+            lower_bound, or for BOUNDED at or above upper_bound.
+        AssertionError: If the triplet is infeasible for the boundedness type
+            (Keelin 2016, Propositions 2-4).
+        AssertionError: If the coefficients are not finite, for example because
+            the data or bounds contain NaN.
         NotImplementedError: If boundedness is STRICTLY_UPPER_BOUND, which is
             undefined in the SPT formulation.
 
@@ -633,8 +637,8 @@ def fit_spt_metalog(
         feasibility checks and coefficient calculations.
 
         When r = 0.5, the median is exactly centered between q_alpha and q_complement,
-        indicating a symmetric distribution. Values of r < 0.5 indicate left skew
-        (median closer to the lower quantile), while r > 0.5 indicates right skew
+        indicating a symmetric distribution. Values of r < 0.5 indicate right skew
+        (median closer to the lower quantile), while r > 0.5 indicates left skew
         (median closer to the upper quantile).
 
         Args:
@@ -666,10 +670,12 @@ def fit_spt_metalog(
         distribution using the analytical SPT formulas. An unbounded distribution
         has support on the entire real line (-∞, ∞).
 
-        The coefficients are computed as:
+        The coefficients are computed as (Keelin 2016, Proposition 1):
+
         - a1 = median (q[1])
-        - a2 = 0.5 * r / log((1-alpha)/alpha)
-        - a3 = r * (1 - 2r) / ((1 - 2*alpha) * log((1-alpha)/alpha))
+        - a2 = 0.5 * (q_complement - q_alpha) / log((1-alpha)/alpha)
+        - a3 = (1 - 2r) * (q_complement - q_alpha) /
+          ((1 - 2*alpha) * log((1-alpha)/alpha)),
           where r = (median - q_alpha) / (q_complement - q_alpha)
 
         Args:
@@ -729,13 +735,12 @@ def fit_spt_metalog(
         def _second_term(q: chex.Numeric, alpha: float) -> float:
             """Compute the second metalog coefficient (a2) for unbounded distributions.
 
-            Calculates a2 using the SPT formula for unbounded distributions:
-            a2 = 0.5 * r / log((1-alpha)/alpha)
-            where r = (median - q_alpha) / (q_complement - q_alpha)
+            Calculates a2 using the SPT formula for unbounded distributions
+            (Keelin 2016, equation 16):
+            a2 = 0.5 * (q_complement - q_alpha) / log((1-alpha)/alpha)
 
-            This coefficient controls the scale/spread of the distribution. Larger
-            r values (median positioned more toward the upper quantile) result in
-            larger a2 values.
+            This coefficient controls the scale/spread of the distribution. It is
+            proportional to the q_alpha to q_complement range.
 
             Args:
                 q: Array of length 3 containing [q_alpha, median, q_complement].
@@ -743,20 +748,23 @@ def fit_spt_metalog(
 
             Returns:
                 Second metalog coefficient a2. The value is always positive for
-                valid inputs since both r and log((1-alpha)/alpha) are positive.
+                valid inputs, since q_complement > q_alpha and
+                log((1-alpha)/alpha) > 0.
 
             Note:
                 This function is JIT-compiled and is only called for unbounded
                 distributions within _unbounded_fit.
             """
-            return 0.5 * jnp.power(_log_term(alpha), -1) * _dist_symmetry(q)
+            return 0.5 * jnp.power(_log_term(alpha), -1) * (q[2] - q[0])
 
         @jax.jit
         def _third_term(q: chex.Numeric, alpha: float) -> float:
             """Compute the third metalog coefficient (a3) for unbounded distributions.
 
-            Calculates a3 using the SPT formula for unbounded distributions:
-            a3 = r * (1 - 2r) / ((1 - 2*alpha) * log((1-alpha)/alpha))
+            Calculates a3 using the SPT formula for unbounded distributions
+            (Keelin 2016, equation 17):
+            a3 = (1 - 2r) * (q_complement - q_alpha) /
+            ((1 - 2*alpha) * log((1-alpha)/alpha)),
             where r = (median - q_alpha) / (q_complement - q_alpha)
 
             This coefficient controls the asymmetry/skewness of the distribution.
@@ -775,11 +783,11 @@ def fit_spt_metalog(
                 This function is JIT-compiled and is only called for unbounded
                 distributions within _unbounded_fit.
             """
-            r = (q[1] - q[0]) / (q[2] - q[0])
+            r = _dist_symmetry(q)
             return (
                 jnp.power((1 - (2 * alpha)) * _log_term(alpha), -1)
                 * (1 - (2 * r))
-                * _dist_symmetry(q)
+                * (q[2] - q[0])
             )
 
         alpha = y[0]
@@ -818,6 +826,7 @@ def fit_spt_metalog(
             in the transformed (log) space.
 
         Raises:
+            AssertionError: If q_alpha is not above lower_bound.
             AssertionError: If the transformed quantiles (gamma values) violate
                 feasibility constraints for the given lower bound.
 
@@ -876,10 +885,12 @@ def fit_spt_metalog(
             chex.assert_scalar_positive(
                 float(
                     median
-                    - lower_bound
-                    + (
-                        jnp.power(gamma_alpha, 1 - k_alpha)
-                        * jnp.power(gamma_compliment, k_alpha)
+                    - (
+                        lower_bound
+                        + (
+                            jnp.power(gamma_alpha, 1 - k_alpha)
+                            * jnp.power(gamma_compliment, k_alpha)
+                        )
                     )
                 )
             )
@@ -954,6 +965,12 @@ def fit_spt_metalog(
         median = q[1]
         q_compliment = q[2]
 
+        # The quantiles ascend, so they all lie in the support if q_alpha does
+        chex.assert_scalar_positive(
+            float(q_alpha - lower_bound),
+            custom_message="SPT quantiles must lie above lower_bound",
+        )
+
         gamma_alpha = q_alpha - lower_bound
         gamma_median = median - lower_bound
         gamma_compliment = q_compliment - lower_bound
@@ -1004,6 +1021,8 @@ def fit_spt_metalog(
             in the transformed (log) space.
 
         Raises:
+            AssertionError: If q_alpha is not above lower_bound, or q_complement
+                is not below upper_bound.
             AssertionError: If the transformed quantiles (gamma values) violate
                 feasibility constraints for the given bounds.
 
@@ -1179,6 +1198,17 @@ def fit_spt_metalog(
         median = q[1]
         q_compliment = q[2]
 
+        # The quantiles ascend, so they all lie in the support if q_alpha and
+        # q_complement do; this also requires upper_bound > lower_bound
+        chex.assert_scalar_positive(
+            float(q_alpha - lower_bound),
+            custom_message="SPT quantiles must lie above lower_bound",
+        )
+        chex.assert_scalar_positive(
+            float(upper_bound - q_compliment),
+            custom_message="SPT quantiles must lie below upper_bound",
+        )
+
         gamma_alpha = (q_alpha - lower_bound) / (upper_bound - q_alpha)
         gamma_median = (median - lower_bound) / (upper_bound - median)
         gamma_compliment = (q_compliment - lower_bound) / (upper_bound - q_compliment)
@@ -1218,8 +1248,14 @@ def fit_spt_metalog(
         a = _strictly_lower_bound_fit(q, y, lower_bound)
     elif boundedness == MetalogBoundedness.BOUNDED:
         a = _bounded_fit(q, y, lower_bound, upper_bound)
-    elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+    else:  # MetalogBoundedness.STRICTLY_UPPER_BOUND
         raise NotImplementedError("This formulation is undefined in Keelin's paper!")
+
+    # chex's positivity checks pass NaN, so non-finite data or bounds would
+    # otherwise return NaN coefficients
+    chex.assert_tree_all_finite(
+        a, custom_message="SPT coefficients must be finite; check data and bounds"
+    )
     return SPTMetalog(metalog_params=spt_metalog_params, a=a)
 
 

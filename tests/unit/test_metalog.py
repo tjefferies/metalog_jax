@@ -14,7 +14,7 @@ from metalog_jax.base import (
     MetalogBoundedness,
     SPTMetalogParameters,
 )
-from metalog_jax.metalog import fit_spt_metalog
+from metalog_jax.metalog import THETA_3, fit_spt_metalog
 
 # NOTE: GetQuantilesTest class has been removed as get_quantiles() is now an
 # internal function (_get_quantiles) within fit(). The quantile transformation
@@ -599,6 +599,161 @@ class FitSPTMetalogTest(parameterized.TestCase):
         # Should produce valid coefficients
         self.assertEqual(len(result.a), 3)
         self.assertTrue(jnp.all(jnp.isfinite(result.a)))
+
+
+class SPTMetalogPropositionsTest(parameterized.TestCase):
+    """Regression tests for issue #20: SPT fits against Keelin (2016), Props 1-4."""
+
+    # Inside (LOWER_BOUND, UPPER_BOUND), feasible for every alpha in ALPHAS and every
+    # supported boundedness type, and skewed so that a3 is nonzero
+    TRIPLET = (2.0, 4.0, 7.0)
+    ALPHAS = (0.05, 0.1, 0.25)
+    LOWER_BOUND = 0.0
+    UPPER_BOUND = 10.0
+    SUPPORTED_BOUNDEDNESS = (
+        ("unbounded", MetalogBoundedness.UNBOUNDED),
+        ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND),
+        ("bounded", MetalogBoundedness.BOUNDED),
+    )
+
+    def _params(self, boundedness, alpha):
+        """Return SPT parameters that use the class bounds."""
+        return SPTMetalogParameters(
+            boundedness=boundedness,
+            alpha=alpha,
+            lower_bound=self.LOWER_BOUND,
+            upper_bound=self.UPPER_BOUND,
+        )
+
+    def _data(self, q, alpha):
+        """Return 101 points whose alpha, 0.5 and 1 - alpha quantiles are q."""
+        # Piecewise linear in the index, so jnp.quantile's interpolation is exact
+        i = round(alpha * 100)
+        knots = [0, i, 50, 100 - i, 100]
+        values = [
+            0.5 * (self.LOWER_BOUND + q[0]),
+            *q,
+            0.5 * (q[2] + self.UPPER_BOUND),
+        ]
+        return jnp.asarray(np.interp(np.arange(101), knots, values))
+
+    def _to_metalog_scale(self, q, boundedness):
+        """Transform quantiles to the scale on which the metalog is unbounded."""
+        q = np.asarray(q)
+        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return np.log(q - self.LOWER_BOUND)
+        if boundedness == MetalogBoundedness.BOUNDED:
+            return np.log((q - self.LOWER_BOUND) / (self.UPPER_BOUND - q))
+        return q
+
+    def _triplet_with_median_at(self, r, boundedness, alpha):
+        """Return data whose median sits at relative position r on the metalog scale."""
+        z = self._to_metalog_scale((2.0, 7.0), boundedness)
+        z_median = z[0] + r * (z[1] - z[0])
+        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            median = self.LOWER_BOUND + np.exp(z_median)
+        elif boundedness == MetalogBoundedness.BOUNDED:
+            median = (self.LOWER_BOUND + self.UPPER_BOUND * np.exp(z_median)) / (
+                1 + np.exp(z_median)
+            )
+        else:
+            median = z_median
+        return self._data((2.0, float(median), 7.0), alpha)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_ppf_reproduces_anchor_quantiles(self, boundedness):
+        """The fit's ppf passes through the alpha, 0.5 and 1 - alpha quantiles."""
+        for alpha in self.ALPHAS:
+            with self.subTest(alpha=alpha):
+                m = fit_spt_metalog(
+                    self._data(self.TRIPLET, alpha), self._params(boundedness, alpha)
+                )
+                y = jnp.array([alpha, 0.5, 1 - alpha])
+                # The closed forms are exact, so only float64 rounding remains
+                np.testing.assert_allclose(m.ppf(y), self.TRIPLET, rtol=1e-10)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_coefficients_match_closed_forms(self, boundedness):
+        """Coefficients match Propositions 1, 3 and 4 of Keelin (2016)."""
+        for alpha in self.ALPHAS:
+            with self.subTest(alpha=alpha):
+                m = fit_spt_metalog(
+                    self._data(self.TRIPLET, alpha), self._params(boundedness, alpha)
+                )
+                # Propositions 3 and 4 apply Proposition 1 on the log and logit scales
+                z = self._to_metalog_scale(self.TRIPLET, boundedness)
+                log_odds = np.log((1 - alpha) / alpha)
+                expected = [
+                    z[1],
+                    (z[2] - z[0]) / (2 * log_odds),
+                    (z[2] + z[0] - 2 * z[1]) / ((1 - 2 * alpha) * log_odds),
+                ]
+                # Float64 rounding, including the cancellation in a3's numerator
+                np.testing.assert_allclose(m.a, expected, rtol=1e-10)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_accepts_triplets_just_inside_feasible_range(self, boundedness):
+        """Medians just inside Propositions 2-4's range give finite coefficients."""
+        alpha = 0.1
+        k_alpha = 0.5 * (1 - THETA_3 * (0.5 - alpha))
+        for r in (k_alpha + 0.01, 1 - k_alpha - 0.01):
+            with self.subTest(r=r):
+                data = self._triplet_with_median_at(r, boundedness, alpha)
+                m = fit_spt_metalog(data, self._params(boundedness, alpha))
+                self.assertTrue(jnp.all(jnp.isfinite(m.a)))
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_rejects_triplets_just_outside_feasible_range(self, boundedness):
+        """Medians just outside Propositions 2-4's range raise AssertionError."""
+        alpha = 0.1
+        k_alpha = 0.5 * (1 - THETA_3 * (0.5 - alpha))
+        for r in (k_alpha - 0.01, 1 - k_alpha + 0.01):
+            with self.subTest(r=r):
+                data = self._triplet_with_median_at(r, boundedness, alpha)
+                with self.assertRaises(AssertionError):
+                    fit_spt_metalog(data, self._params(boundedness, alpha))
+
+    @parameterized.named_parameters(
+        (
+            "lower_bound_above_q_alpha",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            2.0,
+            0.0,
+        ),
+        ("bounded_lower_bound_above_q_alpha", MetalogBoundedness.BOUNDED, 2.0, 20.0),
+        (
+            "bounded_upper_bound_below_q_complement",
+            MetalogBoundedness.BOUNDED,
+            0.0,
+            9.0,
+        ),
+        (
+            "bounded_upper_bound_below_lower_bound",
+            MetalogBoundedness.BOUNDED,
+            11.0,
+            0.0,
+        ),
+    )
+    def test_quantiles_outside_support_raise(
+        self, boundedness, lower_bound, upper_bound
+    ):
+        """Quantiles outside the support raise instead of giving NaN coefficients."""
+        # The 10th and 90th percentiles are 1.9 and 9.1
+        data = jnp.linspace(1.0, 10.0, 101)
+        params = SPTMetalogParameters(
+            boundedness=boundedness,
+            alpha=0.1,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
+        with self.assertRaises(AssertionError):
+            fit_spt_metalog(data, params)
+
+    def test_non_finite_data_raises(self):
+        """Data containing NaN raises instead of giving NaN coefficients."""
+        data = jnp.linspace(1.0, 10.0, 101).at[50].set(jnp.nan)
+        with self.assertRaises(AssertionError):
+            fit_spt_metalog(data, self._params(MetalogBoundedness.UNBOUNDED, 0.1))
 
 
 class GetFitFunctionTest(absltest.TestCase):
