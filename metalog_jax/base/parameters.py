@@ -46,8 +46,8 @@ class MetalogRandomVariableParameters:
         """Post init data validation.
 
         Raises:
-            AssertionError if self.size is not a positive scalar.
-        """
+            AssertionError: If ``size`` is not a positive scalar.
+        """  # noqa: DOC502
         chex.assert_scalar_positive(self.size)
 
 

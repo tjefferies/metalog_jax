@@ -814,74 +814,7 @@ Interactive notebooks are available in two formats:
 
 ## Contributing
 
-We welcome contributions! Please follow these guidelines to ensure a smooth review process.
-
-### Before You Start
-
-1. **Clone** repo locally
-2. **Create** a feature branch: `git checkout -b feature/amazing-feature`
-3. **Install** dependencies: `make install`
-
-### Development Workflow
-
-This project uses a Makefile that mirrors all CI/CD checks. Run `make help` to see all available targets.
-
-**Write and test your changes:**
-
-```bash
-make test-quick    # Fast iteration (no coverage)
-make test          # Full test suite with coverage
-```
-
-**Check code quality before committing:**
-
-```bash
-make format        # Auto-format code
-make lint          # Check for issues
-make typecheck     # Verify types
-```
-
-**Build documentation** (if you modified docstrings):
-
-```bash
-make docs          # Build once
-make docs-live     # Live-reload during development
-```
-
-**Before pushing**, run the full quality gate to catch CI failures early:
-
-```bash
-make quality-gate
-```
-
-This runs all 8 checks that CI will run: formatting, linting, type checking, complexity metrics, tests, license compliance, and security scans.
-
-### Submitting Changes
-
-1. **Commit** with a clear message: `git commit -m 'Add amazing feature'`
-2. **Push** to your branch: `git push origin feature/amazing-feature`
-3. **Open** a Pull Request against `development` with a description of your changes
-
-> **Note:** Pull Requests with failing CI will not be reviewed. Run `make quality-gate` locally first.
-
-### Development Setup
-
-```bash
-git clone https://github.com/tjefferies/metalog_jax.git
-cd metalog_jax
-make install    # Install all dependencies
-make test       # Run tests with coverage
-make docs       # Build documentation
-make help       # Show all available Make targets
-```
-
-### Code Style
-
-- Follow existing code conventions in the repository
-- Use type hints for all function signatures
-- Write comprehensive docstrings following Google style
-- Keep functions focused and single-purpose
-- Prefer immutable data structures (Flax dataclasses)
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the checks every pull request must pass, and how releases work. Open pull requests against `development`.
 
 ## Citation
 

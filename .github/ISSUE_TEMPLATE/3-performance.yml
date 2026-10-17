@@ -1,0 +1,99 @@
+name: Performance issue
+description: Slow fits, long compile times, repeated recompilation or high memory use.
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        JAX compiles on the first call, so please time the first call separately from later ones. JAX also runs asynchronously, so call `.block_until_ready()` on results before stopping the timer.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the [existing issues](https://github.com/tjefferies/metalog_jax/issues?q=is%3Aissue) and this hasn't been reported.
+          required: true
+        - label: I reproduced this with the latest metalog-jax release.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What is slow?
+      description: The operation, the problem size (number of datasets, quantiles, terms, grid points), and how it's slower than you expect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproducible example
+      description: A self-contained script that includes the timing code.
+      placeholder: |
+        import time
+
+        start = time.perf_counter()
+        result = ...  # first call: compiles
+        jax.block_until_ready(result)
+        print("first call", time.perf_counter() - start)
+
+        start = time.perf_counter()
+        result = ...  # later call: compiled
+        jax.block_until_ready(result)
+        print("later call", time.perf_counter() - start)
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: timings
+    attributes:
+      label: Timings
+      description: What the script printed, with compile time and run time separate.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: |
+        For example, timings from an earlier release, another library, or the benchmarks in [`benchmarks/feasible_scaling/`](https://github.com/tjefferies/metalog_jax/tree/development/benchmarks/feasible_scaling).
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware
+      options:
+        - CPU
+        - NVIDIA GPU (CUDA)
+        - Other accelerator
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Is this a regression?
+      options:
+        - Yes, it was faster in an earlier release
+        - "No"
+        - I don't know
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Run this and paste the output. Remove anything private, such as the host name.
+
+        ```shell
+        python -c "import importlib.metadata as md, jax; print(*(f'{p}: {md.version(p)}' for p in ('metalog-jax', 'flax', 'chex')), sep='\n'); jax.print_environment_info()"
+        ```
+      render: shell
+    validations:
+      required: true

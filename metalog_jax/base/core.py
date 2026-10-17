@@ -234,7 +234,7 @@ class MetalogBase:
             NotFittedError: If the distribution has not been fitted (no coefficients).
             checkify.JaxRuntimeError: If the fitted distribution produces non-positive
                 PDF values, indicating an infeasible fit.
-        """
+        """  # noqa: DOC502
         self._assert_has_coefficients()
         self.pdf(DEFAULT_Y)
 
@@ -255,7 +255,7 @@ class MetalogBase:
         Raises:
             checkify.JaxRuntimeError: If any PDF value is less than or equal
                 to zero, indicating an infeasible metalog fit.
-        """
+        """  # noqa: DOC502
         checkify.check(
             jnp.all(m > 0),
             "Metalog PDF returned a non-positive value! "
@@ -384,7 +384,7 @@ class MetalogBase:
 
         Raises:
             chex.AssertionError: If the number of data points is less than num_terms.
-        """
+        """  # noqa: DOC502
         x = data.x
         chex.assert_axis_dimension_gteq(x, 0, metalog_params.num_terms)
         boundedness = metalog_params.boundedness
@@ -531,7 +531,7 @@ class MetalogBase:
         Raises:
             ValueError: If x contains values outside (0, 1).
             NotFittedError: If the distribution has not been fitted.
-        """
+        """  # noqa: DOC502
         assert_float_array(x)
         assert_probability_range(x)
         self.assert_fitted()
@@ -566,7 +566,7 @@ class MetalogBase:
             NotFittedError: If the distribution has not been fitted.
             checkify.JaxRuntimeError: If the PDF contains non-positive values,
                 indicating an infeasible metalog fit.
-        """
+        """  # noqa: DOC502
 
         @partial(jax.jit, static_argnames=["num_terms"])
         def _pdf(x: chex.Numeric, num_terms: int) -> chex.Array:
@@ -666,7 +666,7 @@ class MetalogBase:
         Raises:
             chex.AssertionError: If size is not positive or exceeds max_draws.
             checkify.JaxRuntimeError: If the PDF is infeasible (non-positive values).
-        """
+        """  # noqa: DOC502
 
         @jax.jit
         def _hdr_uniform(trial: int, maxval: int) -> chex.Array:
@@ -928,7 +928,7 @@ class MetalogBase:
 
         Raises:
             NotFittedError: If the distribution has not been fitted.
-        """
+        """  # noqa: DOC502
         self.assert_fitted()
         x = DEFAULT_Y_FULL
         ppf = self.ppf(x)
@@ -1091,7 +1091,7 @@ class MetalogBase:
         Raises:
             ValueError: If x contains values outside (0, 1).
             NotFittedError: If the distribution has not been fitted.
-        """
+        """  # noqa: DOC502
         return self.ppf(x)
 
     def p(self, q: chex.Numeric) -> chex.Numeric:

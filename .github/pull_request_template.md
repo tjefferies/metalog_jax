@@ -53,7 +53,7 @@ Environment: <!-- OS, Python, jax/jaxlib versions, CPU or GPU -->
 
 <!-- For changes to fitting, ppf/pdf/cdf/q, moments, sampling, or feasibility. -->
 
-- [ ] Results are checked against an independent reference: <!-- equation or proposition in Keelin (2016) or Baucells, Chrisman, Keelin and Xu (2025); R rmetalog; the reference implementation credited in NOTICE; a closed form; or scipy -->
+- [ ] Results are checked against an independent reference: <!-- equation or proposition in Keelin (2016) or Baucells, Chrisman, Keelin and Xu (2025); the reference implementation credited in NOTICE; a closed form; or scipy -->
 - [ ] Tolerances in new assertions are explained in a comment or here
 - [ ] All four boundedness types are tested, not just `UNBOUNDED`
 - [ ] Every affected fit method (OLS, Lasso, Feasible) is tested

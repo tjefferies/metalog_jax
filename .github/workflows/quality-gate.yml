@@ -76,6 +76,57 @@ jobs:
           fi
           echo "All functions have Grade A or B complexity!"
 
+  xenon:
+    # Fails on complexity thresholds: no block worse than B, modules and average A
+    # Runs in PARALLEL (no dependency on ruff)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --all-groups
+
+      - name: Check complexity thresholds
+        run: uv run xenon --max-absolute B --max-modules A --max-average A metalog_jax/
+
+  interrogate:
+    # Docstring coverage; threshold in [tool.interrogate] in pyproject.toml
+    # Runs in PARALLEL (no dependency on ruff)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --all-groups
+
+      - name: Check docstring coverage
+        run: uv run interrogate metalog_jax/
+
+  pydoclint:
+    # Google-style docstring checks; config in [tool.pydoclint] in pyproject.toml
+    # Runs in PARALLEL (no dependency on ruff)
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --all-groups
+
+      - name: Check docstrings
+        run: uv run pydoclint metalog_jax/
+
   # === TYPING STAGE ===
 
   ty:
@@ -297,7 +348,7 @@ jobs:
   quality-gate:
     # This job only passes if ALL parallel jobs succeed
     # Used by downstream workflows (build, docs, publish)
-    needs: [ruff, radon, ty, pytest, license-check, semgrep, bandit, sbom]
+    needs: [ruff, radon, xenon, interrogate, pydoclint, ty, pytest, license-check, semgrep, bandit, sbom]
     runs-on: ubuntu-latest
     steps:
       - name: All quality checks passed

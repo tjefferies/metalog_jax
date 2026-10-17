@@ -82,7 +82,7 @@ def assert_numeric_array(array: chex.Array) -> None:
 
     Raises:
         AssertionError: If the array does not contain numeric (float or int) values.
-    """
+    """  # noqa: DOC502
     assert_float_array(array.astype(float))
 
 
@@ -94,7 +94,7 @@ def assert_float_array(array: chex.Array) -> None:
 
     Raises:
         AssertionError: If the array does not contain numeric float values.
-    """
+    """  # noqa: DOC502
     chex.assert_type(array, float)
 
 
@@ -109,13 +109,13 @@ def assert_probability_range(array: chex.Array) -> None:
         array: Input array to validate.
 
     Raises:
-        AssertionError: If any value is <= 0 or >= 1.
+        ValueError: If any value is <= 0 or >= 1.
 
     Example:
         >>> valid_probs = jnp.array([0.1, 0.5, 0.9])
         >>> assert_probability_range(valid_probs)  # No error
         >>> invalid_probs = jnp.array([0.0, 0.5, 1.0])
-        >>> assert_probability_range(invalid_probs)  # Raises AssertionError
+        >>> assert_probability_range(invalid_probs)  # Raises ValueError
     """
     min_val = jnp.min(array)
     max_val = jnp.max(array)
@@ -203,7 +203,7 @@ def assert_strictly_ascending(x: chex.Numeric, tol: float = 1e-12) -> None:
     References:
         Used extensively in metalog fitting to validate probability level arrays
         (y values) before computing quantile functions or fitting coefficients.
-    """
+    """  # noqa: DOC502
     diffs = jnp.diff(x)
     chex.assert_scalar_positive(bool(jnp.all(diffs > tol)))
 
@@ -254,7 +254,7 @@ def hdrprng(
         the internal _hdrprng() function, which is JIT-compiled for performance.
         The algorithm uses a combination of large prime numbers and modular
         arithmetic to generate uniformly distributed pseudo-random values.
-    """
+    """  # noqa: DOC502
 
     @jax.jit
     def _hdrprng(

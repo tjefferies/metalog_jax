@@ -154,5 +154,5 @@ def assert_full_column_rank(X: chex.Array) -> None:
         Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416 (Proposition 2).
-    """
+    """  # noqa: DOC502
     checkify.check(has_full_column_rank(X), RANK_DEFICIENT_MESSAGE)

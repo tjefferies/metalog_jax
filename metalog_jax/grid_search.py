@@ -49,6 +49,9 @@ def _check_grid_method(method: MetalogFitMethod) -> None:
     Grid fits build the design matrix with a traced number of terms, which OLS and
     Lasso support. The feasible solver needs the number of terms fixed at trace time.
 
+    Args:
+        method: Fit method requested for the grid search.
+
     Raises:
         ValueError: If ``method`` is not OLS or Lasso.
     """
@@ -383,7 +386,7 @@ def fit_grid(
     Raises:
         ValueError: If params.method is MetalogFitMethod.Feasible, which cannot run
             inside the vmapped grid (use fit or fit_grid_datasets instead).
-    """
+    """  # noqa: DOC502
     _check_grid_method(params.method)
 
     # Detect which axes are active
@@ -412,7 +415,7 @@ def fit_grid(
     )
 
 
-def stack_leaves(*leaves):
+def stack_leaves(*leaves: jnp.ndarray) -> jnp.ndarray:
     """Stack leaf values from multiple PyTrees along a new batch dimension.
 
     This helper function is used with jax.tree.map to transform a list of
@@ -664,6 +667,9 @@ def _pad_coeffs_for_stacking(
 
     Returns:
         Metalog with padded coefficients.
+
+    Raises:
+        ValueError: If ``ndim`` is not 1 or 2.
     """
     current_terms = metalog.a.shape[-1]
     if current_terms == max_terms:
@@ -692,7 +698,7 @@ def _get_fit_function_for_method(
 
     Raises:
         ValueError: If method is not OLS or Lasso.
-    """
+    """  # noqa: DOC502
     _check_grid_method(method)
     if method == MetalogFitMethod.Lasso:
         from metalog_jax.regression.lasso import DEFAULT_LASSO_PARAMETERS
@@ -736,7 +742,7 @@ def fit_grid_num_terms(
 
     Raises:
         ValueError: If params.method is not OLS or Lasso.
-    """
+    """  # noqa: DOC502
     max_terms_output = max(num_terms_list)
     num_terms_array = jnp.array(num_terms_list)
 
@@ -873,7 +879,7 @@ def fit_grid_datasets_num_terms(
 
     Raises:
         ValueError: If params.method is not OLS or Lasso.
-    """
+    """  # noqa: DOC502
     max_terms_output = max(num_terms_list)
     num_terms_array = jnp.array(num_terms_list)
 

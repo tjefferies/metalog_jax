@@ -87,11 +87,23 @@ def _poly_der(c: chex.Array, j: int) -> chex.Array:
 
 
 def _horner(c: chex.Array, x: chex.Numeric) -> chex.Numeric:
+    """Evaluate ascending coefficients ``c`` at ``x`` by Horner's rule."""
     n = c.shape[0]
     return jax.lax.fori_loop(0, n, lambda i, acc: acc * x + c[n - 1 - i], 0.0 * x)
 
 
 def _horner_abs(c: chex.Array, x: chex.Numeric) -> chex.Numeric:
+    """Return the polynomial magnitude ``sum(|c_i| * |x|^i)`` at ``x``.
+
+    Comparing a value with this magnitude tells whether it is zero up to rounding.
+
+    Args:
+        c: Ascending polynomial coefficients.
+        x: Evaluation point.
+
+    Returns:
+        ``_horner(|c|, |x|)``.
+    """
     return _horner(jnp.abs(c), jnp.abs(x))
 
 
@@ -108,6 +120,9 @@ class Engine:
         Args:
             num_terms: Number of metalog terms (>= 2).
             order: Basis ordering.
+
+        Raises:
+            ValueError: If ``num_terms`` is less than 2.
         """
         if num_terms < 2:
             raise ValueError("num_terms must be >= 2")
@@ -125,7 +140,25 @@ class Engine:
         """Ascending coefficients ``(mu, s)`` of the location and scale polynomials."""
         return a[jnp.array(self.mu_idx)], a[jnp.array(self.s_idx)]
 
-    def _parts(self, j, mu, s, u):
+    def _parts(
+        self, j: int, mu: chex.Array, s: chex.Array, u: chex.Numeric
+    ) -> tuple[chex.Numeric, chex.Numeric, chex.Numeric, chex.Numeric, chex.Numeric]:
+        """Return the parts of level ``j`` at ``y = sigmoid(u)``.
+
+        :meth:`level` combines them as ``exp(j * logw) * trans + rat``, and
+        :meth:`level_sign` also uses the magnitudes to test for zero.
+
+        Args:
+            j: Derivative order of the level ``(y(1-y))^j M^(j)``.
+            mu: Ascending coefficients of the location polynomial.
+            s: Ascending coefficients of the scale polynomial.
+            u: Logit of the probability.
+
+        Returns:
+            Tuple ``(trans, trans_mag, rat, rat_mag, logw)``: the polynomial part
+            and its magnitude, the rational part and its magnitude, and
+            ``log(y(1-y))``.
+        """
         y, z = jax.nn.sigmoid(u), jax.nn.sigmoid(-u)
         x = 0.5 * jnp.tanh(0.5 * u)
         pm, ps = _poly_der(mu, j), _poly_der(s, j)
@@ -207,10 +240,37 @@ def get_engine(num_terms: int, order: TermOrder = TermOrder.KEELIN_2016) -> Engi
 class _PolyLevel:
     """Adapter exposing the top polynomial levels ``p^(m)`` through the level interface."""
 
-    def __init__(self, cy, cz, m):
+    def __init__(self, cy: chex.Array, cz: chex.Array, m: int) -> None:
+        """Store a polynomial in the y and 1-y bases with its derivative order.
+
+        Args:
+            cy: Ascending coefficients in ``y``.
+            cz: Ascending coefficients in ``z = 1 - y``.
+            m: Order of the derivative ``p^(m)`` this level evaluates.
+        """
         self.cy, self.cz, self.m = cy, cz, m
 
-    def level_sign(self, j, mu, s, u, kappa=64.0):
+    def level_sign(
+        self,
+        j: int,
+        mu: chex.Array,
+        s: chex.Array,
+        u: chex.Numeric,
+        kappa: float = 64.0,
+    ) -> chex.Numeric:
+        """Return the sign of ``p^(m)`` at ``sigmoid(u)``, 0 within rounding.
+
+        Args:
+            j: Unused; matches :meth:`Engine.level_sign`.
+            mu: Unused; matches :meth:`Engine.level_sign`.
+            s: Unused; matches :meth:`Engine.level_sign`.
+            u: Logit of the probability.
+            kappa: Zero-test tolerance, in multiples of machine epsilon times the
+                value's magnitude.
+
+        Returns:
+            1.0 or -1.0, or 0.0 when the value is zero up to rounding.
+        """
         y, z = jax.nn.sigmoid(u), jax.nn.sigmoid(-u)
         py, pz = (
             _poly_der(self.cy, self.m),
@@ -222,7 +282,21 @@ class _PolyLevel:
             (mag <= 0) | (jnp.abs(v) <= kappa * EPS * mag), 0.0, jnp.sign(v)
         )
 
-    def tail_sign(self, j, mu, s, at_one):
+    def tail_sign(
+        self, j: int, mu: chex.Array, s: chex.Array, at_one: bool
+    ) -> chex.Numeric:
+        """Return the sign of ``p^(m)`` in the limit y -> 1 or y -> 0.
+
+        Args:
+            j: Unused; matches :meth:`Engine.tail_sign`.
+            mu: Unused; matches :meth:`Engine.tail_sign`.
+            s: Unused; matches :meth:`Engine.tail_sign`.
+            at_one: True for the limit y -> 1, False for y -> 0.
+
+        Returns:
+            Sign of the lowest-order coefficient that is nonzero beyond rounding,
+            or 0.0 if there is none.
+        """
         c = _poly_der(self.cz if at_one else self.cy, self.m) * (
             ((-1.0) ** self.m) if at_one else 1.0
         )
