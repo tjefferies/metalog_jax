@@ -22,7 +22,11 @@ from metalog_jax.base import (
     SPTMetalogParameters,
 )
 from metalog_jax.metalog import Metalog, SPTMetalog, fit
-from metalog_jax.utils import DEFAULT_Y, JaxUniformDistributionParameters
+from metalog_jax.utils import (
+    DEFAULT_Y,
+    HDRPRNGParameters,
+    JaxUniformDistributionParameters,
+)
 
 
 class MetalogBoundednessTest(parameterized.TestCase):
@@ -1312,6 +1316,87 @@ class MetalogQuantileAliasTest(parameterized.TestCase):
 
         np.testing.assert_allclose(q, m.ppf(y))
         self.assertTrue(jnp.all((q > self.LOWER_BOUND) & (q < self.UPPER_BOUND)))
+
+
+class QuantileTransformTest(parameterized.TestCase):
+    """Tests for MetalogBase.quantile_transform and inverse_quantile_transform."""
+
+    LOWER_BOUND = 2.0
+    UPPER_BOUND = 10.0
+    # Inside (LOWER_BOUND, UPPER_BOUND), so valid for every boundedness type
+    X = (2.5, 4.0, 6.0, 9.5)
+
+    @parameterized.named_parameters(
+        ("unbounded", MetalogBoundedness.UNBOUNDED, lambda x, lo, hi: x),
+        (
+            "strictly_lower_bound",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            lambda x, lo, hi: np.log(x - lo),
+        ),
+        (
+            "strictly_upper_bound",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            lambda x, lo, hi: -np.log(hi - x),
+        ),
+        (
+            "bounded",
+            MetalogBoundedness.BOUNDED,
+            lambda x, lo, hi: np.log((x - lo) / (hi - x)),
+        ),
+    )
+    def test_transform_matches_closed_form_and_inverts(self, boundedness, expected):
+        """The transform matches its closed form, and the inverse undoes it."""
+        x = jnp.asarray(self.X)
+        lo, hi = self.LOWER_BOUND, self.UPPER_BOUND
+        z = Metalog.quantile_transform(x, boundedness, lo, hi)
+        # Same operations as the closed form, so only float64 rounding remains
+        np.testing.assert_allclose(z, expected(np.asarray(self.X), lo, hi), rtol=1e-12)
+        back = Metalog.inverse_quantile_transform(z, boundedness, lo, hi)
+        np.testing.assert_allclose(back, self.X, rtol=1e-12)
+
+
+class MetalogPpfPrecisionTest(absltest.TestCase):
+    """Tests that ppf evaluates its basis in the coefficients' precision."""
+
+    def test_float32_probabilities_match_float64(self):
+        """Float32 probabilities give the same ppf as the same values in float64."""
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+        m = Metalog(params, jnp.array([5.0, 1.5, 0.4]))
+        y32 = jnp.array([0.01, 0.1, 0.5, 0.9, 0.99], dtype=jnp.float32)
+        np.testing.assert_array_equal(m.ppf(y32), m.ppf(y32.astype(jnp.float64)))
+
+
+class MetalogRvsHdrTrialTest(absltest.TestCase):
+    """Tests that rvs starts its HDR trials at HDRPRNGParameters.trial."""
+
+    def _draws(self, size, trial):
+        """Return rvs draws from an unbounded 3-term metalog."""
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+        m = Metalog(params, jnp.array([5.0, 1.5, 0.4]))
+        rv_params = MetalogRandomVariableParameters(
+            prng_params=HDRPRNGParameters(trial=trial), size=size
+        )
+        return m.rvs(rv_params)
+
+    def test_trial_changes_the_draws(self):
+        """Different trial values give different draws."""
+        self.assertFalse(jnp.array_equal(self._draws(5, 1), self._draws(5, 2)))
+
+    def test_later_trial_continues_the_stream(self):
+        """Starting at trial 6 gives draws 6 to 10 of a batch starting at trial 1."""
+        np.testing.assert_array_equal(self._draws(10, 1)[5:], self._draws(5, 6))
 
 
 class MetalogInputDataTest(parameterized.TestCase):

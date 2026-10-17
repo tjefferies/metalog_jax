@@ -327,6 +327,68 @@ class MetalogBase:
         return jnp.log((x - lower_bound) / (upper_bound - x))
 
     @staticmethod
+    def quantile_transform(
+        x: chex.Numeric,
+        boundedness: MetalogBoundedness,
+        lower_bound: chex.Scalar,
+        upper_bound: chex.Scalar,
+    ) -> chex.Numeric:
+        """Transform quantiles to the scale on which the metalog is unbounded.
+
+        Applies the transform that ``boundedness`` selects: none for UNBOUNDED,
+        then strictly_lower_bound_quantile_transform,
+        strictly_upper_bound_quantile_transform or bounded_quantile_transform.
+        ``boundedness`` is a static parameter field, so this dispatches in Python
+        and works inside ``jax.jit`` and ``jax.vmap``.
+
+        Args:
+            x: Quantile values inside the distribution's support.
+            boundedness: Boundedness type of the distribution.
+            lower_bound: Lower bound, used by STRICTLY_LOWER_BOUND and BOUNDED.
+            upper_bound: Upper bound, used by STRICTLY_UPPER_BOUND and BOUNDED.
+
+        Returns:
+            chex.Numeric: Transformed quantile values on the unbounded scale.
+        """
+        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return MetalogBase.strictly_lower_bound_quantile_transform(x, lower_bound)
+        if boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return MetalogBase.strictly_upper_bound_quantile_transform(x, upper_bound)
+        if boundedness == MetalogBoundedness.BOUNDED:
+            return MetalogBase.bounded_quantile_transform(x, lower_bound, upper_bound)
+        return x
+
+    @staticmethod
+    def inverse_quantile_transform(
+        m: chex.Numeric,
+        boundedness: MetalogBoundedness,
+        lower_bound: chex.Scalar,
+        upper_bound: chex.Scalar,
+    ) -> chex.Numeric:
+        """Map values of the unbounded metalog back to the distribution's support.
+
+        The inverse of quantile_transform (Keelin 2016, Section 4): ``L + e^M``
+        for STRICTLY_LOWER_BOUND, ``U - e^(-M)`` for STRICTLY_UPPER_BOUND and
+        ``(L + U e^M) / (1 + e^M)`` for BOUNDED.
+
+        Args:
+            m: Values of the unbounded metalog quantile function.
+            boundedness: Boundedness type of the distribution.
+            lower_bound: Lower bound, used by STRICTLY_LOWER_BOUND and BOUNDED.
+            upper_bound: Upper bound, used by STRICTLY_UPPER_BOUND and BOUNDED.
+
+        Returns:
+            chex.Numeric: Quantile values in the distribution's support.
+        """
+        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return lower_bound + jnp.exp(m)
+        if boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return upper_bound - jnp.exp(-m)
+        if boundedness == MetalogBoundedness.BOUNDED:
+            return (lower_bound + upper_bound * jnp.exp(m)) / (1 + jnp.exp(m))
+        return m
+
+    @staticmethod
     @jax.jit
     def delta_term(x: chex.Numeric) -> chex.Numeric:
         """Compute the delta term (x - 0.5) used in metalog basis functions.
@@ -393,19 +455,12 @@ class MetalogBase:
         """  # noqa: DOC502
         x = data.x
         chex.assert_axis_dimension_gteq(x, 0, metalog_params.num_terms)
-        boundedness = metalog_params.boundedness
-
-        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
-            lower_bound = metalog_params.lower_bound
-            x = MetalogBase.strictly_lower_bound_quantile_transform(x, lower_bound)
-        elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
-            upper_bound = metalog_params.upper_bound
-            x = MetalogBase.strictly_upper_bound_quantile_transform(x, upper_bound)
-        elif boundedness == MetalogBoundedness.BOUNDED:
-            lower_bound = metalog_params.lower_bound
-            upper_bound = metalog_params.upper_bound
-            x = MetalogBase.bounded_quantile_transform(x, lower_bound, upper_bound)
-        return x
+        return MetalogBase.quantile_transform(
+            x,
+            metalog_params.boundedness,
+            metalog_params.lower_bound,
+            metalog_params.upper_bound,
+        )
 
     @staticmethod
     @partial(jax.jit, static_argnames=["num_terms"])
@@ -542,17 +597,13 @@ class MetalogBase:
         assert_probability_range(x)
         self.assert_fitted()
 
-        num_terms = self.num_terms
-        ppf = self._ppf(x, num_terms)
-        if self.boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
-            ppf = self.lower_bound + jnp.exp(ppf)
-        elif self.boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
-            ppf = self.upper_bound - jnp.exp(-1 * ppf)
-        elif self.boundedness == MetalogBoundedness.BOUNDED:
-            ppf = (self.lower_bound + self.upper_bound * jnp.exp(ppf)) / (
-                1 + jnp.exp(ppf)
-            )
-        return ppf
+        # Evaluate the basis in the coefficients' precision, as pdf() does, so
+        # float32 probabilities don't round the basis to float32
+        x = jnp.asarray(x, dtype=jnp.result_type(x, self.a))
+        ppf = self._ppf(x, self.num_terms)
+        return self.inverse_quantile_transform(
+            ppf, self.boundedness, self.lower_bound, self.upper_bound
+        )
 
     def pdf(self, x: chex.Numeric) -> chex.Numeric:
         """Compute the probability density function of the metalog distribution.
@@ -615,7 +666,7 @@ class MetalogBase:
         self._assert_has_coefficients()
         # Evaluate the basis in the coefficients' precision: float32 rounding of
         # log(y / (1 - y)) times large coefficients can flip the sign of a small but
-        # positive density (e.g. DEFAULT_Y is float32 and the fit is float64).
+        # positive density (e.g. float32 probabilities with a float64 fit).
         x = jnp.asarray(x, dtype=jnp.result_type(x, self.a))
         num_terms = self.num_terms
         m = _pdf(x, num_terms)
@@ -660,7 +711,10 @@ class MetalogBase:
         """Generate random variates from the fitted metalog distribution.
 
         Samples are generated by drawing uniform random values and applying
-        the quantile function (inverse transform sampling).
+        the quantile function (inverse transform sampling). With
+        HDRPRNGParameters, draw i uses HDR trial ``trial + i``, so the default
+        ``trial=1`` draws trials 1 to size, and ``trial=size + 1`` continues the
+        same stream.
 
         Args:
             rv_params: Parameters controlling random variate generation, including
@@ -702,7 +756,8 @@ class MetalogBase:
             entity = prng_params.entity
             time = prng_params.time
             agent = prng_params.agent
-            trials = jnp.arange(1, size + 1, dtype=int)
+            # One HDR trial per draw, starting at prng_params.trial
+            trials = prng_params.trial + jnp.arange(size, dtype=int)
 
             vectorized_hdr = jax.vmap(_hdr_uniform, in_axes=(0, None))
             mask = vectorized_hdr(trials, maxval)

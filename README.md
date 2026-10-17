@@ -718,18 +718,28 @@ The function handles all 8 combinations of axes automatically:
 
 ### JAX Transformations
 
-Full compatibility with JAX's transformation primitives:
+Models, parameters and data can all be passed through `jax.jit`, `jax.vmap` and `jax.grad`:
 
 ```python
 import jax
+import jax.numpy as jnp
+from jax.experimental import checkify
 
 # Automatic differentiation
-def quantile_at(prob):
-    return metalog.ppf(prob)
+gradient = jax.grad(lambda prob: metalog.ppf(prob))(0.5)
 
-gradient_fn = jax.grad(quantile_at)
-gradient = gradient_fn(0.5)
+# JIT compilation. Input checks run through checkify inside transforms, so wrap
+# the jitted function and raise any failed check.
+ppf = checkify.checkify(jax.jit(lambda m, prob: m.ppf(prob)))
+err, quantiles = ppf(metalog, jnp.array([0.1, 0.5, 0.9]))
+err.throw()
+
+# Vectorization over a batch of models
+models = jax.tree.map(lambda *leaves: jnp.stack(leaves), metalog, metalog)
+medians = jax.vmap(lambda m: m.ppf(jnp.array([0.5])))(models)
 ```
+
+`boundedness`, `method` and `num_terms` are static fields, so `jax.jit` compiles once for each combination of them, and models stacked for `jax.vmap` must share them. The same goes for `size` and `max_draws` in `MetalogRandomVariableParameters`, so `rvs` also works under both. `MetalogInputData.from_values` works inside transforms too, so you can `vmap` from raw samples through to fitted coefficients.
 
 ## Choosing the Number of Terms
 
