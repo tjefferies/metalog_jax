@@ -58,7 +58,7 @@ make test-quick     # about 3 minutes on a laptop CPU
 | Group | Contents |
 |---|---|
 | `dev` | marimo, for the example apps |
-| `lint` | ruff, ty, interrogate, pydoclint |
+| `lint` | ruff, ty, interrogate, pydoclint, zizmor |
 | `test` | pytest, pytest-cov, absl-py, coverage, radon, xenon, plus scipy and scikit-learn as reference implementations |
 | `security` | bandit, semgrep |
 | `license` | pip-licenses |
@@ -85,12 +85,13 @@ your branch ──PR──▶ development ──release PR──▶ main ──�
 ### Code style
 
 - **Formatting:** ruff (`make format`). CI runs `ruff format --check` on `metalog_jax/` and `tests/`.
-- **Linting:** ruff with pydocstyle (`D`, Google convention), isort (`I`, `metalog_jax` as first-party) and pyflakes (`F`). Lint covers `tests/` too, so test classes and methods need docstrings.
+- **Linting:** ruff with pydocstyle (`D`, Google convention), isort (`I`, `metalog_jax` as first-party), pyflakes (`F`), bugbear (`B`), pyupgrade (`UP`, Python 3.11 idioms) and ruff's own rules (`RUF`). Lint covers `tests/` too, so test classes and methods need docstrings.
 - **Module header:** every module in `metalog_jax/` and `tests/` has the line `# Copyright: Travis Jefferies 2026` and a module docstring. Package modules list their `Classes:` and `Functions:` and add a `See Also:` section.
 - **Docstrings:** [Google style](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings) for every public module, class, method and function.
   - **Summary line:** one line of 80 characters or fewer, ending with a period. Functions use the imperative ("Return the …", "Fit a …").
   - **Sections:** add `Args:`, `Returns:` and `Raises:` unless the name and signature make a one-line docstring enough. Argument types go in the signature, not the docstring.
   - **References:** algorithms cite their source in a `References:` section (Keelin 2016, or Baucells, Chrisman, Keelin and Xu 2025).
+  - **Examples:** `make doctest` runs every `>>>` example, so write examples that run as shown: include the imports and data, print stable values (for example `float(...)` or `.tolist()` rather than raw JAX arrays, whose repr includes the dtype), and show exceptions as a doctest `Traceback`.
 - **Docstring checks:** `make pydoclint` checks that every `Args:`, `Returns:` and `Raises:` section matches its signature and body. Its configuration is under `[tool.pydoclint]` in `pyproject.toml`.
   - **Indirect exceptions:** pydoclint can't see exceptions raised by chex assertions or by functions you call. If you document one of those under `Raises:`, put `# noqa: DOC502` after the docstring's closing quotes. Use `DOC503` instead when the function also raises something directly. The existing cases are marked the same way.
 - **Docstring coverage:** `make interrogate` measures docstring coverage of `metalog_jax/` and fails below 95% (`[tool.interrogate]` in `pyproject.toml`). Private helpers count; functions nested inside another function, such as `jax.lax` loop bodies, don't. Give every new function, class and method a docstring, private ones included (a one-line summary is enough).
@@ -141,11 +142,14 @@ your branch ──PR──▶ development ──release PR──▶ main ──�
 - **Bug fixes:** add a test that fails on `development` and passes with the fix.
 
 ```bash
-make test-quick                                                              # whole suite, no coverage
-uv run pytest tests/unit/test_base.py -k MetalogQuantileAliasTest            # one test class
-make test                                                                    # with coverage, fails under 75%
-uv run pytest tests/ --cov=metalog_jax --cov-branch --cov-fail-under=75      # as CI measures it (branch coverage)
+make test-quick                                                    # whole suite, no coverage
+uv run pytest tests/unit/test_base.py -k MetalogQuantileAliasTest  # one test class
+make test                                                          # branch coverage, fails under 95%
+make doctest                                                       # docstring examples
+make lowest-deps                                                   # lowest allowed versions, Python 3.11
 ```
+
+Coverage settings live in `[tool.coverage]` in `pyproject.toml`, so `make test` and CI measure the same thing. CI runs the suite on Python 3.11, 3.12 and 3.13, and again with the lowest versions `pyproject.toml` allows for direct dependencies.
 
 ### Documentation
 
@@ -162,8 +166,10 @@ uv run pytest tests/ --cov=metalog_jax --cov-branch --cov-fail-under=75      # a
 
   Re-running `basic_usage` also rewrites `docs/source/basic_usage_{pdf,cdf,sf}.png`. Commit those images as well.
 
+  `make notebooks` checks that all three still run, using a scratch copy and a throwaway kernel, so nothing in `docs/source` or your Jupyter setup changes. CI runs the same check.
+
 - **Examples:** `examples/` holds marimo apps that mirror the notebooks. Keep them in sync, and run them with `uv run marimo run examples/basic_usage.py`, or `marimo edit` to change one.
-- **Building the docs:** `make docs` builds them (pandoc required), and `make docs-live` rebuilds on save.
+- **Building the docs:** `make docs` builds them from scratch and fails on any Sphinx warning, as CI does (pandoc required). `make docs-live` rebuilds on save.
 - **README:** update the usage sections if the public API changes.
 
 ### Performance changes
@@ -179,7 +185,7 @@ uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
 - **New runtime dependencies** need a strong reason, and their licenses must match the allow-list: MIT, BSD, Apache, PSF (Python Software Foundation), ISC, Unlicense, Public Domain, CC0, Zlib, Historical Permission Notice and Disclaimer, Mozilla Public License, Academic Free License or 0BSD. `make license-check` checks runtime dependencies only (the packages `uv export` lists without dependency groups or extras).
 - **Development tools** go into the matching dependency group: `uv add --group <group> <package>`.
 - **Commit `uv.lock`** with any dependency change. Don't edit it by hand, and resolve lockfile conflicts by re-locking (`uv lock`), not by merging the file.
-- **Dependabot** opens update pull requests every Monday. The JAX stack (`jax`, `jaxlib`, `jax-*`, `flax`, `chex`, `optax`, `orbax-*`, `ml-dtypes`) gets its own pull request because it can change numerical results. Tool upgrades sometimes need configuration changes, such as renamed ty rules, and those belong in the same pull request as the upgrade.
+- **Dependabot** opens update pull requests every Monday. The JAX stack (`jax`, `jaxlib`, `jax-*`, `flax`, `chex`, `optax`, `orbax-*`, `ml-dtypes`) gets its own pull request because it can change numerical results. It waits 7 days after a release before proposing it (security updates aren't delayed). Tool upgrades sometimes need configuration changes, such as renamed ty rules, and those belong in the same pull request as the upgrade.
 - **Third-party code** may be adapted only under a compatible license. Credit it in `NOTICE` with the author, source, license, where it's used and what changed, and keep the original notices.
 - **Contributions** are licensed under the project's [MIT License](LICENSE).
 
@@ -208,13 +214,17 @@ uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
    | `interrogate` | docstring coverage at or above the `pyproject.toml` threshold |
    | `pydoclint` | Google-style docstring sections match signatures and bodies |
    | `ty` | type check |
-   | `pytest` | full suite with branch coverage of at least 75%, uploaded to Codecov |
+   | `pytest` | full suite on Python 3.11, 3.12 and 3.13, with branch coverage of at least 95% (3.12 uploads to Codecov) |
+   | `doctest` | every docstring example runs |
+   | `lowest-deps` | full suite on Python 3.11 with the lowest allowed dependency versions |
+   | `docs` | Sphinx build with warnings as errors |
+   | `notebooks` | the three docs notebooks execute |
    | `license-check` | runtime dependency licenses |
    | `semgrep`, `bandit` | security scans |
    | `sbom` | grype scan of the environment; fails on critical vulnerabilities |
    | `build` | wheel and source distribution |
 
-   `make quality-gate` runs these locally except `radon` (xenon covers its complexity check), `sbom` (`make sbom` needs syft and grype) and `build`. It doesn't check the maintainability grade or branch coverage; use the commands under [Code style](#code-style) and [Tests](#tests) for those. `make ci` adds `make install`, the build and the docs.
+   `make quality-gate` runs the fast checks locally. It skips `radon` (xenon covers its complexity check; see [Code style](#code-style) for the maintainability grade), `sbom` (`make sbom` needs syft and grype), and the slower jobs. `make ci` adds `make install`, the build, the docs, the notebooks and the lowest-version tests. Only CI runs the Python version matrix.
 4. **Keep compatibility.** A breaking change needs a migration path in the description. Files saved with `dumps()` or `save()` by earlier versions must still `load()`.
 5. **Respond to review,** and update the description if the change evolves.
 

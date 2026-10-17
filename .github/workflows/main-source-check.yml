@@ -9,6 +9,8 @@ on:
     types: [opened, edited, synchronize, reopened]
     branches: [main]
 
+permissions: {}
+
 jobs:
   source-is-development:
     runs-on: ubuntu-latest

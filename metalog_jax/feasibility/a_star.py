@@ -35,8 +35,8 @@ References:
     to JAX, see NOTICE. https://github.com/Stephenxuu/metalog_algorithm
 """
 
+from collections.abc import Callable
 from functools import partial
-from typing import Callable
 
 import chex
 import jax
@@ -340,7 +340,7 @@ def _solve(
 
     shift = jnp.zeros(engine.num_terms).at[engine.mu_idx[0]].set(x_mid)
     a_star, a_ls = a * x_scale + shift, a_ols * x_scale + shift
-    rss = lambda c: jnp.sum((x - Y @ c) ** 2)  # noqa: E731
+    rss = lambda c: jnp.sum((x - Y @ c) ** 2)
     return FeasibleFitResult(
         a_star=a_star,
         a_ols=a_ls,

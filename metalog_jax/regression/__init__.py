@@ -45,13 +45,6 @@ from metalog_jax.regression.ols import (
 )
 
 __all__ = [
-    # Base
-    "RegularizedParameters",
-    "RegressionModel",
-    # OLS
-    "OLSModel",
-    "fit_ordinary_least_squares",
-    "predict_ordinary_least_squares",
     # LASSO
     "DEFAULT_LASSO_ITERATIONS",
     "DEFAULT_LASSO_LAMBDA",
@@ -61,6 +54,13 @@ __all__ = [
     "DEFAULT_LASSO_TOLERANCE",
     "LassoModel",
     "LassoParameters",
+    # OLS
+    "OLSModel",
+    "RegressionModel",
+    # Base
+    "RegularizedParameters",
     "fit_lasso",
+    "fit_ordinary_least_squares",
+    "predict_ordinary_least_squares",
     "soft_thresholding",
 ]

@@ -13,9 +13,10 @@ Functions:
 
 The fit function uses a dispatch table pattern to route to the appropriate regression
 implementation based on the MetalogFitMethod specified in MetalogParameters:
-    - MetalogFitMethod.OLS -> metalog_jax.regression.ols.fit_ordinary_least_squares
-    - MetalogFitMethod.Lasso -> metalog_jax.regression.lasso.fit_lasso
-    - MetalogFitMethod.Feasible -> metalog_jax.feasibility.a_star.fit_feasible
+
+- MetalogFitMethod.OLS -> metalog_jax.regression.ols.fit_ordinary_least_squares
+- MetalogFitMethod.Lasso -> metalog_jax.regression.lasso.fit_lasso
+- MetalogFitMethod.Feasible -> metalog_jax.feasibility.a_star.fit_feasible
 
 See Also:
     metalog_jax.base: Base classes and parameter configurations.
@@ -23,8 +24,8 @@ See Also:
 """
 # Copyright: Travis Jefferies 2026
 
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Union
 
 import chex
 import jax
@@ -147,8 +148,8 @@ class SPTMetalog(MetalogBase):
         Fit an unbounded SPT metalog from data:
 
             >>> import jax.numpy as jnp
-            >>> from metalog_jax import fit_spt_metalog, SPTMetalogParameters
-            >>> from metalog_jax import MetalogBoundedness
+            >>> from metalog_jax.base import MetalogBoundedness, SPTMetalogParameters
+            >>> from metalog_jax.metalog import fit_spt_metalog
             >>>
             >>> # Generate sample data
             >>> data = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1])
@@ -164,12 +165,12 @@ class SPTMetalog(MetalogBase):
             >>> # Fit the SPT metalog
             >>> spt = fit_spt_metalog(data, params)
             >>>
-            >>> # Evaluate quantile function at probability 0.25
-            >>> q_25 = spt.ppf(0.25)
+            >>> # The median is the data's median
+            >>> float(spt.ppf(jnp.array([0.5]))[0])
+            4.1
             >>>
-            >>> # Compute mean and standard deviation
-            >>> mean = spt.mean()
-            >>> std = spt.std()
+            >>> # Summary statistics are properties
+            >>> mean, std = spt.mean, spt.std
 
     Note:
         SPT metalog distributions may fail feasibility checks if the data does
@@ -251,34 +252,38 @@ class Metalog(MetalogBase):
             to a float JAX array on construction.
 
     Examples:
-        Fit an unbounded metalog with 9 terms using OLS:
+        Fit an unbounded metalog with 9 terms:
 
             >>> import jax.numpy as jnp
-            >>> from metalog_jax import fit_metalog, MetalogParameters
-            >>> from metalog_jax import MetalogBoundedness, MetalogFitMethod
+            >>> from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
+            >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> from metalog_jax.metalog import fit
+            >>> from metalog_jax.utils import DEFAULT_Y
             >>>
-            >>> # Generate sample data
-            >>> data = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+            >>> # Sample data
+            >>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+            >>> data = MetalogInputData.from_values(
+            ...     samples, DEFAULT_Y, precomputed_quantiles=False
+            ... )
             >>>
             >>> # Configure metalog parameters
             >>> params = MetalogParameters(
             ...     boundedness=MetalogBoundedness.UNBOUNDED,
-            ...     method=MetalogFitMethod.OLS,
+            ...     method=MetalogFitMethod.Feasible,
             ...     num_terms=9,
             ...     lower_bound=0.0,
             ...     upper_bound=0.0,
             ... )
             >>>
             >>> # Fit the metalog distribution
-            >>> m = fit_metalog(data, params)
+            >>> m = fit(data, params)
             >>>
-            >>> # Evaluate quantile function at probability 0.75
-            >>> q_75 = m.ppf(0.75)
+            >>> # Evaluate the quantile function at probability 0.75
+            >>> round(float(m.ppf(jnp.array([0.75]))[0]), 2)
+            7.4
             >>>
-            >>> # Compute distribution moments
-            >>> mean = m.mean()
-            >>> variance = m.variance()
-            >>> skewness = m.skewness()
+            >>> # Summary statistics are properties
+            >>> mean, variance, skewness = m.mean, m.var, m.skewness
 
     Note:
         The standard `Metalog` class is the recommended choice for most use cases
@@ -479,6 +484,7 @@ def fit_spt_metalog(
             empirical quantiles. The array will be used to compute the alpha-th,
             50th, and (1-alpha)-th percentiles.
         spt_metalog_params: Configuration parameters containing:
+
             - alpha: Lower percentile parameter in (0, 0.5). Common values are
               0.1 (10-50-90 percentiles) or 0.25 (25-50-75 percentiles/IQR).
             - boundedness: Domain constraint type (UNBOUNDED, STRICTLY_LOWER_BOUND,
@@ -488,6 +494,7 @@ def fit_spt_metalog(
 
     Returns:
         SPTMetalog: Fitted SPT metalog distribution containing:
+
             - metalog_params: The input configuration parameters
             - a: Coefficient vector of length 3 containing the fitted metalog
               parameters [a1, a2, a3] that define the quantile function
@@ -1275,5 +1282,5 @@ class GridResult:
         243-277. https://doi.org/10.1287/deca.2016.0338
     """
 
-    metalog: Union[Metalog, SPTMetalog]
+    metalog: Metalog | SPTMetalog
     ks_dist: chex.Scalar

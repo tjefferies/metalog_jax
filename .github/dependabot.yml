@@ -8,6 +8,10 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    # Wait a week before proposing a new release, so a compromised release is likely
+    # caught first. Security updates are not delayed.
+    cooldown:
+      default-days: 7
     # Include transitive packages: most grype findings are indirect dependencies
     # of dev tooling (e.g. anyio via semgrep/marimo/sphinx-autobuild).
     allow:
@@ -50,6 +54,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns:

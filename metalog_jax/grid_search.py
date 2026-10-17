@@ -19,7 +19,8 @@ Key functions:
 """
 # Copyright: Travis Jefferies 2026
 
-from typing import Any, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -339,10 +340,10 @@ def fit_grid(
     y: jnp.ndarray,
     params: MetalogParameters,
     *,
-    num_terms: Optional[Sequence[int]] = None,
-    l1_penalties: Optional[jnp.ndarray] = None,
+    num_terms: Sequence[int] | None = None,
+    l1_penalties: jnp.ndarray | None = None,
     precomputed_quantiles: bool = False,
-    lasso_params: Optional[LassoParameters] = None,
+    lasso_params: LassoParameters | None = None,
     learning_rate: float = 0.01,
     num_iters: int = 500,
     tol: float = 1e-6,
@@ -477,15 +478,16 @@ def unvmap(batched_out: Any) -> list[Any]:
     batch_size = jax.tree_util.tree_leaves(batched_out)[0].shape[0]
     return [
         jax.tree.map(
-            lambda x: x[i].item() if x[i].shape == () else jnp.array(x[i]), batched_out
+            lambda x, i=i: x[i].item() if x[i].shape == () else jnp.array(x[i]),
+            batched_out,
         )
         for i in range(batch_size)
     ]
 
 
 def pad_metalog_coeffs(
-    metalog: Union[Metalog, SPTMetalog], max_terms: int
-) -> Union[Metalog, SPTMetalog]:
+    metalog: Metalog | SPTMetalog, max_terms: int
+) -> Metalog | SPTMetalog:
     """Pad metalog coefficient array to max_terms length with zeros.
 
     Since different term counts produce different coefficient array lengths,
@@ -511,7 +513,7 @@ def fit_grid_datasets(
     batched_x: jnp.ndarray,
     batched_y: jnp.ndarray,
     params: MetalogParameters,
-    fit_params: Optional[RegularizedParameters] = None,
+    fit_params: RegularizedParameters | None = None,
     precomputed_quantiles: bool = False,
 ) -> GridResult:
     """Fit multiple datasets with shared parameters using vmap.
@@ -654,8 +656,8 @@ def fit_grid_datasets_hyperparams(
 
 
 def _pad_coeffs_for_stacking(
-    metalog: Union[Metalog, SPTMetalog], max_terms: int, ndim: int
-) -> Union[Metalog, SPTMetalog]:
+    metalog: Metalog | SPTMetalog, max_terms: int, ndim: int
+) -> Metalog | SPTMetalog:
     """Pad metalog coefficients for stacking across term counts.
 
     Internal helper that handles padding for different batch dimensions.
@@ -1213,7 +1215,7 @@ def extract_best_from_grid(
 
     # Extract the best metalog
     # Build full index: (dataset_idx, *best_idx)
-    full_idx = (dataset_idx,) + best_idx
+    full_idx = (dataset_idx, *best_idx)
     best_metalog = jax.tree.map(
         lambda x: x[full_idx],
         grid_results.metalog,
@@ -1243,17 +1245,34 @@ def extract_metalog(grid_result: GridResult, *indices: int) -> Metalog:
         cdf, rvs, and other distribution methods.
 
     Examples:
-        Extract best metalog from a 1D grid search over L1 penalties:
+        Extract the best metalog from a 1D grid search over L1 penalties:
 
+            >>> import jax.numpy as jnp
+            >>> from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
+            >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> from metalog_jax.utils import DEFAULT_Y
+            >>>
+            >>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+            >>> data = MetalogInputData.from_values(
+            ...     samples, DEFAULT_Y, precomputed_quantiles=False
+            ... )
+            >>> params = MetalogParameters(
+            ...     boundedness=MetalogBoundedness.UNBOUNDED,
+            ...     method=MetalogFitMethod.Lasso,
+            ...     num_terms=5, lower_bound=0.0, upper_bound=0.0
+            ... )
+            >>> l1_vals = jnp.array([0.0, 0.01, 0.1])
             >>> result = fit_grid(data.x, data.y, params, l1_penalties=l1_vals)
             >>> best_idx, best_ks = find_best_config(result.ks_dist)
             >>> best_metalog = extract_metalog(result, int(best_idx))
             >>> median = best_metalog.ppf(jnp.array([0.5]))
 
-        Extract best metalog from a 2D grid search:
+        Extract the best metalog from a 2D grid search:
 
             >>> result = fit_grid(data.x, data.y, params,
             ...                   l1_penalties=l1_vals, num_terms=[5, 7, 9])
+            >>> result.ks_dist.shape
+            (3, 3)
             >>> best_idx, best_ks = find_best_config(result.ks_dist)
             >>> best_l1_idx, best_terms_idx = int(best_idx[0]), int(best_idx[1])
             >>> best_metalog = extract_metalog(result, best_l1_idx, best_terms_idx)

@@ -4,6 +4,8 @@ These tests recreate Keelin's original results from the paper.
 """
 # Copyright: Travis Jefferies 2026
 
+from typing import ClassVar
+
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 from scipy.stats import (
@@ -145,7 +147,7 @@ class MetalogUnboundedDistributionTest(parameterized.TestCase):
             accounting for random seed variations.
     """
 
-    table58_reported_results: dict = {
+    table58_reported_results: ClassVar[dict] = {
         "Normal (mu=50, sigma=15)": {
             3: 0.035,
             4: 0.006,
@@ -209,7 +211,7 @@ class MetalogUnboundedDistributionTest(parameterized.TestCase):
     }
 
     # reported vs acceptable can be chalked up to noise / different seeds
-    table58_acceptable_results: dict = {
+    table58_acceptable_results: ClassVar[dict] = {
         "Normal (mu=50, sigma=15)": {
             3: 0.037,
             4: 0.009,
@@ -694,7 +696,7 @@ class MetalogSemiboundedDistributionTest(parameterized.TestCase):
             thresholds.
     """
 
-    table68_reported_results: dict = {
+    table68_reported_results: ClassVar[dict] = {
         "Log-normal (mu = 0, sigma = 0.5)": {
             3: 0.035,
             4: 0.006,
@@ -858,7 +860,7 @@ class MetalogSemiboundedDistributionTest(parameterized.TestCase):
     }
 
     # reported vs acceptable can be chalked up to noise / different seeds
-    table68_acceptable_results: dict = {
+    table68_acceptable_results: ClassVar[dict] = {
         "Log-normal (mu = 0, sigma = 0.5)": {
             3: 0.038,
             4: 0.0091,
@@ -2619,7 +2621,7 @@ class MetalogBoundedDistributionTest(parameterized.TestCase):
             thresholds.
     """
 
-    table78_reported_results: dict = {
+    table78_reported_results: ClassVar[dict] = {
         "Beta (alpha = 3.5, beta = 3.5)": {
             3: 0.024,
             4: 0.004,
@@ -2702,7 +2704,7 @@ class MetalogBoundedDistributionTest(parameterized.TestCase):
         },
     }
 
-    table78_acceptable_results: dict = {
+    table78_acceptable_results: ClassVar[dict] = {
         "Beta (alpha = 3.5, beta = 3.5)": {
             3: 0.024,
             4: 0.004,

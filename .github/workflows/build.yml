@@ -3,32 +3,40 @@
 name: Build
 
 on:
-  workflow_run:
+  # Guarded below: only release-chain Quality Gate runs from this repository proceed
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Quality Gate]
     types: [completed]
     branches: [main]
   pull_request:
     branches: [main, development]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Only run if quality-gate succeeded (for workflow_run trigger)
-    # Always run for pull_request (quality-gate runs in same PR)
+    # Pull requests always build. On main, only after a successful Quality Gate run that
+    # the release chain started (push → Docker → Quality Gate) in this repository; a
+    # fork's branch can also be named main.
     if: |
       github.event_name == 'pull_request' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'workflow_run' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: astral-sh/setup-uv@v7
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Build wheel and sdist
         run: uv build --out-dir dist
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/

@@ -5,16 +5,24 @@
 name: Publish
 
 on:
-  workflow_run:
+  # Guarded below: only release-chain Build runs from this repository proceed
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Build]
     types: [completed]
     branches: [main]
 
+permissions: {}
+
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Only run if build succeeded
-    if: github.event.workflow_run.conclusion == 'success'
+    # Only a successful Build that the release chain started (push → Docker → Quality
+    # Gate → Build) in this repository; never a pull request build, whose branch can
+    # also be named main.
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     environment: pypi
     permissions:
       actions: read
@@ -22,7 +30,7 @@ jobs:
       id-token: write
     steps:
       - name: Download wheel artifact from Build workflow
-        uses: dawidd6/action-download-artifact@v27
+        uses: dawidd6/action-download-artifact@eab87c9830c39eff17e5a6eadb20bfb4bc880477 # v27
         with:
           workflow: build.yml
           run_id: ${{ github.event.workflow_run.id }}
@@ -33,6 +41,6 @@ jobs:
         run: ls -la dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/

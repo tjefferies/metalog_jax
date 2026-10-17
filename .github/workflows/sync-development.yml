@@ -9,8 +9,7 @@ on:
     types: [closed]
     branches: [main]
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: sync-development
@@ -20,6 +19,8 @@ jobs:
   reset-development:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       # Set DEV_SYNC_TOKEN only if a ruleset on development blocks GITHUB_TOKEN
       GH_TOKEN: ${{ secrets.DEV_SYNC_TOKEN || github.token }}

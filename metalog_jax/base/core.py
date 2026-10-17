@@ -24,7 +24,7 @@ See Also:
 import json
 from functools import partial
 from pathlib import Path
-from typing import Type, TypeVar, Union
+from typing import TypeVar
 
 import chex
 import jax
@@ -92,18 +92,24 @@ class MetalogBase:
     Example:
         MetalogBase is not instantiated directly. Use Metalog or SPTMetalog:
 
-            >>> from metalog_jax.metalog import fit, Metalog
-            >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> import jax.numpy as jnp
             >>> from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
+            >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> from metalog_jax.metalog import fit
+            >>> from metalog_jax.utils import DEFAULT_Y
             >>>
-            >>> data = MetalogInputData.from_values(x=samples, y=probs, precomputed_quantiles=False)
+            >>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+            >>> data = MetalogInputData.from_values(
+            ...     samples, DEFAULT_Y, precomputed_quantiles=False
+            ... )
             >>> params = MetalogParameters(
             ...     boundedness=MetalogBoundedness.UNBOUNDED,
-            ...     method=MetalogFitMethod.OLS,
+            ...     method=MetalogFitMethod.Feasible,
             ...     num_terms=5, lower_bound=0.0, upper_bound=0.0
             ... )
-            >>> m = fit(data, params)  # Returns Metalog instance
-            >>> isinstance(m, MetalogBase)  # True
+            >>> m = fit(data, params)  # Returns a Metalog
+            >>> isinstance(m, MetalogBase)
+            True
 
     See Also:
         metalog_jax.metalog.Metalog: Standard metalog distribution class.
@@ -112,7 +118,7 @@ class MetalogBase:
         metalog_jax.base.parameters.SPTMetalogParameters: Configuration for SPTMetalog.
     """
 
-    metalog_params: Union[SPTMetalogParameters, MetalogParameters]
+    metalog_params: SPTMetalogParameters | MetalogParameters
     a: chex.Numeric
 
     def __post_init__(self) -> None:
@@ -1022,7 +1028,7 @@ class MetalogBase:
         return MetalogFitMethod.from_value(method)
 
     @classmethod
-    def load(cls: Type[T_MetalogBase], path: Path) -> T_MetalogBase:
+    def load(cls: type[T_MetalogBase], path: Path) -> T_MetalogBase:
         """Load a fitted metalog distribution from a JSON file.
 
         Args:
@@ -1050,7 +1056,7 @@ class MetalogBase:
         return cls(metalog_params=metalog_params, a=a)
 
     @classmethod
-    def loads(cls: Type[T_MetalogBase], json_string: str) -> T_MetalogBase:
+    def loads(cls: type[T_MetalogBase], json_string: str) -> T_MetalogBase:
         """Load a fitted metalog distribution from a JSON string.
 
         Args:
