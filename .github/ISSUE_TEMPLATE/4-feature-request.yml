@@ -1,0 +1,70 @@
+name: Feature request
+description: Suggest a new capability or an improvement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the [existing issues](https://github.com/tjefferies/metalog_jax/issues?q=is%3Aissue) and the [documentation](https://tjefferies.github.io/metalog_jax/), and this doesn't exist yet.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How it could work. A sketch of the API you'd like to call helps.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds you use now, or other ways to solve it.
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: |
+        For a new algorithm, statistic or fit method: the paper and the equation or proposition it comes from, and any reference implementation (for example R's `rmetalog`).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Fitting or a new fit method
+        - Distribution methods or statistics
+        - Grid search and batching
+        - Feasibility tools
+        - Plotting
+        - Serialization
+        - Performance
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to work on this?
+      description: See the [contributing guide](https://github.com/tjefferies/metalog_jax/blob/development/CONTRIBUTING.md).
+      options:
+        - Yes, I'd like to open a pull request
+        - Maybe, with some guidance
+        - "No"
+    validations:
+      required: true
