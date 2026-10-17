@@ -6,9 +6,11 @@ configurations and edge cases.
 """
 # Copyright: Travis Jefferies 2026
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
+from jax.experimental import checkify
 
 from metalog_jax.base import (
     MetalogBoundedness,
@@ -754,6 +756,87 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
         data = jnp.linspace(1.0, 10.0, 101).at[50].set(jnp.nan)
         with self.assertRaises(AssertionError):
             fit_spt_metalog(data, self._params(MetalogBoundedness.UNBOUNDED, 0.1))
+
+
+class SPTMetalogTransformTest(parameterized.TestCase):
+    """Tests that fit_spt_metalog runs under jax.vmap and jax.jit."""
+
+    DATA = (1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1)
+    ALPHAS = (0.05, 0.1, 0.25)
+    SUPPORTED_BOUNDEDNESS = (
+        ("unbounded", MetalogBoundedness.UNBOUNDED, 0.0, 0.0),
+        ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND, 0.0, 0.0),
+        ("bounded", MetalogBoundedness.BOUNDED, 0.0, 20.0),
+    )
+
+    def _batch(self):
+        """Return three feasible datasets of the same length."""
+        data = jnp.asarray(self.DATA)
+        return jnp.stack([data, 1.5 * data, data + 0.7])
+
+    def _params(self, boundedness, lower_bound, upper_bound, alpha=0.1):
+        """Return SPT parameters."""
+        return SPTMetalogParameters(
+            boundedness=boundedness,
+            alpha=alpha,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_vmap_over_data_matches_loop(self, boundedness, lower_bound, upper_bound):
+        """Vmapping over datasets gives the same coefficients as fitting each one."""
+        params = self._params(boundedness, lower_bound, upper_bound)
+        batch = self._batch()
+        batched = jax.vmap(lambda d: fit_spt_metalog(d, params).a)(batch)
+        looped = [fit_spt_metalog(d, params).a for d in batch]
+        # The same operations run batched or one at a time
+        np.testing.assert_allclose(batched, looped, rtol=1e-12)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_vmap_over_alpha_matches_loop(self, boundedness, lower_bound, upper_bound):
+        """Vmapping over alpha gives the same coefficients as fitting each one."""
+        data = jnp.asarray(self.DATA)
+
+        def fit_a(alpha):
+            """Return the coefficients fitted with this alpha."""
+            params = self._params(boundedness, lower_bound, upper_bound, alpha)
+            return fit_spt_metalog(data, params).a
+
+        batched = jax.vmap(fit_a)(jnp.asarray(self.ALPHAS))
+        looped = [fit_a(alpha) for alpha in self.ALPHAS]
+        np.testing.assert_allclose(batched, looped, rtol=1e-12)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_checkified_jit_matches_eager(self, boundedness, lower_bound, upper_bound):
+        """A jitted fit, functionalized with checkify, matches the eager fit."""
+        params = self._params(boundedness, lower_bound, upper_bound)
+        data = jnp.asarray(self.DATA)
+        fit_a = checkify.checkify(jax.jit(lambda d: fit_spt_metalog(d, params).a))
+        err, a = fit_a(data)
+        err.throw()
+        # Compiled and eager evaluation can differ by float64 rounding
+        np.testing.assert_allclose(a, fit_spt_metalog(data, params).a, rtol=1e-12)
+
+    def test_vmap_rejects_an_invalid_dataset(self):
+        """An invalid dataset in a vmapped batch raises checkify.JaxRuntimeError."""
+        params = self._params(MetalogBoundedness.UNBOUNDED, 0.0, 0.0)
+        # A constant row has no strictly ascending quantiles
+        batch = self._batch().at[1].set(5.0)
+        with self.assertRaises(checkify.JaxRuntimeError):
+            jax.vmap(lambda d: fit_spt_metalog(d, params).a)(batch)
+
+    def test_checkified_jit_reports_an_invalid_dataset(self):
+        """A checkified jitted fit reports issue #20's infeasible lower-bound triplet."""
+        params = self._params(MetalogBoundedness.STRICTLY_LOWER_BOUND, 0.0, 0.0)
+        # Quantiles 1.0, 1.1 and 10.0, infeasible by Proposition 3
+        data = jnp.array([0.5, 1.0, 1.02, 1.05, 1.08, 1.1, 2.0, 4.0, 6.0, 10.0, 12.0])
+        err, _ = checkify.checkify(jax.jit(lambda d: fit_spt_metalog(d, params).a))(
+            data
+        )
+        self.assertIsNotNone(err.get())
+        with self.assertRaises(checkify.JaxRuntimeError):
+            err.throw()
 
 
 class GetFitFunctionTest(absltest.TestCase):
