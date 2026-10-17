@@ -47,7 +47,7 @@ class MetalogRandomVariableParameters:
 
         Raises:
             AssertionError: If ``size`` is not a positive scalar.
-        """
+        """  # noqa: DOC502
         chex.assert_scalar_positive(self.size)
 
 

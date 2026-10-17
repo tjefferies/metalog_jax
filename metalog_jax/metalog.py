@@ -440,7 +440,7 @@ def fit(
         Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
-    """
+    """  # noqa: DOC502
     quantiles = Metalog.get_quantiles(data=data, metalog_params=metalog_params)
     target = Metalog.get_target(data=data, metalog_params=metalog_params)
 
@@ -535,7 +535,7 @@ def fit_spt_metalog(
 
     References:
         Keelin, T. W. (2016). The Metalog Distributions. Decision Analysis, 13(4).
-    """
+    """  # noqa: DOC503
 
     def _quantile_feasibility_check(q: chex.Numeric) -> None:
         """Check that quantiles are monotonically increasing for valid distribution.
@@ -558,7 +558,7 @@ def fit_spt_metalog(
             This is a fundamental requirement for any valid cumulative distribution
             function. If this check fails, the input data or alpha parameter
             produces quantiles that cannot represent a valid distribution.
-        """
+        """  # noqa: DOC502
         q_alpha = q[0]
         median = q[1]
         q_compliment = q[2]
@@ -681,7 +681,7 @@ def fit_spt_metalog(
         Note:
             The unbounded fit requires that the median position ratio r satisfies
             specific constraints to ensure a valid (positive) PDF everywhere.
-        """
+        """  # noqa: DOC502
 
         def _unbounded_fit_feasibility_check(q: chex.Numeric, alpha: float) -> None:
             """Check feasibility constraints for unbounded SPT metalog.
@@ -712,7 +712,7 @@ def fit_spt_metalog(
                 that would have negative or undefined PDF values. If this check fails,
                 the median position relative to the quantiles is too extreme for the
                 given alpha value.
-            """
+            """  # noqa: DOC502
             r = _dist_symmetry(q)
             k_alpha = _k_alpha(alpha)
             chex.assert_scalar_positive(float((1 - k_alpha) - r))
@@ -817,7 +817,7 @@ def fit_spt_metalog(
         Note:
             This function is JIT-compiled for performance. The coefficients are
             computed in log-space after subtracting the lower bound from all quantiles.
-        """
+        """  # noqa: DOC502
 
         def _strictly_lower_bound_fit_feasibility_check(
             q: chex.Numeric, gamma: chex.Numeric, alpha: float, lower_bound: float
@@ -850,7 +850,7 @@ def fit_spt_metalog(
             Note:
                 This check uses weighted geometric means of the gamma values with
                 weights k_alpha and (1-k_alpha) to establish feasibility bounds.
-            """
+            """  # noqa: DOC502
             median = q[1]
             gamma_alpha = gamma[0]
             gamma_compliment = gamma[2]
@@ -1004,7 +1004,7 @@ def fit_spt_metalog(
             This function is JIT-compiled for performance. The coefficients are
             computed in log-space after applying the logit-like transformation
             to map (lower_bound, upper_bound) to (0, ∞).
-        """
+        """  # noqa: DOC502
 
         def _bounded_fit_feasibility_check(
             q: chex.Numeric,
@@ -1045,7 +1045,7 @@ def fit_spt_metalog(
                 This check uses weighted geometric means of the gamma values with
                 weights k_alpha and (1-k_alpha), transformed back to the bounded
                 domain using the inverse logit-like mapping.
-            """
+            """  # noqa: DOC502
             median = q[1]
             gamma_alpha = gamma[0]
             gamma_compliment = gamma[2]

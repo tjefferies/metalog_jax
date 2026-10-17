@@ -111,7 +111,7 @@ jobs:
         run: uv run interrogate metalog_jax/
 
   pydoclint:
-    # Google-style docstring checks; config and baseline in pyproject.toml
+    # Google-style docstring checks; config in [tool.pydoclint] in pyproject.toml
     # Runs in PARALLEL (no dependency on ruff)
     runs-on: ubuntu-latest
     if: |

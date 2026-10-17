@@ -386,7 +386,7 @@ def fit_grid(
     Raises:
         ValueError: If params.method is MetalogFitMethod.Feasible, which cannot run
             inside the vmapped grid (use fit or fit_grid_datasets instead).
-    """
+    """  # noqa: DOC502
     _check_grid_method(params.method)
 
     # Detect which axes are active
@@ -698,7 +698,7 @@ def _get_fit_function_for_method(
 
     Raises:
         ValueError: If method is not OLS or Lasso.
-    """
+    """  # noqa: DOC502
     _check_grid_method(method)
     if method == MetalogFitMethod.Lasso:
         from metalog_jax.regression.lasso import DEFAULT_LASSO_PARAMETERS
@@ -742,7 +742,7 @@ def fit_grid_num_terms(
 
     Raises:
         ValueError: If params.method is not OLS or Lasso.
-    """
+    """  # noqa: DOC502
     max_terms_output = max(num_terms_list)
     num_terms_array = jnp.array(num_terms_list)
 
@@ -879,7 +879,7 @@ def fit_grid_datasets_num_terms(
 
     Raises:
         ValueError: If params.method is not OLS or Lasso.
-    """
+    """  # noqa: DOC502
     max_terms_output = max(num_terms_list)
     num_terms_array = jnp.array(num_terms_list)
 

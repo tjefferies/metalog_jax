@@ -108,11 +108,9 @@ ignore-nested-functions = true
 verbose = 1
 
 # Google-style docstring checks: Args, Returns and Raises sections must match the
-# signature and body. pydoclint can't ignore a single rule here, so the baseline lists
-# the existing docstrings that document exceptions raised indirectly (by chex
-# assertions or callees), which it reports as DOC502/DOC503. New code is checked in
-# full; mark a deliberate indirect Raises entry with `# noqa: DOC502` after the
-# closing quotes. Fixed entries drop out of the baseline automatically.
+# signature and body. pydoclint can't see exceptions raised indirectly (by chex
+# assertions or callees), so a docstring that documents one carries
+# `# noqa: DOC502` (or DOC503) after its closing quotes.
 [tool.pydoclint]
 style = "google"
 arg-type-hints-in-docstring = false  # types live in the signature
@@ -120,8 +118,6 @@ check-return-types = false
 allow-init-docstring = true  # Sphinx documents __init__ (napoleon_include_init_with_doc)
 check-class-attributes = false  # dataclass subclasses document inherited fields
 skip-checking-short-docstrings = true  # Google allows summary-only docstrings
-baseline = "pydoclint-baseline.txt"
-auto-regenerate-baseline = true
 show-filenames-in-every-violation-message = true
 
 [tool.ty.environment]

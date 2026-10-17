@@ -440,7 +440,7 @@ def fit_feasible(X: chex.Array, y: chex.Array) -> FeasibleModel:
         Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
-    """
+    """  # noqa: DOC502
     engine = get_engine(int(X.shape[1]), TermOrder.KEELIN_2016)
     res = _solve(
         engine,

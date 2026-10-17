@@ -138,7 +138,7 @@ class MetalogInputData(MetalogBaseData):
 
         Raises:
             AssertionError: If any validation check fails.
-        """
+        """  # noqa: DOC502
 
         def _input_check(
             x: chex.Numeric, y: chex.Numeric, precomputed_quantiles: bool
