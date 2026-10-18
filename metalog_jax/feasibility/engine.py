@@ -231,7 +231,10 @@ class Engine:
 @cache
 def get_engine(num_terms: int, order: TermOrder = TermOrder.KEELIN_2016) -> Engine:
     """Cached :class:`Engine` (stable identity keeps ``jit`` caches warm)."""
-    return Engine(num_terms, order)
+    # Build the tables eagerly even when first called inside jit, so the cache
+    # never holds tracers
+    with jax.ensure_compile_time_eval():
+        return Engine(num_terms, order)
 
 
 # ----------------------------------------------------------------------------------

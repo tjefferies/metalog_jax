@@ -508,7 +508,8 @@ def _spt_coefficients(z: chex.Array, alpha: chex.Scalar) -> chex.Array:
     - a3 = (1 - 2r) * (z[2] - z[0]) / ((1 - 2 * alpha) * L)
 
     Propositions 3 and 4 apply the same formulas to the log-transformed and
-    logit-transformed quantiles, so ``z`` is the triplet on the metalog's unbounded
+    logit-transformed quantiles, and the upper-bounded metalog does the same with
+    -log(upper_bound - q), so ``z`` is the triplet on the metalog's unbounded
     scale for every boundedness type. Defined at module level so that it compiles
     once, not on every fit.
 
@@ -569,9 +570,11 @@ def fit_spt_metalog(
             - alpha: Lower percentile parameter in (0, 0.5). Common values are
               0.1 (10-50-90 percentiles) or 0.25 (25-50-75 percentiles/IQR).
             - boundedness: Domain constraint type (UNBOUNDED, STRICTLY_LOWER_BOUND,
-              or BOUNDED). STRICTLY_UPPER_BOUND is not supported in SPT formulation.
-            - lower_bound: Lower boundary value (used for semi-bounded/bounded).
-            - upper_bound: Upper boundary value (used for bounded distributions).
+              STRICTLY_UPPER_BOUND or BOUNDED).
+            - lower_bound: Lower boundary value (used for STRICTLY_LOWER_BOUND
+              and BOUNDED).
+            - upper_bound: Upper boundary value (used for STRICTLY_UPPER_BOUND
+              and BOUNDED).
         precomputed_quantiles: Whether ``array`` holds the three quantiles
             themselves rather than data. Defaults to False.
 
@@ -591,13 +594,13 @@ def fit_spt_metalog(
         AssertionError: If the computed quantiles violate feasibility constraints
             (q_alpha < median < q_complement).
         AssertionError: If a quantile lies outside the support: at or below
-            lower_bound, or for BOUNDED at or above upper_bound.
+            lower_bound (STRICTLY_LOWER_BOUND and BOUNDED), or at or above
+            upper_bound (STRICTLY_UPPER_BOUND and BOUNDED).
         AssertionError: If the triplet is infeasible for the boundedness type
-            (Keelin 2016, Propositions 2-4).
+            (Keelin 2016, Propositions 2-4, and the mirror image of
+            Proposition 3 for STRICTLY_UPPER_BOUND).
         AssertionError: If the coefficients are not finite, for example because
             the data or bounds contain NaN.
-        NotImplementedError: If boundedness is STRICTLY_UPPER_BOUND, which is
-            undefined in the SPT formulation.
         checkify.JaxRuntimeError: Under ``jax.vmap``, for the value checks above
             (array shape and type checks still raise AssertionError).
 
@@ -635,8 +638,6 @@ def fit_spt_metalog(
         - The SPT method always produces exactly 3 metalog terms, regardless of
           data size. For more flexible fits with more terms, use the standard
           fit() function.
-        - STRICTLY_UPPER_BOUND boundedness is not supported by the SPT formulation
-          as defined in Keelin's paper.
         - The method performs multiple feasibility checks to ensure the quantiles
           and parameters produce a valid probability distribution.
         - Pass ``precomputed_quantiles=True`` for quantiles you already have. By
@@ -654,7 +655,7 @@ def fit_spt_metalog(
 
     References:
         Keelin, T. W. (2016). The Metalog Distributions. Decision Analysis, 13(4).
-    """  # noqa: DOC503
+    """  # noqa: DOC502
 
     def _quantile_feasibility_check(q: chex.Numeric) -> None:
         """Check that quantiles are monotonically increasing for valid distribution.
@@ -869,6 +870,101 @@ def fit_spt_metalog(
         _strictly_lower_bound_fit_feasibility_check(q, gamma, alpha, lower_bound)
         return _spt_coefficients(jnp.log(gamma), alpha)
 
+    def _strictly_upper_bound_fit(
+        q: chex.Numeric,
+        y: chex.Numeric,
+        upper_bound: float,
+    ) -> chex.Numeric:
+        """Fit SPT metalog coefficients for strictly upper-bounded distributions.
+
+        Computes the three metalog coefficients [a1, a2, a3] for a distribution
+        with a strict upper bound. The distribution has support on
+        (-∞, upper_bound).
+
+        Keelin (2016, Section 4.1) defines the upper-bounded (negative-log)
+        metalog through the transform z = -log(upper_bound - x), but states SPT
+        formulas only for the unbounded, log and logit metalogs. As in
+        Propositions 3 and 4, Proposition 1 applies to the transformed
+        quantiles. With delta_i = upper_bound - q_i:
+        - a1 = -log(delta_median)
+        - a2 = 0.5 * log(delta_alpha / delta_complement) / log((1-alpha)/alpha)
+        - a3 = log(delta_median^2 / (delta_alpha * delta_complement)) /
+               ((1 - 2*alpha) * log((1-alpha)/alpha))
+
+        Args:
+            q: Array of length 3 containing [q_alpha, median, q_complement],
+                the empirical quantiles at probabilities [alpha, 0.5, 1-alpha].
+                All values must be < upper_bound.
+            y: Array of length 3 containing [alpha, 0.5, 1-alpha], the
+                probability levels corresponding to the quantiles.
+            upper_bound: The upper boundary value. All quantiles must be below
+                this value.
+
+        Returns:
+            Array of length 3 containing the fitted metalog coefficients [a1, a2, a3]
+            in the transformed (negative-log) space.
+
+        Raises:
+            AssertionError: If q_complement is not below upper_bound.
+            AssertionError: If the triplet violates the feasibility constraints
+                for the given upper bound.
+
+        Note:
+            The coefficients are those of Proposition 1 applied to -log(delta),
+            computed by _spt_coefficients.
+        """  # noqa: DOC502
+
+        def _strictly_upper_bound_fit_feasibility_check(
+            q: chex.Numeric, delta: chex.Numeric, alpha: float, upper_bound: float
+        ) -> None:
+            """Check feasibility constraints for upper-bounded SPT metalog.
+
+            The mirror image of Proposition 3. With delta_i = upper_bound - q_i,
+            the triplet is feasible if and only if:
+            - median > upper_bound - delta_alpha^(1-k_alpha) * delta_complement^k_alpha
+            - median < upper_bound - delta_alpha^k_alpha * delta_complement^(1-k_alpha)
+
+            That is k_alpha < r < 1 - k_alpha for the median's position r on the
+            -log(delta) scale, which ensures positive density for all
+            x < upper_bound.
+
+            Args:
+                q: Array of length 3 containing [q_alpha, median, q_complement].
+                delta: Array of length 3 containing upper_bound - q, which
+                    descends because q ascends.
+                alpha: Lower percentile parameter in (0, 0.5).
+                upper_bound: The upper boundary value of the distribution.
+
+            Raises:
+                AssertionError: If the median is not strictly between the two
+                    limits (checkify.JaxRuntimeError under jax.vmap).
+            """  # noqa: DOC502
+            median = q[1]
+            delta_alpha = delta[0]
+            delta_complement = delta[2]
+
+            k_alpha = _spt_k_alpha(alpha)
+            lower_limit = upper_bound - jnp.power(delta_alpha, 1 - k_alpha) * jnp.power(
+                delta_complement, k_alpha
+            )
+            upper_limit = upper_bound - jnp.power(delta_alpha, k_alpha) * jnp.power(
+                delta_complement, 1 - k_alpha
+            )
+            assert_condition(
+                (lower_limit < median) & (median < upper_limit),
+                "Infeasible SPT triplet for an upper bound "
+                "(the mirror image of Keelin 2016, Proposition 3)",
+            )
+
+        alpha = y[0]
+
+        # The quantiles ascend, so they all lie in the support if q_complement does
+        assert_condition(q[2] < upper_bound, "SPT quantiles must lie below upper_bound")
+
+        delta = upper_bound - q
+        _strictly_upper_bound_fit_feasibility_check(q, delta, alpha, upper_bound)
+        return _spt_coefficients(-jnp.log(delta), alpha)
+
     def _bounded_fit(
         q: chex.Numeric,
         y: chex.Numeric,
@@ -1028,7 +1124,7 @@ def fit_spt_metalog(
     elif boundedness == MetalogBoundedness.BOUNDED:
         a = _bounded_fit(q, y, lower_bound, upper_bound)
     else:  # MetalogBoundedness.STRICTLY_UPPER_BOUND
-        raise NotImplementedError("This formulation is undefined in Keelin's paper!")
+        a = _strictly_upper_bound_fit(q, y, upper_bound)
 
     # Infinite data can pass the checks above and still give infinite coefficients
     assert_condition(
