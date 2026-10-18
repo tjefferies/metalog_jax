@@ -449,6 +449,13 @@ spt_metalog = fit_spt_metalog(response_times, spt_params)
 print(f"SPT Median: {float(spt_metalog.ppf(jnp.array([0.5]))[0]):.1f}")
 ```
 
+If you already have the three quantiles, for example an expert's 10th, 50th and 90th percentile estimates, pass them directly. Without `precomputed_quantiles=True`, three values are treated as data and interpolated, so the fit wouldn't pass through them.
+
+```python
+assessed = jnp.array([60.0, 110.0, 450.0])  # 10th, 50th and 90th percentiles
+spt_metalog = fit_spt_metalog(assessed, spt_params, precomputed_quantiles=True)
+```
+
 ## Features
 
 ### Full Probability Distribution API

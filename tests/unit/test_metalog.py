@@ -839,6 +839,118 @@ class SPTMetalogTransformTest(parameterized.TestCase):
             err.throw()
 
 
+class SPTPrecomputedQuantilesTest(parameterized.TestCase):
+    """Tests for issue #24: fit_spt_metalog with precomputed_quantiles=True."""
+
+    # Assessed 10th, 50th and 90th percentiles inside (LOWER_BOUND, UPPER_BOUND),
+    # feasible for every supported boundedness type
+    TRIPLET = (2.0, 4.0, 7.0)
+    ALPHA = 0.1
+    LOWER_BOUND = 0.0
+    UPPER_BOUND = 10.0
+    SUPPORTED_BOUNDEDNESS = (
+        ("unbounded", MetalogBoundedness.UNBOUNDED),
+        ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND),
+        ("bounded", MetalogBoundedness.BOUNDED),
+    )
+
+    def _params(self, boundedness=MetalogBoundedness.UNBOUNDED):
+        """Return SPT parameters that use the class alpha and bounds."""
+        return SPTMetalogParameters(
+            boundedness=boundedness,
+            alpha=self.ALPHA,
+            lower_bound=self.LOWER_BOUND,
+            upper_bound=self.UPPER_BOUND,
+        )
+
+    def _fit(self, quantiles, boundedness=MetalogBoundedness.UNBOUNDED):
+        """Fit precomputed quantiles."""
+        return fit_spt_metalog(
+            jnp.asarray(quantiles),
+            self._params(boundedness),
+            precomputed_quantiles=True,
+        )
+
+    def _data_with_quantiles(self, q):
+        """Return 101 points whose 10th, 50th and 90th percentiles are q."""
+        # Piecewise linear in the index, so jnp.quantile's interpolation is exact
+        knots = [0, 10, 50, 90, 100]
+        values = [0.5 * (self.LOWER_BOUND + q[0]), *q, 0.5 * (q[2] + self.UPPER_BOUND)]
+        return jnp.asarray(np.interp(np.arange(101), knots, values))
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_matches_data_with_the_same_quantiles(self, boundedness):
+        """A triplet gives the same fit as data whose quantiles are that triplet."""
+        from_triplet = self._fit(self.TRIPLET, boundedness)
+        data = self._data_with_quantiles(self.TRIPLET)
+        from_data = fit_spt_metalog(data, self._params(boundedness))
+        # Same triplet either way, up to rounding in jnp.quantile's interpolation
+        np.testing.assert_allclose(from_triplet.a, from_data.a, rtol=1e-12)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_ppf_passes_through_the_quantiles(self, boundedness):
+        """The fit's ppf returns the three quantiles at alpha, 0.5 and 1 - alpha."""
+        m = self._fit(self.TRIPLET, boundedness)
+        y = jnp.array([self.ALPHA, 0.5, 1 - self.ALPHA])
+        # The closed forms are exact, so only float64 rounding remains
+        np.testing.assert_allclose(m.ppf(y), self.TRIPLET, rtol=1e-12)
+
+    def test_three_values_as_data_are_interpolated(self):
+        """Without the flag, a 3-element array is data, so the fit misses its values."""
+        m = fit_spt_metalog(jnp.asarray(self.TRIPLET), self._params())
+        y = jnp.array([self.ALPHA, 0.5, 1 - self.ALPHA])
+        self.assertFalse(np.allclose(m.ppf(y), self.TRIPLET))
+
+    def test_integer_quantiles_are_cast_to_float(self):
+        """Integer quantiles give the same float64 coefficients as float ones."""
+        from_ints = self._fit(jnp.array([2, 4, 7]))
+        from_floats = self._fit(jnp.array([2.0, 4.0, 7.0]))
+        self.assertEqual(from_ints.a.dtype, jnp.float64)
+        np.testing.assert_array_equal(from_ints.a, from_floats.a)
+
+    @parameterized.named_parameters(
+        ("two_values", (2.0, 4.0)),
+        ("four_values", (1.0, 2.0, 4.0, 7.0)),
+    )
+    def test_wrong_number_of_quantiles_raises(self, quantiles):
+        """Anything but exactly three quantiles raises AssertionError."""
+        with self.assertRaises(AssertionError):
+            self._fit(quantiles)
+
+    def test_unsorted_quantiles_raise(self):
+        """Quantiles that aren't strictly ascending raise AssertionError."""
+        with self.assertRaises(AssertionError):
+            self._fit((4.0, 2.0, 7.0))
+
+    def test_vmap_over_assessments_matches_loop(self):
+        """Vmapping over a batch of triplets matches fitting each one."""
+        assessments = jnp.array([[2.0, 4.0, 7.0], [1.0, 1.5, 3.0], [5.0, 6.0, 9.0]])
+        batched = jax.vmap(lambda q: self._fit(q).a)(assessments)
+        looped = [self._fit(q).a for q in assessments]
+        np.testing.assert_allclose(batched, looped, rtol=1e-12)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_checkified_jit_matches_eager(self, boundedness):
+        """A jitted fit, with the quantiles and parameters as arguments, matches eager."""
+        quantiles = jnp.asarray(self.TRIPLET)
+        params = self._params(boundedness)
+        jitted = checkify.checkify(
+            jax.jit(lambda q, p: fit_spt_metalog(q, p, precomputed_quantiles=True).a)
+        )
+        err, a = jitted(quantiles, params)
+        err.throw()
+        eager = fit_spt_metalog(quantiles, params, precomputed_quantiles=True).a
+        # Compiled and eager evaluation can differ by float64 rounding
+        np.testing.assert_allclose(a, eager, rtol=1e-12)
+
+    def test_vmap_rejects_an_infeasible_assessment(self):
+        """An infeasible triplet in a vmapped batch raises JaxRuntimeError."""
+        # The median sits too close to the lower quantile (Proposition 2)
+        assessments = jnp.array([[2.0, 4.0, 7.0], [1.0, 1.05, 10.0]])
+        with self.assertRaises(checkify.JaxRuntimeError):
+            jax.vmap(lambda q: self._fit(q).a)(assessments)
+
+
 class GetFitFunctionTest(absltest.TestCase):
     """Test suite for the _get_fit_function helper."""
 
