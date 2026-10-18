@@ -26,6 +26,7 @@ See Also:
 
 from collections.abc import Callable
 from functools import partial
+from typing import NoReturn
 
 import chex
 import jax
@@ -150,7 +151,7 @@ class SPTMetalog(MetalogBase):
 
             >>> import jax.numpy as jnp
             >>> from metalog_jax.base import MetalogBoundedness, SPTMetalogParameters
-            >>> from metalog_jax.metalog import fit_spt_metalog
+            >>> from metalog_jax.metalog import SPTMetalog, fit_spt_metalog
             >>>
             >>> # Generate sample data
             >>> data = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1])
@@ -172,6 +173,10 @@ class SPTMetalog(MetalogBase):
             >>>
             >>> # Summary statistics are properties
             >>> mean, std = spt.mean, spt.std
+            >>>
+            >>> # Serialize and load it back (save and load do the same with a file)
+            >>> SPTMetalog.loads(spt.dumps()) == spt
+            True
 
     Note:
         SPT metalog distributions may fail feasibility checks if the data does
@@ -195,6 +200,9 @@ class SPTMetalog(MetalogBase):
     metalog_params: SPTMetalogParameters
     a: chex.Numeric
 
+    # load and loads rebuild SPTMetalogParameters, which save alpha but no fit method
+    _params_type = SPTMetalogParameters
+
     def __eq__(self, other: object) -> bool:
         """Check equality between two SPTMetalog distribution instances.
 
@@ -216,6 +224,22 @@ class SPTMetalog(MetalogBase):
             3 - an SPT Metalog always has three terms.
         """
         return 3
+
+    @property
+    def method(self) -> NoReturn:
+        """An SPT metalog has no fit method.
+
+        fit_spt_metalog computes the coefficients in closed form (Keelin 2016,
+        Propositions 1-4) rather than by regression, so SPTMetalogParameters has
+        no ``method``.
+
+        Raises:
+            AttributeError: Always, so ``hasattr(spt, "method")`` is False.
+        """
+        raise AttributeError(
+            "SPTMetalog has no fit method: fit_spt_metalog computes its "
+            "coefficients in closed form, not by regression"
+        )
 
 
 @struct.dataclass

@@ -24,7 +24,7 @@ See Also:
 import json
 from functools import partial
 from pathlib import Path
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
 import chex
 import jax
@@ -120,6 +120,11 @@ class MetalogBase:
 
     metalog_params: SPTMetalogParameters | MetalogParameters
     a: chex.Numeric
+
+    # The parameter class that load and loads rebuild; SPTMetalog overrides it
+    _params_type: ClassVar[type[MetalogParameters | SPTMetalogParameters]] = (
+        MetalogParameters
+    )
 
     def __post_init__(self) -> None:
         """Coerce a list or tuple of coefficients to a float JAX array.
@@ -1022,65 +1027,28 @@ class MetalogBase:
     def save(self, path: Path) -> None:
         """Save the fitted metalog distribution to a JSON file.
 
-        Serializes the distribution coefficients and parameters to JSON format.
+        Writes the JSON that ``dumps`` returns. Read it back with ``load`` on the
+        same class: ``Metalog.load`` or ``SPTMetalog.load``.
 
         Args:
             path: File path where the JSON file will be written.
         """
-        data = {
-            "a": self.a.tolist(),
-            "metalog_params": {
-                "boundedness": int(self.boundedness),
-                "method": int(self.method),
-                "lower_bound": float(self.lower_bound),
-                "upper_bound": float(self.upper_bound),
-                "num_terms": int(self.num_terms),
-            },
-        }
         with open(path, "w") as f:
-            json.dump(data, f)
+            f.write(self.dumps())
 
     def dumps(self) -> str:
         """Serialize the fitted metalog distribution to a JSON string.
 
+        The JSON holds the coefficients ``a`` and the parameters' ``to_dict()``:
+        boundedness, fit method, bounds and number of terms for a Metalog;
+        boundedness, bounds and alpha for an SPTMetalog.
+
         Returns:
             str: JSON string representation of the distribution.
         """
-        data = {
-            "a": self.a.tolist(),
-            "metalog_params": {
-                "boundedness": int(self.boundedness),
-                "method": int(self.method),
-                "lower_bound": float(self.lower_bound),
-                "upper_bound": float(self.upper_bound),
-                "num_terms": int(self.num_terms),
-            },
-        }
-        return json.dumps(data)
-
-    @staticmethod
-    def _deserialize_boundedness(boundedness: int) -> MetalogBoundedness:
-        """Convert integer value to MetalogBoundedness enum member.
-
-        Args:
-            boundedness: Integer representation of the boundedness type.
-
-        Returns:
-            MetalogBoundedness: The corresponding enum member.
-        """
-        return MetalogBoundedness.from_value(boundedness)
-
-    @staticmethod
-    def _deserialize_method(method: int) -> MetalogFitMethod:
-        """Convert integer value to MetalogFitMethod enum member.
-
-        Args:
-            method: Integer representation of the fit method.
-
-        Returns:
-            MetalogFitMethod: The corresponding enum member.
-        """
-        return MetalogFitMethod.from_value(method)
+        return json.dumps(
+            {"a": self.a.tolist(), "metalog_params": self.metalog_params.to_dict()}
+        )
 
     @classmethod
     def load(cls: type[T_MetalogBase], path: Path) -> T_MetalogBase:
@@ -1092,23 +1060,15 @@ class MetalogBase:
         Returns:
             T_MetalogBase: A new instance of the metalog class with loaded
                 coefficients and parameters.
-        """
+
+        Raises:
+            KeyError: If the JSON has no ``a`` or ``metalog_params``.
+            ValueError: If the parameters were saved by the other metalog class
+                (for example, an SPTMetalog's JSON loaded with Metalog.load), or
+                hold an unknown enum value.
+        """  # noqa: DOC502
         with open(path) as f:
-            input_data = json.load(f)
-
-        a = jnp.array(input_data["a"])
-        params_dict = input_data["metalog_params"]
-        metalog_params = MetalogParameters(
-            boundedness=MetalogBase._deserialize_boundedness(
-                params_dict["boundedness"]
-            ),
-            method=MetalogBase._deserialize_method(params_dict["method"]),
-            lower_bound=params_dict["lower_bound"],
-            upper_bound=params_dict["upper_bound"],
-            num_terms=params_dict["num_terms"],
-        )
-
-        return cls(metalog_params=metalog_params, a=a)
+            return cls.loads(f.read())
 
     @classmethod
     def loads(cls: type[T_MetalogBase], json_string: str) -> T_MetalogBase:
@@ -1120,22 +1080,16 @@ class MetalogBase:
         Returns:
             T_MetalogBase: A new instance of the metalog class with loaded
                 coefficients and parameters.
-        """
+
+        Raises:
+            KeyError: If the JSON has no ``a`` or ``metalog_params``.
+            ValueError: If the parameters were saved by the other metalog class
+                (for example, an SPTMetalog's JSON loaded with Metalog.loads), or
+                hold an unknown enum value.
+        """  # noqa: DOC502
         input_data = json.loads(json_string)
-
-        a = jnp.array(input_data["a"])
-        params_dict = input_data["metalog_params"]
-        metalog_params = MetalogParameters(
-            boundedness=MetalogBase._deserialize_boundedness(
-                params_dict["boundedness"]
-            ),
-            method=MetalogBase._deserialize_method(params_dict["method"]),
-            lower_bound=params_dict["lower_bound"],
-            upper_bound=params_dict["upper_bound"],
-            num_terms=params_dict["num_terms"],
-        )
-
-        return cls(metalog_params=metalog_params, a=a)
+        metalog_params = cls._params_type.from_dict(input_data["metalog_params"])
+        return cls(metalog_params=metalog_params, a=jnp.array(input_data["a"]))
 
     def q(self, x: chex.Numeric) -> chex.Numeric:
         """Quantile function alias for R metalog package compatibility.
