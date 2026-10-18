@@ -59,7 +59,7 @@ make test-quick     # about 3 minutes on a laptop CPU
 |---|---|
 | `dev` | marimo, for the example apps |
 | `lint` | ruff, ty, interrogate, pydoclint, zizmor |
-| `test` | pytest, pytest-cov, absl-py, coverage, radon, xenon, plus scipy and scikit-learn as reference implementations |
+| `test` | pytest, pytest-cov, absl-py, hypothesis, coverage, radon, xenon, plus scipy and scikit-learn as reference implementations |
 | `security` | bandit, semgrep |
 | `license` | pip-licenses |
 | `docs` | sphinx, nbsphinx, ipykernel, kaleido and friends |
@@ -135,6 +135,7 @@ your branch ──PR──▶ development ──release PR──▶ main ──�
   - `tests/unit/` mirrors the package, with `base/` and `regression/` subdirectories.
   - `tests/integration/` covers end-to-end fitting, grid search and Kolmogorov-Smirnov goodness of fit.
   - `tests/feasibility/` covers `metalog_jax.feasibility`.
+  - `tests/property/` holds the property-based tests: invariants that every feasible metalog satisfies, checked with Hypothesis.
 - **Style:** test classes subclass `parameterized.TestCase` or `absltest.TestCase`. Use `@parameterized.named_parameters` for cases and `numpy.testing` for comparisons.
 - **Fixtures:** keep shared fixtures such as parameters and coefficients as class attributes, not module globals.
 - **Docstrings:** keep them to one concise line.
@@ -151,6 +152,33 @@ make lowest-deps                                                   # lowest allo
 ```
 
 Coverage settings live in `[tool.coverage]` in `pyproject.toml`, so `make test` and CI measure the same thing. CI runs the suite on Python 3.11, 3.12 and 3.13, and again with the lowest versions `pyproject.toml` allows for direct dependencies.
+
+#### Property-based tests
+
+`tests/property/test_properties.py` states invariants, such as "`ppf` is strictly increasing", "an SPT fit reproduces its three quantiles" or "fitting a metalog's own quantiles recovers its coefficients", and [Hypothesis](https://hypothesis.readthedocs.io/) checks each one on generated inputs. Many come straight from Keelin (2016) and Baucells et al. (2025).
+
+- **Strategies** live in `tests/property/strategies.py`:
+  - hand-set 3- and 4-term metalogs
+  - metalogs fitted to samples from normal, lognormal, gamma, beta and two-component mixture families
+  - coefficient vectors on both sides of the feasibility boundary
+  - SPT triplets, probability grids and HDR streams
+
+  They draw term counts from a short list and probabilities as fixed-size grids, because each new shape or combination of static fields makes JAX compile again.
+- **Profiles** are registered in `tests/property/conftest.py`. Choose one with `HYPOTHESIS_PROFILE`:
+
+  | Profile | Examples per property | Use |
+  |---|---|---|
+  | `ci` (default) | 50 | CI and `make test`; derandomized, so every run tests the same examples |
+  | `dev` | 20 | quick local runs |
+  | `nightly` | 500 | a deeper search before a release |
+
+  Two kinds of property run a fifth of these: those that fit several models per example, and exact identities, which fail on any input if they fail at all.
+
+  ```bash
+  HYPOTHESIS_PROFILE=dev uv run pytest tests/property
+  ```
+
+- **When a property fails,** Hypothesis shrinks the input to a minimal counterexample and prints it. Pin it with `@example(...)` on the test so it always runs, and if it's a real bug, add a regression test in `tests/unit` or `tests/integration` that fails without the fix. Local runs with the `dev` or `nightly` profile save failing examples in `.hypothesis/`, which is git-ignored.
 
 ### Documentation
 
