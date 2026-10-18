@@ -430,6 +430,16 @@ Save and load fitted metalog distributions:
    json_str = m.dumps()
    loaded = Metalog.loads(json_str)
 
+Load a model with the class that saved it. An ``SPTMetalog``'s JSON stores
+``alpha`` and no fit method, so ``Metalog.load`` rejects it with a ``ValueError``:
+
+.. code-block:: python
+
+   from metalog_jax.metalog import SPTMetalog
+
+   spt.save(Path("my_spt.json"))
+   loaded_spt = SPTMetalog.load(Path("my_spt.json"))
+
 Distribution Methods
 --------------------
 

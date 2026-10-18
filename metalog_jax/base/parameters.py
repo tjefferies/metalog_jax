@@ -15,6 +15,8 @@ See Also:
     metalog_jax.metalog: Fitting functions that accept these parameter configurations.
 """
 
+from typing import ClassVar, Self
+
 import chex
 from flax import struct
 
@@ -83,6 +85,27 @@ class MetalogParametersBase:
     upper_bound: chex.Scalar
 
 
+def _check_serialized_keys(cls: type, params: dict, keys: tuple[str, ...]) -> None:
+    """Raise unless a serialized parameter dict has exactly the given keys.
+
+    Args:
+        cls: The parameter class being rebuilt.
+        params: The ``metalog_params`` dict read from JSON.
+        keys: The keys that ``cls.to_dict()`` writes.
+
+    Raises:
+        ValueError: If the keys differ, for example SPT metalog JSON loaded as a
+            Metalog. The message names the loader for each kind of JSON.
+    """
+    if set(params) != set(keys):
+        raise ValueError(
+            f"{cls.__name__} expects the keys {list(keys)} in metalog_params, but "
+            f"got {sorted(params)}. Load a Metalog's JSON with Metalog.load or "
+            "Metalog.loads, and an SPTMetalog's with SPTMetalog.load or "
+            "SPTMetalog.loads."
+        )
+
+
 @struct.dataclass
 class MetalogParameters(MetalogParametersBase):
     """Configuration parameters for standard regression-based metalog distributions.
@@ -110,6 +133,54 @@ class MetalogParameters(MetalogParametersBase):
     method: MetalogFitMethod = struct.field(pytree_node=False)
     num_terms: int = struct.field(pytree_node=False)
 
+    # The keys to_dict writes, in order; Metalog.dumps output must not change
+    _SERIALIZED_KEYS: ClassVar[tuple[str, ...]] = (
+        "boundedness",
+        "method",
+        "lower_bound",
+        "upper_bound",
+        "num_terms",
+    )
+
+    def to_dict(self) -> dict:
+        """Return the parameters as the JSON-ready dict that Metalog.dumps writes.
+
+        Returns:
+            dict: ``boundedness`` and ``method`` as integers, the bounds as floats,
+                and ``num_terms`` as an integer.
+        """
+        return {
+            "boundedness": int(self.boundedness),
+            "method": int(self.method),
+            "lower_bound": float(self.lower_bound),
+            "upper_bound": float(self.upper_bound),
+            "num_terms": int(self.num_terms),
+        }
+
+    @classmethod
+    def from_dict(cls, params: dict) -> Self:
+        """Rebuild parameters from a dict written by to_dict.
+
+        Args:
+            params: The ``metalog_params`` dict of a saved Metalog.
+
+        Returns:
+            MetalogParameters: The parameters, with enum members for ``boundedness``
+                and ``method``.
+
+        Raises:
+            ValueError: If the keys aren't exactly those that to_dict writes (as
+                for an SPTMetalog's parameters), or an enum value is unknown.
+        """  # noqa: DOC502
+        _check_serialized_keys(cls, params, cls._SERIALIZED_KEYS)
+        return cls(
+            boundedness=MetalogBoundedness.from_value(params["boundedness"]),
+            method=MetalogFitMethod.from_value(params["method"]),
+            lower_bound=params["lower_bound"],
+            upper_bound=params["upper_bound"],
+            num_terms=params["num_terms"],
+        )
+
 
 @struct.dataclass
 class SPTMetalogParameters(MetalogParametersBase):
@@ -126,3 +197,49 @@ class SPTMetalogParameters(MetalogParametersBase):
     """
 
     alpha: float
+
+    # The keys to_dict writes, in order. An SPT metalog has no fit method and
+    # always 3 terms, so neither is saved.
+    _SERIALIZED_KEYS: ClassVar[tuple[str, ...]] = (
+        "boundedness",
+        "lower_bound",
+        "upper_bound",
+        "alpha",
+    )
+
+    def to_dict(self) -> dict:
+        """Return the parameters as the JSON-ready dict that SPTMetalog.dumps writes.
+
+        Returns:
+            dict: ``boundedness`` as an integer, and the bounds and ``alpha`` as
+                floats.
+        """
+        return {
+            "boundedness": int(self.boundedness),
+            "lower_bound": float(self.lower_bound),
+            "upper_bound": float(self.upper_bound),
+            "alpha": float(self.alpha),
+        }
+
+    @classmethod
+    def from_dict(cls, params: dict) -> Self:
+        """Rebuild parameters from a dict written by to_dict.
+
+        Args:
+            params: The ``metalog_params`` dict of a saved SPTMetalog.
+
+        Returns:
+            SPTMetalogParameters: The parameters, with an enum member for
+                ``boundedness``.
+
+        Raises:
+            ValueError: If the keys aren't exactly those that to_dict writes (as
+                for a Metalog's parameters), or the boundedness value is unknown.
+        """  # noqa: DOC502
+        _check_serialized_keys(cls, params, cls._SERIALIZED_KEYS)
+        return cls(
+            boundedness=MetalogBoundedness.from_value(params["boundedness"]),
+            lower_bound=params["lower_bound"],
+            upper_bound=params["upper_bound"],
+            alpha=params["alpha"],
+        )

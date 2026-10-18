@@ -21,7 +21,7 @@ from metalog_jax.base import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.metalog import Metalog, SPTMetalog, fit
+from metalog_jax.metalog import Metalog, SPTMetalog, fit, fit_spt_metalog
 from metalog_jax.utils import (
     DEFAULT_Y,
     HDRPRNGParameters,
@@ -1102,6 +1102,129 @@ class MetalogBaseLoadsTest(parameterized.TestCase):
         self.assertIsInstance(loaded_results.boundedness, MetalogBoundedness)
         self.assertIsInstance(loaded_results.metalog_params.method, MetalogFitMethod)
         self.assertIsInstance(loaded_results.a, jnp.ndarray)
+
+
+class SPTMetalogSerializationTest(parameterized.TestCase):
+    """Regression tests for issue #31: SPT metalogs save and load."""
+
+    COEFFICIENTS = (0.5, 1.0, 0.25)
+    # (name, boundedness, lower bound, upper bound, the JSON dumps() writes)
+    CASES = (
+        (
+            "unbounded",
+            MetalogBoundedness.UNBOUNDED,
+            0.0,
+            0.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 1, '
+            '"lower_bound": 0.0, "upper_bound": 0.0, "alpha": 0.1}}',
+        ),
+        (
+            "strictly_lower_bound",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            -2.0,
+            0.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 2, '
+            '"lower_bound": -2.0, "upper_bound": 0.0, "alpha": 0.1}}',
+        ),
+        (
+            "strictly_upper_bound",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            0.0,
+            15.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 3, '
+            '"lower_bound": 0.0, "upper_bound": 15.0, "alpha": 0.1}}',
+        ),
+        (
+            "bounded",
+            MetalogBoundedness.BOUNDED,
+            -2.0,
+            15.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 4, '
+            '"lower_bound": -2.0, "upper_bound": 15.0, "alpha": 0.1}}',
+        ),
+    )
+    # The JSON Metalog.dumps writes, unchanged by issue #31
+    METALOG_JSON = (
+        '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 1, '
+        '"method": 1, "lower_bound": 0.0, "upper_bound": 0.0, "num_terms": 3}}'
+    )
+
+    def _spt(self, boundedness, lower, upper):
+        """Return an SPTMetalog with the class coefficients and alpha = 0.1."""
+        params = SPTMetalogParameters(
+            boundedness=boundedness, alpha=0.1, lower_bound=lower, upper_bound=upper
+        )
+        return SPTMetalog(metalog_params=params, a=jnp.asarray(self.COEFFICIENTS))
+
+    def _assert_same_model(self, loaded, spt):
+        """Check the loaded model is an equal SPTMetalog with the same ppf."""
+        self.assertIsInstance(loaded, SPTMetalog)
+        self.assertIsInstance(loaded.metalog_params, SPTMetalogParameters)
+        self.assertEqual(loaded, spt)
+        self.assertIs(loaded.boundedness, spt.boundedness)
+        y = jnp.array([0.1, 0.5, 0.9])
+        np.testing.assert_array_equal(loaded.ppf(y), spt.ppf(y))
+
+    @parameterized.named_parameters(*CASES)
+    def test_dumps_writes_alpha_and_no_fit_method(
+        self, boundedness, lower, upper, saved
+    ):
+        """dumps() writes the coefficients, boundedness, bounds and alpha."""
+        self.assertEqual(self._spt(boundedness, lower, upper).dumps(), saved)
+
+    @parameterized.named_parameters(*CASES)
+    def test_dumps_loads_round_trip(self, boundedness, lower, upper, saved):
+        """SPTMetalog.loads(dumps()) returns an equal SPTMetalog."""
+        spt = self._spt(boundedness, lower, upper)
+        self._assert_same_model(SPTMetalog.loads(spt.dumps()), spt)
+        self._assert_same_model(SPTMetalog.loads(saved), spt)
+
+    @parameterized.named_parameters(*CASES)
+    def test_save_load_round_trip(self, boundedness, lower, upper, saved):
+        """SPTMetalog.load after save() returns an equal SPTMetalog."""
+        import tempfile
+        from pathlib import Path
+
+        spt = self._spt(boundedness, lower, upper)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "spt.json"
+            spt.save(path)
+            self.assertEqual(path.read_text(), saved)
+            self._assert_same_model(SPTMetalog.load(path), spt)
+
+    def test_fitted_spt_metalog_round_trip(self):
+        """A model from fit_spt_metalog survives dumps() and loads()."""
+        params = SPTMetalogParameters(
+            boundedness=MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            alpha=0.1,
+            lower_bound=0.0,
+            upper_bound=12.0,
+        )
+        spt = fit_spt_metalog(
+            jnp.array([2.08, 4.1, 8.06]), params, precomputed_quantiles=True
+        )
+        self._assert_same_model(SPTMetalog.loads(spt.dumps()), spt)
+
+    def test_loading_the_other_kind_of_json_raises(self):
+        """Each class rejects the other's JSON and names the right loader."""
+        spt_json = self.CASES[0][-1]
+        with self.assertRaisesRegex(ValueError, "SPTMetalog.loads"):
+            Metalog.loads(spt_json)
+        with self.assertRaisesRegex(ValueError, "Metalog.loads"):
+            SPTMetalog.loads(self.METALOG_JSON)
+
+    def test_metalog_json_is_unchanged(self):
+        """Metalog JSON keeps its fit method and number of terms."""
+        loaded = Metalog.loads(self.METALOG_JSON)
+        self.assertIs(loaded.method, MetalogFitMethod.OLS)
+        self.assertEqual(loaded.dumps(), self.METALOG_JSON)
+
+    def test_spt_metalog_has_no_fit_method(self):
+        """Reading method raises AttributeError: an SPT fit has no regression."""
+        spt = self._spt(MetalogBoundedness.UNBOUNDED, 0.0, 0.0)
+        with self.assertRaisesRegex(AttributeError, "no fit method"):
+            _ = spt.method
+        self.assertFalse(hasattr(spt, "method"))
 
 
 class MetalogCoefficientCoercionTest(parameterized.TestCase):

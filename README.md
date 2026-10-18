@@ -564,6 +564,16 @@ loaded2 = Metalog.loads(json_str)
 assert metalog == loaded == loaded2
 ```
 
+Load a model with the class that saved it. An `SPTMetalog`'s JSON stores `alpha` and no fit method, so `Metalog.load` rejects it with a `ValueError`:
+
+```python
+from metalog_jax.metalog import SPTMetalog
+
+spt_metalog.save(Path("my_spt_distribution.json"))
+loaded_spt = SPTMetalog.load(Path("my_spt_distribution.json"))
+assert spt_metalog == loaded_spt == SPTMetalog.loads(spt_metalog.dumps())
+```
+
 ### Unified Grid Search with `fit_grid`
 
 The `fit_grid` function provides a unified interface for hyperparameter optimization,

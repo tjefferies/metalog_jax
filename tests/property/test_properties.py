@@ -25,6 +25,7 @@ from metalog_jax.base import (
     MetalogInputData,
     MetalogParameters,
     MetalogRandomVariableParameters,
+    SPTMetalogParameters,
 )
 from metalog_jax.grid_search import (
     fit_grid,
@@ -35,7 +36,7 @@ from metalog_jax.grid_search import (
     fit_grid_hyperparams,
     fit_grid_num_terms,
 )
-from metalog_jax.metalog import THETA_3, Metalog, fit, fit_spt_metalog
+from metalog_jax.metalog import THETA_3, Metalog, SPTMetalog, fit, fit_spt_metalog
 from metalog_jax.regression import fit_ordinary_least_squares
 from metalog_jax.utils import (
     DEFAULT_Y,
@@ -655,6 +656,17 @@ class SPTPropertiesTest(parameterized.TestCase):
         np.testing.assert_allclose(
             m.ppf(y), q, rtol=1e-9, atol=1e-12 * (np.max(np.abs(q)) + 1)
         )
+
+    @given(triplet=strategies.spt_triplets(feasible=True))
+    def test_serialization_round_trip(self, triplet):
+        """Regression test for issue #31: SPTMetalog.loads(dumps(m)) equals m."""
+        q, params = triplet
+        m = fit_spt_metalog(jnp.asarray(q), params, precomputed_quantiles=True)
+        loaded = SPTMetalog.loads(m.dumps())
+        self.assertIsInstance(loaded.metalog_params, SPTMetalogParameters)
+        self.assertEqual(loaded, m)
+        y = jnp.array([params.alpha, 0.5, 1 - params.alpha])
+        np.testing.assert_array_equal(loaded.ppf(y), m.ppf(y))
 
     @given(triplet=strategies.spt_triplets(feasible=True))
     def test_mirrored_triplet_gives_mirrored_coefficients(self, triplet):
