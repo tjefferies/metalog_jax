@@ -14,9 +14,12 @@ from jax.experimental import checkify
 
 from metalog_jax.base import (
     MetalogBoundedness,
+    MetalogFitMethod,
+    MetalogInputData,
+    MetalogParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.metalog import THETA_3, fit_spt_metalog
+from metalog_jax.metalog import THETA_3, fit, fit_spt_metalog
 
 # NOTE: GetQuantilesTest class has been removed as get_quantiles() is now an
 # internal function (_get_quantiles) within fit(). The quantile transformation
@@ -301,9 +304,9 @@ class FitSPTMetalogTest(parameterized.TestCase):
         with self.assertRaises(AssertionError):
             fit_spt_metalog(array, params)
 
-    def test_strictly_upper_bound_raises_not_implemented(self):
-        """Test that STRICTLY_UPPER_BOUND raises NotImplementedError."""
-        array = jnp.array(np.random.uniform(0, 10, 100))
+    def test_strictly_upper_bound_fit_returns_valid_coefficients(self):
+        """Test SPT fitting for strictly upper-bounded distributions (issue #23)."""
+        array = jnp.array(np.linspace(0.05, 9.95, 100))
         params = SPTMetalogParameters(
             alpha=0.1,
             boundedness=MetalogBoundedness.STRICTLY_UPPER_BOUND,
@@ -311,8 +314,13 @@ class FitSPTMetalogTest(parameterized.TestCase):
             upper_bound=10.0,
         )
 
-        with self.assertRaises(NotImplementedError):
-            fit_spt_metalog(array, params)
+        result = fit_spt_metalog(array, params)
+
+        self.assertEqual(len(result.a), 3)
+        self.assertTrue(jnp.all(jnp.isfinite(result.a)))
+        y = jnp.array([0.1, 0.5, 0.9])
+        # The closed forms are exact, so only float64 rounding remains
+        np.testing.assert_allclose(result.ppf(y), jnp.quantile(array, y), rtol=1e-12)
 
     def test_non_monotonic_quantiles_raises_error(self):
         """Test that non-monotonic quantiles raise AssertionError.
@@ -615,6 +623,7 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
     SUPPORTED_BOUNDEDNESS = (
         ("unbounded", MetalogBoundedness.UNBOUNDED),
         ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND),
+        ("strictly_upper_bound", MetalogBoundedness.STRICTLY_UPPER_BOUND),
         ("bounded", MetalogBoundedness.BOUNDED),
     )
 
@@ -644,6 +653,8 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
         q = np.asarray(q)
         if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
             return np.log(q - self.LOWER_BOUND)
+        if boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return -np.log(self.UPPER_BOUND - q)
         if boundedness == MetalogBoundedness.BOUNDED:
             return np.log((q - self.LOWER_BOUND) / (self.UPPER_BOUND - q))
         return q
@@ -654,6 +665,8 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
         z_median = z[0] + r * (z[1] - z[0])
         if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
             median = self.LOWER_BOUND + np.exp(z_median)
+        elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            median = self.UPPER_BOUND - np.exp(-z_median)
         elif boundedness == MetalogBoundedness.BOUNDED:
             median = (self.LOWER_BOUND + self.UPPER_BOUND * np.exp(z_median)) / (
                 1 + np.exp(z_median)
@@ -694,6 +707,31 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
                 np.testing.assert_allclose(m.a, expected, rtol=1e-10)
 
     @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
+    def test_matches_three_term_ols_through_the_triplet(self, boundedness):
+        """Coefficients match a 3-term OLS fit through the same three quantiles."""
+        for alpha in self.ALPHAS:
+            with self.subTest(alpha=alpha):
+                q = jnp.asarray(self.TRIPLET)
+                spt = fit_spt_metalog(
+                    q, self._params(boundedness, alpha), precomputed_quantiles=True
+                )
+                data = MetalogInputData.from_values(
+                    x=q,
+                    y=jnp.array([alpha, 0.5, 1 - alpha]),
+                    precomputed_quantiles=True,
+                )
+                params = MetalogParameters(
+                    boundedness=boundedness,
+                    method=MetalogFitMethod.OLS,
+                    lower_bound=self.LOWER_BOUND,
+                    upper_bound=self.UPPER_BOUND,
+                    num_terms=3,
+                )
+                # Three points and three terms: least squares interpolates
+                # exactly, so only the solver's float64 rounding differs
+                np.testing.assert_allclose(spt.a, fit(data, params).a, rtol=1e-9)
+
+    @parameterized.named_parameters(*SUPPORTED_BOUNDEDNESS)
     def test_accepts_triplets_just_inside_feasible_range(self, boundedness):
         """Medians just inside Propositions 2-4's range give finite coefficients."""
         alpha = 0.1
@@ -721,6 +759,12 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
             MetalogBoundedness.STRICTLY_LOWER_BOUND,
             2.0,
             0.0,
+        ),
+        (
+            "strictly_upper_bound_below_q_complement",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            0.0,
+            9.0,
         ),
         ("bounded_lower_bound_above_q_alpha", MetalogBoundedness.BOUNDED, 2.0, 20.0),
         (
@@ -766,6 +810,7 @@ class SPTMetalogTransformTest(parameterized.TestCase):
     SUPPORTED_BOUNDEDNESS = (
         ("unbounded", MetalogBoundedness.UNBOUNDED, 0.0, 0.0),
         ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND, 0.0, 0.0),
+        ("strictly_upper_bound", MetalogBoundedness.STRICTLY_UPPER_BOUND, 0.0, 20.0),
         ("bounded", MetalogBoundedness.BOUNDED, 0.0, 20.0),
     )
 
@@ -851,6 +896,7 @@ class SPTPrecomputedQuantilesTest(parameterized.TestCase):
     SUPPORTED_BOUNDEDNESS = (
         ("unbounded", MetalogBoundedness.UNBOUNDED),
         ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND),
+        ("strictly_upper_bound", MetalogBoundedness.STRICTLY_UPPER_BOUND),
         ("bounded", MetalogBoundedness.BOUNDED),
     )
 

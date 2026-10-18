@@ -20,6 +20,7 @@ from metalog_jax.base import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
+from metalog_jax.feasibility import get_engine
 from metalog_jax.metalog import Metalog, fit, fit_spt_metalog
 from metalog_jax.utils import (
     DEFAULT_Y,
@@ -41,8 +42,6 @@ class TransformTestBase(parameterized.TestCase):
         ("strictly_upper_bound", MetalogBoundedness.STRICTLY_UPPER_BOUND, 0.0, 15.0),
         ("bounded", MetalogBoundedness.BOUNDED, 0.0, 15.0),
     )
-    # fit_spt_metalog doesn't support STRICTLY_UPPER_BOUND
-    SPT_CASES = (BOUNDEDNESS_CASES[0], BOUNDEDNESS_CASES[1], BOUNDEDNESS_CASES[3])
     FIT_CASES = tuple(
         (f"{name}_{method.name.lower()}", boundedness, lower, upper, method)
         for name, boundedness, lower, upper in BOUNDEDNESS_CASES
@@ -145,7 +144,7 @@ class JitTest(TransformTestBase):
             jitted(data, params), fit(data, params).a, rtol=self.RTOL
         )
 
-    @parameterized.named_parameters(*TransformTestBase.SPT_CASES)
+    @parameterized.named_parameters(*TransformTestBase.BOUNDEDNESS_CASES)
     def test_jit_fit_spt_metalog_with_parameters_argument(
         self, boundedness, lower, upper
     ):
@@ -160,6 +159,14 @@ class JitTest(TransformTestBase):
             fit_spt_metalog(samples, params).a,
             rtol=self.RTOL,
         )
+
+    def test_jitted_feasible_fit_leaves_engine_cache_usable(self):
+        """A first Feasible fit under jit doesn't cache tracers in the engine."""
+        get_engine.cache_clear()
+        data = self._data()
+        params = self._params(MetalogBoundedness.UNBOUNDED, 0.0, 0.0)
+        jitted = self._checked_jit(lambda d, p: fit(d, p).a)(data, params)
+        np.testing.assert_allclose(jitted, fit(data, params).a, rtol=self.RTOL)
 
     def test_compiles_once_per_static_fields(self):
         """Models that share their static fields share one compilation."""
