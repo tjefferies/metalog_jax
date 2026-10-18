@@ -31,8 +31,6 @@ import chex
 import jax
 import jax.numpy as jnp
 from flax import struct
-from jax.core import Tracer
-from jax.experimental import checkify
 
 from metalog_jax.base import (
     MetalogBase,
@@ -50,6 +48,7 @@ from metalog_jax.regression import (
 )
 from metalog_jax.regression.base import assert_full_column_rank
 from metalog_jax.utils import (
+    assert_condition,
     assert_numeric_array,
 )
 
@@ -460,30 +459,6 @@ def fit(
     return metalog
 
 
-def _spt_check(predicate: chex.Array | bool, message: str) -> None:
-    """Check an SPT validation predicate, inside or outside JAX transforms.
-
-    Outside transforms the predicate is concrete, and a false one raises
-    AssertionError, as chex assertions do. Under ``jax.vmap`` or ``jax.jit`` it is
-    traced, so the check goes through ``checkify.check``: ``jax.vmap`` raises
-    ``checkify.JaxRuntimeError``, and ``jax.jit`` needs the caller to functionalize
-    it with ``checkify.checkify``. Comparisons with NaN are false, so NaN fails.
-
-    Args:
-        predicate: Scalar boolean that must be true.
-        message: Error message if it is false.
-
-    Raises:
-        AssertionError: If the predicate is concrete and false.
-        checkify.JaxRuntimeError: Under ``jax.vmap``, if the predicate is false
-            for any element of the batch.
-    """  # noqa: DOC503
-    if isinstance(predicate, Tracer):
-        checkify.check(predicate, message)
-    elif not bool(predicate):
-        raise AssertionError(message)
-
-
 @jax.jit
 def _spt_k_alpha(alpha: chex.Scalar) -> chex.Scalar:
     """Return k_alpha, the SPT feasibility threshold for the median's position.
@@ -654,8 +629,8 @@ def fit_spt_metalog(
           specific constraints related to k_alpha to ensure feasibility, where
           r = (median - q_alpha) / (q_complement - q_alpha).
         - Works under ``jax.vmap`` and ``jax.jit`` over the data, alpha and
-          bounds. Close over the parameters rather than passing them as a jit
-          argument, because boundedness selects the formulas in Python. Inside
+          bounds, and the parameters can be passed as a jit argument (boundedness
+          is a static field, so each boundedness type compiles once). Inside
           transforms the value checks use ``checkify``, so wrap a jitted call
           with ``checkify.checkify`` and call ``throw()`` on the returned error.
 
@@ -685,7 +660,7 @@ def fit_spt_metalog(
             function. If this check fails, the input data or alpha parameter
             produces quantiles that cannot represent a valid distribution.
         """  # noqa: DOC502
-        _spt_check(
+        assert_condition(
             (q[0] < q[1]) & (q[1] < q[2]),
             "SPT quantiles must be strictly ascending: q_alpha < median < q_complement",
         )
@@ -758,7 +733,7 @@ def fit_spt_metalog(
             """  # noqa: DOC502
             r = _spt_median_position(q)
             k_alpha = _spt_k_alpha(alpha)
-            _spt_check(
+            assert_condition(
                 (k_alpha < r) & (r < 1 - k_alpha),
                 "Infeasible SPT triplet: the median's position must lie in "
                 "(k_alpha, 1 - k_alpha) (Keelin 2016, Proposition 2)",
@@ -852,7 +827,7 @@ def fit_spt_metalog(
             upper_limit = lower_bound + jnp.power(gamma_alpha, k_alpha) * jnp.power(
                 gamma_compliment, 1 - k_alpha
             )
-            _spt_check(
+            assert_condition(
                 (lower_limit < median) & (median < upper_limit),
                 "Infeasible SPT triplet for a lower bound (Keelin 2016, Proposition 3)",
             )
@@ -864,7 +839,9 @@ def fit_spt_metalog(
         q_compliment = q[2]
 
         # The quantiles ascend, so they all lie in the support if q_alpha does
-        _spt_check(q_alpha > lower_bound, "SPT quantiles must lie above lower_bound")
+        assert_condition(
+            q_alpha > lower_bound, "SPT quantiles must lie above lower_bound"
+        )
 
         gamma_alpha = q_alpha - lower_bound
         gamma_median = median - lower_bound
@@ -974,7 +951,7 @@ def fit_spt_metalog(
             )
             lower_limit = (lower_bound + upper_bound * g_lower) / (1 + g_lower)
             upper_limit = (lower_bound + upper_bound * g_upper) / (1 + g_upper)
-            _spt_check(
+            assert_condition(
                 (lower_limit < median) & (median < upper_limit),
                 "Infeasible SPT triplet for bounds (Keelin 2016, Proposition 4)",
             )
@@ -987,8 +964,10 @@ def fit_spt_metalog(
 
         # The quantiles ascend, so they all lie in the support if q_alpha and
         # q_complement do; this also requires upper_bound > lower_bound
-        _spt_check(q_alpha > lower_bound, "SPT quantiles must lie above lower_bound")
-        _spt_check(
+        assert_condition(
+            q_alpha > lower_bound, "SPT quantiles must lie above lower_bound"
+        )
+        assert_condition(
             q_compliment < upper_bound, "SPT quantiles must lie below upper_bound"
         )
 
@@ -1007,7 +986,9 @@ def fit_spt_metalog(
     alpha = spt_metalog_params.alpha
     median_percentile = 0.5
 
-    _spt_check((alpha > 0) & (alpha < median_percentile), "alpha must be in (0, 0.5)")
+    assert_condition(
+        (alpha > 0) & (alpha < median_percentile), "alpha must be in (0, 0.5)"
+    )
 
     compliment = 1.0 - alpha
     y = jnp.array([alpha, median_percentile, compliment])
@@ -1028,7 +1009,7 @@ def fit_spt_metalog(
         raise NotImplementedError("This formulation is undefined in Keelin's paper!")
 
     # Infinite data can pass the checks above and still give infinite coefficients
-    _spt_check(
+    assert_condition(
         jnp.all(jnp.isfinite(a)),
         "SPT coefficients must be finite; check the data and bounds",
     )

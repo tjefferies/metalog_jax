@@ -31,9 +31,9 @@ from metalog_jax.grid_search import (
     make_batch,
     unvmap,
 )
-from metalog_jax.metalog import GridResult
+from metalog_jax.metalog import GridResult, Metalog
 from metalog_jax.regression import LassoParameters
-from metalog_jax.utils import DEFAULT_Y
+from metalog_jax.utils import DEFAULT_Y, ks_distance
 
 
 class TestMakeBatch(absltest.TestCase):
@@ -1587,6 +1587,70 @@ class TestGridFeasibleMethod(absltest.TestCase):
             self.assertTrue(
                 check_feasibility(get_engine(5), result.metalog.a[i]).feasible
             )
+
+
+class TestGridScoresAtDataProbabilities(absltest.TestCase):
+    """Every grid function scores its fits at the dataset's own probability levels."""
+
+    # A probability grid other than DEFAULT_Y
+    Y = tuple(round(0.05 * i, 2) for i in range(1, 20))
+    L1 = (0.0, 0.01)
+    NUM_TERMS = (3, 4)
+
+    def _params(self, method):
+        """Return unbounded parameters for the given fit method."""
+        return MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=method,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+
+    def _assert_scored_at_y(self, result, x, y):
+        """Check each KS distance against the fit's own quantiles at y."""
+        a = result.metalog.a.reshape(-1, result.metalog.a.shape[-1])
+        ks = result.ks_dist.reshape(-1)
+        for a_i, ks_i in zip(a, ks, strict=True):
+            params = self._params(MetalogFitMethod.OLS).replace(num_terms=a_i.shape[0])
+            # _ppf, not ppf, so infeasible grid fits are scored rather than rejected
+            fitted = Metalog(params, a_i)._ppf(y, a_i.shape[0])
+            self.assertAlmostEqual(float(ks_i), float(ks_distance(x, fitted)))
+
+    def test_all_grid_functions_score_at_y(self):
+        """Each grid function's KS distances use y, not DEFAULT_Y."""
+        y = jnp.asarray(self.Y)
+        # Lognormal quantiles aren't an exact metalog, so no fitted value ties with
+        # the data and rounding can't change a KS distance
+        x = jnp.asarray(lognorm(s=0.5).ppf(self.Y))
+        bx, by = jnp.stack([x, x]), jnp.stack([y, y])
+        data = MetalogInputData.from_values(x, y, precomputed_quantiles=True)
+        ols = self._params(MetalogFitMethod.OLS)
+        lasso = self._params(MetalogFitMethod.Lasso)
+        l1 = jnp.asarray(self.L1)
+        terms = list(self.NUM_TERMS)
+        results = {
+            "fit_grid": fit_grid(
+                x, y, ols, num_terms=terms, precomputed_quantiles=True
+            ),
+            "fit_grid_num_terms": fit_grid_num_terms(data, ols, terms),
+            "fit_grid_datasets_num_terms": fit_grid_datasets_num_terms(
+                bx, by, ols, terms, precomputed_quantiles=True
+            ),
+            "fit_grid_full": fit_grid_full(
+                bx, by, lasso, l1, terms, precomputed_quantiles=True
+            ),
+            "fit_grid_datasets": fit_grid_datasets(
+                bx, by, ols, precomputed_quantiles=True
+            ),
+            "fit_grid_hyperparams": fit_grid_hyperparams(data, lasso, l1),
+            "fit_grid_datasets_hyperparams": fit_grid_datasets_hyperparams(
+                bx, by, lasso, l1, precomputed_quantiles=True
+            ),
+        }
+        for name, result in results.items():
+            with self.subTest(function=name):
+                self._assert_scored_at_y(result, x, y)
 
 
 if __name__ == "__main__":

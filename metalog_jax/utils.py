@@ -5,15 +5,20 @@ import chex
 import jax
 import jax.numpy as jnp
 from flax import struct
+from jax.core import Tracer
+from jax.experimental import checkify
 
+# Default probability grids, in float64 like the rest of the library. The steps are
+# built from integers, so each value is the nearest double to its decimal; a float
+# arange accumulates rounding error (its last value would be 0.9999000000000005).
 DEFAULT_Y: chex.Numeric = jnp.concatenate(
     [
-        jnp.array([0.001, 0.003, 0.006], dtype=jnp.float32),
-        jnp.arange(0.01, 1.0, 0.01, dtype=jnp.float32),
-        jnp.array([0.994, 0.997, 0.999], dtype=jnp.float32),
+        jnp.array([0.001, 0.003, 0.006], dtype=jnp.float64),
+        jnp.arange(1, 100, dtype=jnp.float64) / 100,
+        jnp.array([0.994, 0.997, 0.999], dtype=jnp.float64),
     ]
 )
-DEFAULT_Y_FULL: chex.Numeric = jnp.arange(0.001, 1.0, 0.0001, dtype="float32")
+DEFAULT_Y_FULL: chex.Numeric = jnp.arange(10, 10_000, dtype=jnp.float64) / 10_000
 DEFAULT_HDR_TRIAL: int = 1
 DEFAULT_HDR_VARIABLE: int = 0
 DEFAULT_HDR_ENTITY: int = 0
@@ -60,7 +65,8 @@ class HDRPRNGParameters:
     IEEE Press, 3064 - 3073.
 
     Attributes:
-        trial: Seed representing the simulation trial or iteration. Defaults to 1.
+        trial: First simulation trial. MetalogBase.rvs draws trials ``trial``
+            to ``trial + size - 1``, one per variate. Defaults to 1.
         variable: Parameter representing the random variable being sampled. Defaults to 0.
         entity: Parameter representing the entity or object being simulated. Defaults to 0.
         time: Parameter representing the time step in the simulation. Defaults to 0.
@@ -98,18 +104,61 @@ def assert_float_array(array: chex.Array) -> None:
     chex.assert_type(array, float)
 
 
+def assert_condition(
+    predicate: chex.Array | bool,
+    message: str,
+    *format_args: chex.Numeric,
+    error: type[Exception] = AssertionError,
+) -> None:
+    """Check a scalar condition, inside or outside JAX transforms.
+
+    Outside transforms the predicate is concrete, and a false one raises ``error``
+    with ``message.format(*format_args)``. Under ``jax.vmap`` or ``jax.jit`` it is
+    traced, so the check goes through ``checkify.check``, which formats the message
+    with the runtime values: ``jax.vmap`` raises ``checkify.JaxRuntimeError``, and
+    ``jax.jit`` needs the caller to functionalize it with ``checkify.checkify``.
+    Comparisons with NaN are false, so NaN fails the check.
+
+    Args:
+        predicate: Scalar boolean that must be true.
+        message: Error message, with a ``{}`` placeholder for each format argument.
+        *format_args: Values to put into the message.
+        error: Exception type to raise outside transforms.
+
+    Raises:
+        AssertionError: If the predicate is concrete and false, or ``error`` if
+            given instead.
+        checkify.JaxRuntimeError: Under ``jax.vmap``, if the predicate is false
+            for any element of the batch.
+
+    Example:
+        >>> assert_condition(jnp.array(1.0) > 0, "x must be positive")  # No error
+        >>> assert_condition(jnp.array(-1.0) > 0, "x must be positive")
+        Traceback (most recent call last):
+            ...
+        AssertionError: x must be positive
+    """  # noqa: DOC503
+    if isinstance(predicate, Tracer):
+        # checkify formats arrays only, so convert Python scalars such as a tolerance
+        checkify.check(predicate, message, *(jnp.asarray(a) for a in format_args))
+    elif not bool(predicate):
+        raise error(message.format(*format_args))
+
+
 def assert_probability_range(array: chex.Array) -> None:
     """Assert that all array values are in the open interval (0, 1).
 
     Validates that the minimum value in the array is strictly greater than 0
     and the maximum value is strictly less than 1, ensuring all values represent
-    valid probabilities in the open unit interval.
+    valid probabilities in the open unit interval. Works inside ``jax.jit`` and
+    ``jax.vmap`` through assert_condition.
 
     Args:
         array: Input array to validate.
 
     Raises:
-        ValueError: If any value is <= 0 or >= 1.
+        ValueError: If any value is <= 0 or >= 1, or is NaN.
+        checkify.JaxRuntimeError: Under ``jax.vmap``, for the same values.
 
     Example:
         >>> valid_probs = jnp.array([0.1, 0.5, 0.9])
@@ -119,14 +168,21 @@ def assert_probability_range(array: chex.Array) -> None:
         Traceback (most recent call last):
             ...
         ValueError: Array minimum 0.0 must be strictly greater than 0
-    """
+    """  # noqa: DOC502
     min_val = jnp.min(array)
     max_val = jnp.max(array)
-
-    if min_val <= 0:
-        raise ValueError(f"Array minimum {min_val} must be strictly greater than 0")
-    if max_val >= 1:
-        raise ValueError(f"Array maximum {max_val} must be strictly less than 1")
+    assert_condition(
+        min_val > 0,
+        "Array minimum {} must be strictly greater than 0",
+        min_val,
+        error=ValueError,
+    )
+    assert_condition(
+        max_val < 1,
+        "Array maximum {} must be strictly less than 1",
+        max_val,
+        error=ValueError,
+    )
 
 
 def assert_strictly_ascending(x: chex.Numeric, tol: float = 1e-12) -> None:
@@ -183,27 +239,27 @@ def assert_strictly_ascending(x: chex.Numeric, tol: float = 1e-12) -> None:
         Invalid array with duplicate values:
 
             >>> x_dup = jnp.array([0.1, 0.2, 0.2, 0.9])
-            >>> assert_strictly_ascending(x_dup)  # doctest: +ELLIPSIS
+            >>> assert_strictly_ascending(x_dup)
             Traceback (most recent call last):
                 ...
-            AssertionError: [Chex] Assertion assert_scalar_positive failed: ...
+            AssertionError: Array values must be strictly ascending, with consecutive differences above 1e-12
 
         Invalid array not in ascending order:
 
             >>> x_unsorted = jnp.array([0.1, 0.5, 0.2, 0.9])
-            >>> assert_strictly_ascending(x_unsorted)  # doctest: +ELLIPSIS
+            >>> assert_strictly_ascending(x_unsorted)
             Traceback (most recent call last):
                 ...
-            AssertionError: [Chex] Assertion assert_scalar_positive failed: ...
+            AssertionError: Array values must be strictly ascending, with consecutive differences above 1e-12
 
         Using custom tolerance:
 
             >>> # Values closer together than the default tolerance (1e-12)
             >>> x_close = jnp.array([0.1, 0.1 + 1e-13, 0.2])
-            >>> assert_strictly_ascending(x_close)  # doctest: +ELLIPSIS
+            >>> assert_strictly_ascending(x_close)
             Traceback (most recent call last):
                 ...
-            AssertionError: [Chex] Assertion assert_scalar_positive failed: ...
+            AssertionError: Array values must be strictly ascending, with consecutive differences above 1e-12
             >>> assert_strictly_ascending(x_close, tol=1e-14)  # Passes
 
     See Also:
@@ -215,7 +271,11 @@ def assert_strictly_ascending(x: chex.Numeric, tol: float = 1e-12) -> None:
         (y values) before computing quantile functions or fitting coefficients.
     """  # noqa: DOC502
     diffs = jnp.diff(x)
-    chex.assert_scalar_positive(bool(jnp.all(diffs > tol)))
+    assert_condition(
+        jnp.all(diffs > tol),
+        "Array values must be strictly ascending, with consecutive differences above {}",
+        tol,
+    )
 
 
 def hdrprng(

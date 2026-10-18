@@ -30,15 +30,23 @@ from metalog_jax.utils import (
 class MetalogRandomVariableParameters:
     """Configuration parameters for drawing rvs from fitted metalog distribution.
 
+    ``size`` and ``max_draws`` set array shapes, so they are static fields: they
+    belong to the pytree structure rather than its leaves, and the parameters can be
+    passed to ``jax.jit``. The PRNG parameters are leaves, so ``jax.vmap`` can run
+    over seeds or HDR trials.
+
     Attributes:
         prng_params: Params for the psuedorandom number generator.
         size: The number of random variables to draw. Must be strictly positive.
-        max_draws: Maximum number of draws for rejection sampling.
+            Static.
+        max_draws: Maximum number of draws for rejection sampling. Static.
     """
 
     prng_params: JaxUniformDistributionParameters | HDRPRNGParameters
-    size: int
-    max_draws: int = DEFAULT_MAX_NUMBER_RV_DRAWS
+    size: int = struct.field(pytree_node=False)
+    max_draws: int = struct.field(
+        pytree_node=False, default=DEFAULT_MAX_NUMBER_RV_DRAWS
+    )
 
     def __post_init__(self):
         """Post init data validation.
@@ -57,13 +65,20 @@ class MetalogParametersBase:
     distribution types, specifically the boundedness constraints and boundary values
     that determine the support of the distribution.
 
+    Fields that select code paths or array shapes (``boundedness`` here, and
+    ``method`` and ``num_terms`` in MetalogParameters) are static: they belong to
+    the pytree structure rather than its leaves. So a model or parameters object
+    can be passed to ``jax.jit``, which compiles once per combination of static
+    values, and models stacked for ``jax.vmap`` must share them. The bounds are
+    ordinary leaves and can be traced.
+
     Attributes:
-        boundedness: Type of domain constraint for the distribution.
+        boundedness: Type of domain constraint for the distribution. Static.
         lower_bound: Lower boundary value for the distribution's support.
         upper_bound: Upper boundary value for the distribution's support.
     """
 
-    boundedness: MetalogBoundedness
+    boundedness: MetalogBoundedness = struct.field(pytree_node=False)
     lower_bound: chex.Scalar
     upper_bound: chex.Scalar
 
@@ -80,10 +95,10 @@ class MetalogParameters(MetalogParametersBase):
             Defined in metalog_jax.base.enums.MetalogBoundedness.
         lower_bound: Inherited. Lower boundary value.
         upper_bound: Inherited. Upper boundary value.
-        method: Regression method used for fitting. One of:
+        method: Regression method used for fitting. Static. One of:
             - MetalogFitMethod.OLS: metalog_jax.regression.ols
             - MetalogFitMethod.Lasso: metalog_jax.regression.lasso
-        num_terms: Number of terms in the metalog series expansion.
+        num_terms: Number of terms in the metalog series expansion. Static.
 
     See Also:
         MetalogParametersBase: Parent class with boundedness and bound attributes.
@@ -92,8 +107,8 @@ class MetalogParameters(MetalogParametersBase):
         metalog_jax.regression: Module containing regression implementations.
     """
 
-    method: MetalogFitMethod
-    num_terms: int
+    method: MetalogFitMethod = struct.field(pytree_node=False)
+    num_terms: int = struct.field(pytree_node=False)
 
 
 @struct.dataclass
