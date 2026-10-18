@@ -538,8 +538,10 @@ def _spt_coefficients(z: chex.Array, alpha: chex.Scalar) -> chex.Array:
 def fit_spt_metalog(
     array: chex.Numeric,
     spt_metalog_params: SPTMetalogParameters,
+    *,
+    precomputed_quantiles: bool = False,
 ) -> SPTMetalog:
-    """Fit a Symmetric Percentile Triplet (SPT) metalog distribution to data.
+    """Fit a Symmetric Percentile Triplet (SPT) metalog to data or assessed quantiles.
 
     This function fits a 3-term metalog distribution using the Symmetric Percentile
     Triplet (SPT) parameterization method described in Keelin (2016). Unlike the
@@ -559,7 +561,9 @@ def fit_spt_metalog(
     Args:
         array: Input data array with at least 3 elements from which to compute
             empirical quantiles. The array will be used to compute the alpha-th,
-            50th, and (1-alpha)-th percentiles.
+            50th, and (1-alpha)-th percentiles. If ``precomputed_quantiles`` is
+            True, it is instead the triplet [q_alpha, q_0.5, q_1-alpha] itself,
+            for example an expert's assessed 10th, 50th and 90th percentiles.
         spt_metalog_params: Configuration parameters containing:
 
             - alpha: Lower percentile parameter in (0, 0.5). Common values are
@@ -568,6 +572,8 @@ def fit_spt_metalog(
               or BOUNDED). STRICTLY_UPPER_BOUND is not supported in SPT formulation.
             - lower_bound: Lower boundary value (used for semi-bounded/bounded).
             - upper_bound: Upper boundary value (used for bounded distributions).
+        precomputed_quantiles: Whether ``array`` holds the three quantiles
+            themselves rather than data. Defaults to False.
 
     Returns:
         SPTMetalog: Fitted SPT metalog distribution containing:
@@ -579,6 +585,8 @@ def fit_spt_metalog(
     Raises:
         AssertionError: If array has fewer than 3 elements, is not rank 1,
             or contains non-numeric values.
+        AssertionError: If precomputed_quantiles is True and array doesn't
+            have shape (3,).
         AssertionError: If alpha is not positive or alpha >= 0.5.
         AssertionError: If the computed quantiles violate feasibility constraints
             (q_alpha < median < q_complement).
@@ -616,6 +624,12 @@ def fit_spt_metalog(
         >>> batch = jnp.stack([data, 2 * data])
         >>> jax.vmap(lambda d: fit_spt_metalog(d, params).a)(batch).shape
         (2, 3)
+        >>>
+        >>> # Fit an expert's 10th, 50th and 90th percentile assessments directly
+        >>> assessed = jnp.array([2.08, 4.1, 8.06])
+        >>> spt = fit_spt_metalog(assessed, params, precomputed_quantiles=True)
+        >>> spt.ppf(jnp.array([0.1, 0.5, 0.9])).round(2).tolist()
+        [2.08, 4.1, 8.06]
 
     Note:
         - The SPT method always produces exactly 3 metalog terms, regardless of
@@ -625,6 +639,10 @@ def fit_spt_metalog(
           as defined in Keelin's paper.
         - The method performs multiple feasibility checks to ensure the quantiles
           and parameters produce a valid probability distribution.
+        - Pass ``precomputed_quantiles=True`` for quantiles you already have. By
+          default a 3-element array is treated as data, and ``jnp.quantile``
+          interpolates between its three values, so the fit would not pass
+          through them.
         - For unbounded distributions, the median position ratio r must satisfy
           specific constraints related to k_alpha to ensure feasibility, where
           r = (median - q_alpha) / (q_complement - q_alpha).
@@ -992,7 +1010,11 @@ def fit_spt_metalog(
 
     compliment = 1.0 - alpha
     y = jnp.array([alpha, median_percentile, compliment])
-    q = jnp.quantile(array, y)
+    if precomputed_quantiles:
+        chex.assert_shape(array, (3,))
+        q = jnp.asarray(array, dtype=float)
+    else:
+        q = jnp.quantile(array, y)
     _quantile_feasibility_check(q)
 
     boundedness = spt_metalog_params.boundedness

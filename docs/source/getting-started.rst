@@ -96,6 +96,24 @@ and (1 - alpha):
    mean_val = spt.mean
    std_val = spt.std
 
+If you already have the three quantiles, for example an expert's 10th, 50th and
+90th percentile assessments, pass them with ``precomputed_quantiles=True``. Without
+it, three values are treated as data and interpolated, so the fit wouldn't pass
+through them:
+
+.. code-block:: python
+
+   assessed = jnp.array([2.0, 4.0, 7.0])  # 10th, 50th and 90th percentiles
+   spt = fit_spt_metalog(assessed, params, precomputed_quantiles=True)
+
+   # Fit many assessments at once
+   import jax
+
+   batch = jnp.array([[2.0, 4.0, 7.0], [1.0, 1.5, 3.0]])
+   coefficients = jax.vmap(
+       lambda q: fit_spt_metalog(q, params, precomputed_quantiles=True).a
+   )(batch)
+
 Using Pre-computed Quantiles
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
