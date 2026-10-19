@@ -1,0 +1,29 @@
+name: Question
+description: Ask how to use metalog-jax.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [getting started guide](https://tjefferies.github.io/metalog_jax/getting-started.html), the tutorials and the [API reference](https://tjefferies.github.io/metalog_jax/) answer many questions. If they don't answer yours, ask here; this repository has no Discussions forum.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What you want to do, and where you got stuck.
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: What you tried
+      description: Code you ran, if any.
+      render: python
+
+  - type: input
+    id: version
+    attributes:
+      label: metalog-jax version
+      placeholder: "2.0.2"

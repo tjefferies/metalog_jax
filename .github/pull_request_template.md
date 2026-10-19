@@ -47,13 +47,13 @@ Environment: <!-- OS, Python, jax/jaxlib versions, CPU or GPU -->
 
 - [ ] New or updated tests cover the change (`tests/unit`, `tests/integration`, or `tests/feasibility`)
 - [ ] A bug fix includes a test that fails without the fix
-- [ ] `make quality-gate` passes locally (ruff format and lint, ty, radon MI grade A and CC grade B or better, pytest with at least 75% coverage, license check, semgrep, bandit)
+- [ ] `make quality-gate` passes locally (ruff format and lint, ty, interrogate, pydoclint, zizmor, xenon, pytest with at least 95% branch coverage, doctests, license check, semgrep, bandit)
 
 ## Numerical correctness (if applicable)
 
 <!-- For changes to fitting, ppf/pdf/cdf/q, moments, sampling, or feasibility. -->
 
-- [ ] Results are checked against an independent reference: <!-- equation or proposition in Keelin (2016) or Baucells, Chrisman, Keelin and Xu (2025); R rmetalog; the reference implementation credited in NOTICE; a closed form; or scipy -->
+- [ ] Results are checked against an independent reference: <!-- equation or proposition in Keelin (2016) or Baucells, Chrisman, Keelin and Xu (2025); the reference implementation credited in NOTICE; a closed form; or scipy -->
 - [ ] Tolerances in new assertions are explained in a comment or here
 - [ ] All four boundedness types are tested, not just `UNBOUNDED`
 - [ ] Every affected fit method (OLS, Lasso, Feasible) is tested
@@ -90,9 +90,9 @@ uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
 
 - [ ] Public functions and classes have Google-style docstrings (ruff `D` rules)
 - [ ] A new module has an `automodule` entry in `docs/source/api/modules.rst`
-- [ ] Notebooks in `docs/source/` are re-run and saved with outputs if results changed (the docs build does not execute them)
+- [ ] Notebooks in `docs/source/` are re-run and saved with outputs if results changed (the docs build shows the saved outputs; `make notebooks` only checks that they run)
 - [ ] `README.md` and `examples/` match the new behavior
-- [ ] `make docs` builds
+- [ ] `make docs` builds without warnings
 
 ## Dependencies and licensing (if applicable)
 

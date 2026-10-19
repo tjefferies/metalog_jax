@@ -6,6 +6,9 @@ behavior across various configurations and edge cases.
 """
 # Copyright: Travis Jefferies 2026
 
+from typing import ClassVar
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
@@ -15,9 +18,15 @@ from metalog_jax.base import (
     MetalogFitMethod,
     MetalogInputData,
     MetalogParameters,
+    MetalogRandomVariableParameters,
+    SPTMetalogParameters,
 )
-from metalog_jax.metalog import Metalog
-from metalog_jax.utils import DEFAULT_Y
+from metalog_jax.metalog import Metalog, SPTMetalog, fit, fit_spt_metalog
+from metalog_jax.utils import (
+    DEFAULT_Y,
+    HDRPRNGParameters,
+    JaxUniformDistributionParameters,
+)
 
 
 class MetalogBoundednessTest(parameterized.TestCase):
@@ -269,7 +278,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             self.assertTrue(save_path.exists())
 
             # Load and verify content
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             # Check that JSON has expected structure
@@ -324,7 +333,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             results2.save(save_path)
 
             # Load and verify the file contains the second set of values
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             self.assertEqual(
@@ -359,7 +368,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             )
             results.save(save_path)
 
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             np.testing.assert_array_almost_equal(
@@ -392,7 +401,7 @@ class MetalogBaseSaveTest(parameterized.TestCase):
             )
             results.save(save_path)
 
-            with open(save_path, "r") as f:
+            with open(save_path) as f:
                 loaded_data = json.load(f)
 
             self.assertEqual(len(loaded_data["a"]), num_terms)
@@ -1095,6 +1104,424 @@ class MetalogBaseLoadsTest(parameterized.TestCase):
         self.assertIsInstance(loaded_results.a, jnp.ndarray)
 
 
+class SPTMetalogSerializationTest(parameterized.TestCase):
+    """Regression tests for issue #31: SPT metalogs save and load."""
+
+    COEFFICIENTS = (0.5, 1.0, 0.25)
+    # (name, boundedness, lower bound, upper bound, the JSON dumps() writes)
+    CASES = (
+        (
+            "unbounded",
+            MetalogBoundedness.UNBOUNDED,
+            0.0,
+            0.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 1, '
+            '"lower_bound": 0.0, "upper_bound": 0.0, "alpha": 0.1}}',
+        ),
+        (
+            "strictly_lower_bound",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            -2.0,
+            0.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 2, '
+            '"lower_bound": -2.0, "upper_bound": 0.0, "alpha": 0.1}}',
+        ),
+        (
+            "strictly_upper_bound",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            0.0,
+            15.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 3, '
+            '"lower_bound": 0.0, "upper_bound": 15.0, "alpha": 0.1}}',
+        ),
+        (
+            "bounded",
+            MetalogBoundedness.BOUNDED,
+            -2.0,
+            15.0,
+            '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 4, '
+            '"lower_bound": -2.0, "upper_bound": 15.0, "alpha": 0.1}}',
+        ),
+    )
+    # The JSON Metalog.dumps writes, unchanged by issue #31
+    METALOG_JSON = (
+        '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 1, '
+        '"method": 1, "lower_bound": 0.0, "upper_bound": 0.0, "num_terms": 3}}'
+    )
+
+    def _spt(self, boundedness, lower, upper):
+        """Return an SPTMetalog with the class coefficients and alpha = 0.1."""
+        params = SPTMetalogParameters(
+            boundedness=boundedness, alpha=0.1, lower_bound=lower, upper_bound=upper
+        )
+        return SPTMetalog(metalog_params=params, a=jnp.asarray(self.COEFFICIENTS))
+
+    def _assert_same_model(self, loaded, spt):
+        """Check the loaded model is an equal SPTMetalog with the same ppf."""
+        self.assertIsInstance(loaded, SPTMetalog)
+        self.assertIsInstance(loaded.metalog_params, SPTMetalogParameters)
+        self.assertEqual(loaded, spt)
+        self.assertIs(loaded.boundedness, spt.boundedness)
+        y = jnp.array([0.1, 0.5, 0.9])
+        np.testing.assert_array_equal(loaded.ppf(y), spt.ppf(y))
+
+    @parameterized.named_parameters(*CASES)
+    def test_dumps_writes_alpha_and_no_fit_method(
+        self, boundedness, lower, upper, saved
+    ):
+        """dumps() writes the coefficients, boundedness, bounds and alpha."""
+        self.assertEqual(self._spt(boundedness, lower, upper).dumps(), saved)
+
+    @parameterized.named_parameters(*CASES)
+    def test_dumps_loads_round_trip(self, boundedness, lower, upper, saved):
+        """SPTMetalog.loads(dumps()) returns an equal SPTMetalog."""
+        spt = self._spt(boundedness, lower, upper)
+        self._assert_same_model(SPTMetalog.loads(spt.dumps()), spt)
+        self._assert_same_model(SPTMetalog.loads(saved), spt)
+
+    @parameterized.named_parameters(*CASES)
+    def test_save_load_round_trip(self, boundedness, lower, upper, saved):
+        """SPTMetalog.load after save() returns an equal SPTMetalog."""
+        import tempfile
+        from pathlib import Path
+
+        spt = self._spt(boundedness, lower, upper)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "spt.json"
+            spt.save(path)
+            self.assertEqual(path.read_text(), saved)
+            self._assert_same_model(SPTMetalog.load(path), spt)
+
+    def test_fitted_spt_metalog_round_trip(self):
+        """A model from fit_spt_metalog survives dumps() and loads()."""
+        params = SPTMetalogParameters(
+            boundedness=MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            alpha=0.1,
+            lower_bound=0.0,
+            upper_bound=12.0,
+        )
+        spt = fit_spt_metalog(
+            jnp.array([2.08, 4.1, 8.06]), params, precomputed_quantiles=True
+        )
+        self._assert_same_model(SPTMetalog.loads(spt.dumps()), spt)
+
+    def test_loading_the_other_kind_of_json_raises(self):
+        """Each class rejects the other's JSON and names the right loader."""
+        spt_json = self.CASES[0][-1]
+        with self.assertRaisesRegex(ValueError, "SPTMetalog.loads"):
+            Metalog.loads(spt_json)
+        with self.assertRaisesRegex(ValueError, "Metalog.loads"):
+            SPTMetalog.loads(self.METALOG_JSON)
+
+    def test_metalog_json_is_unchanged(self):
+        """Metalog JSON keeps its fit method and number of terms."""
+        loaded = Metalog.loads(self.METALOG_JSON)
+        self.assertIs(loaded.method, MetalogFitMethod.OLS)
+        self.assertEqual(loaded.dumps(), self.METALOG_JSON)
+
+    def test_spt_metalog_has_no_fit_method(self):
+        """Reading method raises AttributeError: an SPT fit has no regression."""
+        spt = self._spt(MetalogBoundedness.UNBOUNDED, 0.0, 0.0)
+        with self.assertRaisesRegex(AttributeError, "no fit method"):
+            _ = spt.method
+        self.assertFalse(hasattr(spt, "method"))
+
+
+class MetalogCoefficientCoercionTest(parameterized.TestCase):
+    """Regression tests for issue #9: list or tuple ``a`` must behave like an array."""
+
+    BOUNDED_PARAMS = MetalogParameters(
+        boundedness=MetalogBoundedness.BOUNDED,
+        method=MetalogFitMethod.OLS,
+        lower_bound=0.0,
+        upper_bound=100.0,
+        num_terms=9,
+    )
+    BOUNDED_COEFFICIENTS: ClassVar[list[float]] = [
+        0.05007640896849727,
+        -0.002588965892559015,
+        0.029259325649691956,
+        0.04859112402900226,
+        -0.11992935334985189,
+        0.031077557519399026,
+        0.0318654614286282,
+        -0.11876134898672946,
+        0.611456711514515,
+    ]
+
+    def setUp(self):
+        """Build the array-backed reference distribution."""
+        super().setUp()
+        self.reference = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=jnp.array(self.BOUNDED_COEFFICIENTS)
+        )
+        self.y = jnp.array([0.1, 0.5, 0.9])
+
+    @parameterized.named_parameters(
+        ("list", list),
+        ("tuple", tuple),
+    )
+    def test_sequence_coerced_to_float64_jax_array(self, container):
+        """Test that a list or tuple is stored as a float64 jax.Array."""
+        m = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=container(self.BOUNDED_COEFFICIENTS)
+        )
+
+        self.assertIsInstance(m.a, jax.Array)
+        self.assertEqual(m.a.dtype, jnp.float64)
+        self.assertEqual(m.a.shape, (9,))
+        np.testing.assert_array_equal(m.a, self.reference.a)
+
+    @parameterized.named_parameters(
+        ("numpy_array", np.array),
+        ("jax_array", jnp.array),
+    )
+    def test_array_passed_through_unchanged(self, array_fn):
+        """Test that array coefficients are stored as given, not copied."""
+        a = array_fn(self.BOUNDED_COEFFICIENTS)
+        m = Metalog(metalog_params=self.BOUNDED_PARAMS, a=a)
+
+        self.assertIs(m.a, a)
+
+    def test_integer_list_coerced_to_float(self):
+        """Test that integer coefficients become float64."""
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+        m = Metalog(metalog_params=params, a=[0, 1, 0])
+
+        self.assertEqual(m.a.dtype, jnp.float64)
+        np.testing.assert_allclose(m.ppf(self.y), jnp.log(self.y / (1 - self.y)))
+
+    @parameterized.named_parameters(
+        ("list", list),
+        ("tuple", tuple),
+    )
+    def test_sequence_matches_array(self, container):
+        """Test that every distribution method matches the array-backed reference."""
+        m = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=container(self.BOUNDED_COEFFICIENTS)
+        )
+        rv_params = MetalogRandomVariableParameters(
+            prng_params=JaxUniformDistributionParameters(seed=1),
+            size=10_000,
+        )
+
+        np.testing.assert_array_equal(m.rvs(rv_params), self.reference.rvs(rv_params))
+        np.testing.assert_array_equal(m.pdf(self.y), self.reference.pdf(self.y))
+        np.testing.assert_array_equal(m.ppf(self.y), self.reference.ppf(self.y))
+        np.testing.assert_array_equal(m.q(self.y), self.reference.q(self.y))
+        self.assertEqual(m.cdf(51.0), self.reference.cdf(51.0))
+        self.assertEqual(m.mean, self.reference.mean)
+        self.assertEqual(m.median, self.reference.median)
+        self.assertEqual(m.std, self.reference.std)
+        self.assertEqual(m.mode, self.reference.mode)
+
+    @parameterized.named_parameters(
+        ("list", list),
+        ("tuple", tuple),
+    )
+    def test_sequence_equality_and_serialization(self, container):
+        """Test __eq__ and a dumps/loads round trip."""
+        m = Metalog(
+            metalog_params=self.BOUNDED_PARAMS, a=container(self.BOUNDED_COEFFICIENTS)
+        )
+
+        self.assertEqual(m, self.reference)
+        self.assertEqual(Metalog.loads(m.dumps()), m)
+
+    def test_spt_metalog_list_coerced(self):
+        """Test that SPTMetalog inherits the coercion."""
+        params = SPTMetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            alpha=0.1,
+        )
+        coefficients = [10.0, 2.0, 0.5]
+        m = SPTMetalog(metalog_params=params, a=coefficients)
+        reference = SPTMetalog(metalog_params=params, a=jnp.array(coefficients))
+
+        self.assertIsInstance(m.a, jax.Array)
+        np.testing.assert_array_equal(m.ppf(self.y), reference.ppf(self.y))
+
+    def test_pytree_transforms_still_work(self):
+        """Test jit, vmap, eval_shape and tree.map on a list-built distribution."""
+        m = Metalog(metalog_params=self.BOUNDED_PARAMS, a=self.BOUNDED_COEFFICIENTS)
+
+        total = jax.jit(lambda mm: mm.a.sum())(m)
+        np.testing.assert_allclose(total, sum(self.BOUNDED_COEFFICIENTS))
+
+        shape = jax.eval_shape(lambda mm: mm.a * 2, m)
+        self.assertEqual(shape.shape, (9,))
+        self.assertEqual(shape.dtype, jnp.float64)
+
+        self.assertIsNone(jax.tree.map(lambda _: None, m).a)
+
+        batched = jax.tree.map(lambda *xs: jnp.stack(xs), m, self.reference)
+        ppf = jax.vmap(lambda mm: mm._ppf(self.y, 9))(batched)
+        expected = self.reference._ppf(self.y, 9)
+        np.testing.assert_allclose(ppf, jnp.stack([expected, expected]))
+
+
+class MetalogQuantileAliasTest(parameterized.TestCase):
+    """Regression tests for issue #14: q() must match ppf() for every boundedness."""
+
+    LOWER_BOUND = 2.0
+    UPPER_BOUND = 10.0
+
+    def _params(self, boundedness, num_terms):
+        """Build OLS parameters on [LOWER_BOUND, UPPER_BOUND]."""
+        return MetalogParameters(
+            boundedness=boundedness,
+            method=MetalogFitMethod.OLS,
+            lower_bound=self.LOWER_BOUND,
+            upper_bound=self.UPPER_BOUND,
+            num_terms=num_terms,
+        )
+
+    @parameterized.named_parameters(
+        (
+            "unbounded",
+            MetalogBoundedness.UNBOUNDED,
+            lambda y, lo, hi: jnp.log(y / (1 - y)),
+        ),
+        (
+            "strictly_lower_bound",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            lambda y, lo, hi: lo + y / (1 - y),
+        ),
+        (
+            "strictly_upper_bound",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            lambda y, lo, hi: hi - (1 - y) / y,
+        ),
+        (
+            "bounded",
+            MetalogBoundedness.BOUNDED,
+            lambda y, lo, hi: lo + (hi - lo) * y,
+        ),
+    )
+    def test_q_matches_closed_form(self, boundedness, expected_fn):
+        """Test q() against exact quantiles of a = [0, 1, 0], where M(y) = logit(y)."""
+        m = Metalog(
+            metalog_params=self._params(boundedness, num_terms=3),
+            a=jnp.array([0.0, 1.0, 0.0]),
+        )
+        y = jnp.array([0.1, 0.25, 0.5, 0.75, 0.9])
+
+        np.testing.assert_allclose(
+            m.q(y), expected_fn(y, self.LOWER_BOUND, self.UPPER_BOUND)
+        )
+
+    @parameterized.named_parameters(
+        ("unbounded", MetalogBoundedness.UNBOUNDED),
+        ("strictly_lower_bound", MetalogBoundedness.STRICTLY_LOWER_BOUND),
+        ("strictly_upper_bound", MetalogBoundedness.STRICTLY_UPPER_BOUND),
+        ("bounded", MetalogBoundedness.BOUNDED),
+    )
+    def test_q_matches_ppf_for_fitted_metalog(self, boundedness):
+        """Test that q() matches ppf() and stays inside the data's range for a fit."""
+        rng = np.random.default_rng(0)
+        x = self.LOWER_BOUND + (self.UPPER_BOUND - self.LOWER_BOUND) * rng.beta(
+            2.0, 5.0, size=1_000
+        )
+        data = MetalogInputData.from_values(
+            x=jnp.asarray(x), y=DEFAULT_Y, precomputed_quantiles=False
+        )
+        m = fit(data, self._params(boundedness, num_terms=5))
+        y = jnp.array([0.01, 0.1, 0.5, 0.9, 0.99])
+        q = m.q(y)
+
+        np.testing.assert_allclose(q, m.ppf(y))
+        self.assertTrue(jnp.all((q > self.LOWER_BOUND) & (q < self.UPPER_BOUND)))
+
+
+class QuantileTransformTest(parameterized.TestCase):
+    """Tests for MetalogBase.quantile_transform and inverse_quantile_transform."""
+
+    LOWER_BOUND = 2.0
+    UPPER_BOUND = 10.0
+    # Inside (LOWER_BOUND, UPPER_BOUND), so valid for every boundedness type
+    X = (2.5, 4.0, 6.0, 9.5)
+
+    @parameterized.named_parameters(
+        ("unbounded", MetalogBoundedness.UNBOUNDED, lambda x, lo, hi: x),
+        (
+            "strictly_lower_bound",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            lambda x, lo, hi: np.log(x - lo),
+        ),
+        (
+            "strictly_upper_bound",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            lambda x, lo, hi: -np.log(hi - x),
+        ),
+        (
+            "bounded",
+            MetalogBoundedness.BOUNDED,
+            lambda x, lo, hi: np.log((x - lo) / (hi - x)),
+        ),
+    )
+    def test_transform_matches_closed_form_and_inverts(self, boundedness, expected):
+        """The transform matches its closed form, and the inverse undoes it."""
+        x = jnp.asarray(self.X)
+        lo, hi = self.LOWER_BOUND, self.UPPER_BOUND
+        z = Metalog.quantile_transform(x, boundedness, lo, hi)
+        # Same operations as the closed form, so only float64 rounding remains
+        np.testing.assert_allclose(z, expected(np.asarray(self.X), lo, hi), rtol=1e-12)
+        back = Metalog.inverse_quantile_transform(z, boundedness, lo, hi)
+        np.testing.assert_allclose(back, self.X, rtol=1e-12)
+
+
+class MetalogPpfPrecisionTest(absltest.TestCase):
+    """Tests that ppf evaluates its basis in the coefficients' precision."""
+
+    def test_float32_probabilities_match_float64(self):
+        """Float32 probabilities give the same ppf as the same values in float64."""
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+        m = Metalog(params, jnp.array([5.0, 1.5, 0.4]))
+        y32 = jnp.array([0.01, 0.1, 0.5, 0.9, 0.99], dtype=jnp.float32)
+        np.testing.assert_array_equal(m.ppf(y32), m.ppf(y32.astype(jnp.float64)))
+
+
+class MetalogRvsHdrTrialTest(absltest.TestCase):
+    """Tests that rvs starts its HDR trials at HDRPRNGParameters.trial."""
+
+    def _draws(self, size, trial):
+        """Return rvs draws from an unbounded 3-term metalog."""
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=3,
+        )
+        m = Metalog(params, jnp.array([5.0, 1.5, 0.4]))
+        rv_params = MetalogRandomVariableParameters(
+            prng_params=HDRPRNGParameters(trial=trial), size=size
+        )
+        return m.rvs(rv_params)
+
+    def test_trial_changes_the_draws(self):
+        """Different trial values give different draws."""
+        self.assertFalse(jnp.array_equal(self._draws(5, 1), self._draws(5, 2)))
+
+    def test_later_trial_continues_the_stream(self):
+        """Starting at trial 6 gives draws 6 to 10 of a batch starting at trial 1."""
+        np.testing.assert_array_equal(self._draws(10, 1)[5:], self._draws(5, 6))
+
+
 class MetalogInputDataTest(parameterized.TestCase):
     """Test suite for the MetalogInputData dataclass.
 
@@ -1223,7 +1650,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Array with insufficient elements.
             precomputed_quantiles: Flag for quantile type.
         """
-        with self.assertRaises(Exception):  # chex.assert_axis_dimension_gteq raises
+        with self.assertRaises(AssertionError):  # chex.assert_axis_dimension_gteq
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )
@@ -1299,7 +1726,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Array with non-ascending probabilities.
             precomputed_quantiles: Flag for quantile type.
         """
-        with self.assertRaises(Exception):  # assert_strictly_ascending raises
+        with self.assertRaises(AssertionError):  # assert_strictly_ascending
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )
@@ -1335,7 +1762,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Array of probability levels.
             precomputed_quantiles: Must be True for this test.
         """
-        with self.assertRaises(Exception):  # assert_strictly_ascending raises
+        with self.assertRaises(AssertionError):  # assert_strictly_ascending
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )
@@ -1369,7 +1796,7 @@ class MetalogInputDataTest(parameterized.TestCase):
             y: Input with potentially invalid type.
             precomputed_quantiles: Input with potentially invalid type.
         """
-        with self.assertRaises(Exception):  # Various assertion errors
+        with self.assertRaises((AssertionError, AttributeError)):
             MetalogInputData.from_values(
                 x=x, y=y, precomputed_quantiles=precomputed_quantiles
             )

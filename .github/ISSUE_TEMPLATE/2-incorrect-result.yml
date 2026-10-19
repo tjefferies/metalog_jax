@@ -1,0 +1,118 @@
+name: Incorrect result
+description: metalog-jax returns a wrong or inaccurate value (quantiles, densities, moments, fits).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the code runs but a number is wrong. To fix it we need to know what the right value is and where it comes from.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the [existing issues](https://github.com/tjefferies/metalog_jax/issues?q=is%3Aissue) and this hasn't been reported.
+          required: true
+        - label: I reproduced this with the latest metalog-jax release.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What is wrong?
+      description: Which function or property returns the wrong value, and for which inputs?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproducible example
+      description: A self-contained script that prints the wrong value. Include the coefficients or data inline.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Values you got
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Values you expected, and their source
+      description: |
+        Where the expected values come from, and how close they should be. For example:
+        - a closed form you can show
+        - an equation or proposition in Keelin (2016) or Baucells, Chrisman, Keelin and Xu (2025)
+        - scipy, or a large simulation
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Is this a regression?
+      options:
+        - Yes, it was correct in an earlier release
+        - No, it was never correct
+        - I don't know
+    validations:
+      required: true
+
+  - type: input
+    id: last-working-version
+    attributes:
+      label: Last version that was correct
+      placeholder: "2.0.0"
+
+  - type: dropdown
+    id: fit-method
+    attributes:
+      label: Fit method
+      multiple: true
+      options:
+        - OLS
+        - Lasso
+        - Feasible
+        - SPT (fit_spt_metalog)
+        - Coefficients set by hand
+    validations:
+      required: true
+
+  - type: dropdown
+    id: boundedness
+    attributes:
+      label: Boundedness
+      multiple: true
+      options:
+        - UNBOUNDED
+        - STRICTLY_LOWER_BOUND
+        - STRICTLY_UPPER_BOUND
+        - BOUNDED
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Run this and paste the output. Remove anything private, such as the host name.
+
+        ```shell
+        python -c "import importlib.metadata as md, jax; print(*(f'{p}: {md.version(p)}' for p in ('metalog-jax', 'flax', 'chex')), sep='\n'); jax.print_environment_info()"
+        ```
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

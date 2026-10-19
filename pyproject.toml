@@ -1,6 +1,6 @@
 [project]
 name = "metalog-jax"
-version = "2.0.1"
+version = "2.1.0"
 description = "A JAX implementation of the Metalog distribution for flexible probability modeling."
 readme = "README.md"
 license = "MIT"
@@ -55,8 +55,11 @@ dev = [
     "marimo>=0.23.0",
 ]
 lint = [
+    "interrogate>=1.7.0",
+    "pydoclint>=0.11.1",
     "ruff>=0.14.3",
     "ty>=0.0.5",
+    "zizmor>=1.30.1",
 ]
 security = [
     "bandit[toml]>=1.8.0",
@@ -69,12 +72,14 @@ test = [
     "absl-py>=2.3.1",
     "anybadge>=1.16.0",
     "coverage>=7.11.0",
+    "hypothesis==6.168.2",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
     "pytest-sugar>=1.1.1",
     "radon>=6.0.1",
     "scikit-learn>=1.7.2",
     "scipy>=1.16.3",
+    "xenon>=0.9.3",
 ]
 docs = [
     "sphinx>=8.0.0",
@@ -88,13 +93,37 @@ docs = [
 ]
 
 [tool.ruff.lint]
-select = ["D", "I", "F"]
+# pydocstyle (Google), isort, pyflakes, bugbear, pyupgrade and ruff-specific rules
+select = ["D", "I", "F", "B", "UP", "RUF"]
+# DOC codes belong to pydoclint, so ruff keeps their `# noqa` comments
+external = ["DOC"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.isort]
 known-first-party = ["metalog_jax"]
+
+# Docstring coverage of metalog_jax/, counting public and private functions, classes
+# and methods. Nested functions (closures and loop bodies) are covered by the
+# docstring of the function that encloses them, so they aren't counted.
+[tool.interrogate]
+fail-under = 95
+ignore-nested-functions = true
+verbose = 1
+
+# Google-style docstring checks: Args, Returns and Raises sections must match the
+# signature and body. pydoclint can't see exceptions raised indirectly (by chex
+# assertions or callees), so a docstring that documents one carries
+# `# noqa: DOC502` (or DOC503) after its closing quotes.
+[tool.pydoclint]
+style = "google"
+arg-type-hints-in-docstring = false  # types live in the signature
+check-return-types = false
+allow-init-docstring = true  # Sphinx documents __init__ (napoleon_include_init_with_doc)
+check-class-attributes = false  # dataclass subclasses document inherited fields
+skip-checking-short-docstrings = true  # Google allows summary-only docstrings
+show-filenames-in-every-violation-message = true
 
 [tool.ty.environment]
 python-version = "3.11"
@@ -123,10 +152,10 @@ possibly-missing-import = "warn"
 possibly-missing-attribute = "ignore"
 
 # Type safety (keep some checks)
-invalid-type-form = "error"
+invalid-type-form = "error"  # includes bytes and f-string annotations
 invalid-type-arguments = "error"
 call-non-callable = "warn"
-non-subscriptable = "ignore"  # JAX arrays are subscriptable at runtime
+not-subscriptable = "ignore"  # JAX arrays are subscriptable at runtime
 not-iterable = "warn"
 
 # Method and class correctness (Google: proper inheritance)
@@ -153,8 +182,6 @@ invalid-exception-caught = "error"
 invalid-raise = "error"
 
 # Type annotation quality
-byte-string-type-annotation = "error"
-fstring-type-annotation = "error"
 raw-string-type-annotation = "error"
 implicit-concatenated-string-type-annotation = "error"
 invalid-syntax-in-forward-annotation = "error"
@@ -167,6 +194,16 @@ deprecated = "warn"
 [tool.ty.terminal]
 output-format = "full"
 error-on-warning = false
+
+# Coverage, shared by `make test` and CI: branch coverage of metalog_jax/, with the
+# fail-under threshold set just below the current figure.
+[tool.coverage.run]
+branch = true
+source = ["metalog_jax"]
+
+[tool.coverage.report]
+fail_under = 95
+precision = 2
 
 # Bandit Security Scanner Configuration
 # See: https://bandit.readthedocs.io/en/latest/config.html

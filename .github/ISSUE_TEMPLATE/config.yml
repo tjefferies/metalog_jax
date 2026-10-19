@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tjefferies/metalog_jax/security/advisories/new
+    about: Report vulnerabilities privately here, not in a public issue.
+  - name: Documentation
+    url: https://tjefferies.github.io/metalog_jax/
+    about: Getting started, tutorials and the API reference.
+  - name: Contributing guide
+    url: https://github.com/tjefferies/metalog_jax/blob/development/CONTRIBUTING.md
+    about: Development setup, the checks every pull request must pass, and how releases work.

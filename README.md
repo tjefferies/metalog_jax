@@ -449,6 +449,13 @@ spt_metalog = fit_spt_metalog(response_times, spt_params)
 print(f"SPT Median: {float(spt_metalog.ppf(jnp.array([0.5]))[0]):.1f}")
 ```
 
+If you already have the three quantiles, for example an expert's 10th, 50th and 90th percentile estimates, pass them directly. Without `precomputed_quantiles=True`, three values are treated as data and interpolated, so the fit wouldn't pass through them.
+
+```python
+assessed = jnp.array([60.0, 110.0, 450.0])  # 10th, 50th and 90th percentiles
+spt_metalog = fit_spt_metalog(assessed, spt_params, precomputed_quantiles=True)
+```
+
 ## Features
 
 ### Full Probability Distribution API
@@ -555,6 +562,16 @@ loaded = Metalog.load(Path("my_distribution.json"))
 json_str = metalog.dumps()
 loaded2 = Metalog.loads(json_str)
 assert metalog == loaded == loaded2
+```
+
+Load a model with the class that saved it. An `SPTMetalog`'s JSON stores `alpha` and no fit method, so `Metalog.load` rejects it with a `ValueError`:
+
+```python
+from metalog_jax.metalog import SPTMetalog
+
+spt_metalog.save(Path("my_spt_distribution.json"))
+loaded_spt = SPTMetalog.load(Path("my_spt_distribution.json"))
+assert spt_metalog == loaded_spt == SPTMetalog.loads(spt_metalog.dumps())
 ```
 
 ### Unified Grid Search with `fit_grid`
@@ -718,18 +735,28 @@ The function handles all 8 combinations of axes automatically:
 
 ### JAX Transformations
 
-Full compatibility with JAX's transformation primitives:
+Models, parameters and data can all be passed through `jax.jit`, `jax.vmap` and `jax.grad`:
 
 ```python
 import jax
+import jax.numpy as jnp
+from jax.experimental import checkify
 
 # Automatic differentiation
-def quantile_at(prob):
-    return metalog.ppf(prob)
+gradient = jax.grad(lambda prob: metalog.ppf(prob))(0.5)
 
-gradient_fn = jax.grad(quantile_at)
-gradient = gradient_fn(0.5)
+# JIT compilation. Input checks run through checkify inside transforms, so wrap
+# the jitted function and raise any failed check.
+ppf = checkify.checkify(jax.jit(lambda m, prob: m.ppf(prob)))
+err, quantiles = ppf(metalog, jnp.array([0.1, 0.5, 0.9]))
+err.throw()
+
+# Vectorization over a batch of models
+models = jax.tree.map(lambda *leaves: jnp.stack(leaves), metalog, metalog)
+medians = jax.vmap(lambda m: m.ppf(jnp.array([0.5])))(models)
 ```
+
+`boundedness`, `method` and `num_terms` are static fields, so `jax.jit` compiles once for each combination of them, and models stacked for `jax.vmap` must share them. The same goes for `size` and `max_draws` in `MetalogRandomVariableParameters`, so `rvs` also works under both. `MetalogInputData.from_values` works inside transforms too, so you can `vmap` from raw samples through to fitted coefficients.
 
 ## Choosing the Number of Terms
 
@@ -814,74 +841,7 @@ Interactive notebooks are available in two formats:
 
 ## Contributing
 
-We welcome contributions! Please follow these guidelines to ensure a smooth review process.
-
-### Before You Start
-
-1. **Clone** repo locally
-2. **Create** a feature branch: `git checkout -b feature/amazing-feature`
-3. **Install** dependencies: `make install`
-
-### Development Workflow
-
-This project uses a Makefile that mirrors all CI/CD checks. Run `make help` to see all available targets.
-
-**Write and test your changes:**
-
-```bash
-make test-quick    # Fast iteration (no coverage)
-make test          # Full test suite with coverage
-```
-
-**Check code quality before committing:**
-
-```bash
-make format        # Auto-format code
-make lint          # Check for issues
-make typecheck     # Verify types
-```
-
-**Build documentation** (if you modified docstrings):
-
-```bash
-make docs          # Build once
-make docs-live     # Live-reload during development
-```
-
-**Before pushing**, run the full quality gate to catch CI failures early:
-
-```bash
-make quality-gate
-```
-
-This runs all 8 checks that CI will run: formatting, linting, type checking, complexity metrics, tests, license compliance, and security scans.
-
-### Submitting Changes
-
-1. **Commit** with a clear message: `git commit -m 'Add amazing feature'`
-2. **Push** to your branch: `git push origin feature/amazing-feature`
-3. **Open** a Pull Request against `development` with a description of your changes
-
-> **Note:** Pull Requests with failing CI will not be reviewed. Run `make quality-gate` locally first.
-
-### Development Setup
-
-```bash
-git clone https://github.com/tjefferies/metalog_jax.git
-cd metalog_jax
-make install    # Install all dependencies
-make test       # Run tests with coverage
-make docs       # Build documentation
-make help       # Show all available Make targets
-```
-
-### Code Style
-
-- Follow existing code conventions in the repository
-- Use type hints for all function signatures
-- Write comprehensive docstrings following Google style
-- Keep functions focused and single-purpose
-- Prefer immutable data structures (Flax dataclasses)
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the checks every pull request must pass, and how releases work. Open pull requests against `development`.
 
 ## Citation
 

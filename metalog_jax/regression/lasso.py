@@ -106,12 +106,12 @@ def soft_thresholding(x: chex.Numeric, lam: float) -> chex.Numeric:
     sparsity in the solution.
 
     The operator is defined element-wise as:
-        soft_threshold(x, λ) = sign(x) * max(|x| - λ, 0)
+        ``soft_threshold(x, λ) = sign(x) * max(|x| - λ, 0)``
 
     Equivalently:
         - If x > λ: return x - λ
         - If x < -λ: return x + λ
-        - If |x| ≤ λ: return 0
+        - If ``|x| ≤ λ``: return 0
 
     This function is the proximal operator for the L1 penalty:
         prox_{λ||·||₁}(x) = argmin_z { (1/2)||z - x||² + λ||z||₁ }
@@ -125,24 +125,24 @@ def soft_thresholding(x: chex.Numeric, lam: float) -> chex.Numeric:
 
     Returns:
         Thresholded value(s) with the same shape as x. Values are shrunk toward
-        zero by amount λ, with values |x| ≤ λ set to exactly zero.
+        zero by amount λ, with values ``|x| ≤ λ`` set to exactly zero.
 
     Example:
         Scalar inputs:
 
             >>> import jax.numpy as jnp
-            >>> soft_thresholding(5.0, 2.0)
-            Array(3.0, dtype=float32)
-            >>> soft_thresholding(-3.0, 1.0)
-            Array(-2.0, dtype=float32)
-            >>> soft_thresholding(1.5, 2.0)  # Below threshold -> zero
-            Array(0.0, dtype=float32)
+            >>> float(soft_thresholding(5.0, 2.0))
+            3.0
+            >>> float(soft_thresholding(-3.0, 1.0))
+            -2.0
+            >>> float(soft_thresholding(1.5, 2.0))  # Below threshold -> zero
+            0.0
 
         Array inputs:
 
             >>> x = jnp.array([-5.0, -1.0, 0.5, 2.0, 4.0])
-            >>> soft_thresholding(x, 1.5)
-            Array([-3.5,  0. ,  0. ,  0.5,  2.5], dtype=float32)
+            >>> soft_thresholding(x, 1.5).tolist()
+            [-3.5, -0.0, 0.0, 0.5, 2.5]
 
     Note:
         - This function is JIT-compiled for efficient execution
@@ -177,6 +177,7 @@ def fit_lasso(
     exactly zero, making it useful for feature selection and interpretable models.
 
     This implementation uses:
+
     - **Proximal gradient descent**: Combines gradient steps on the smooth loss (MSE) with
       the proximal operator (soft-thresholding) for the non-smooth L1 penalty
     - **Nesterov momentum**: Accelerates convergence using momentum-based lookahead steps
@@ -229,7 +230,8 @@ def fit_lasso(
             >>>
             >>> # Fit LASSO with defaults
             >>> model = fit_lasso(X, y)
-            >>> print(model.weights)  # Some coefficients may be exactly zero
+            >>> model.weights.shape  # Some coefficients may be exactly zero
+            (3,)
 
     Note:
         - Unlike Ridge regression, LASSO does not have a closed-form solution and requires
@@ -284,7 +286,7 @@ def fit_lasso(
 
     def cond_fun(carry):
         """Check whether to continue optimization loop."""
-        i, (w, v), done = carry
+        i, _, done = carry
         return jnp.logical_and(i < num_iters, jnp.logical_not(done))
 
     def body_fun(carry):

@@ -156,9 +156,12 @@ class TestMoments:
         """Mean, variance, skewness and kurtosis agree with adaptive quadrature."""
         eng, a = get_engine(k, order), jnp.array(a)
         st = summary_stats(eng, a)
-        f = lambda y: quantile(eng, a, y)  # noqa: E731
+        f = lambda y: quantile(eng, a, y)
         mean = quad(f, 0, 1, limit=400)[0]
-        c = [quad(lambda y: (f(y) - mean) ** p, 0, 1, limit=400)[0] for p in (2, 3, 4)]
+        c = [
+            quad(lambda y, p=p: (f(y) - mean) ** p, 0, 1, limit=400)[0]
+            for p in (2, 3, 4)
+        ]
         np.testing.assert_allclose(float(st["mean"]), mean, rtol=1e-9)
         np.testing.assert_allclose(float(st["variance"]), c[0], rtol=1e-8)
         np.testing.assert_allclose(float(st["skewness"]), c[1] / c[0] ** 1.5, rtol=1e-6)
@@ -354,8 +357,8 @@ class TestFitIntegration:
     def test_near_zero_density_survives_float32_probabilities(self):
         """A valid 12-term fit whose density nearly touches zero passes fit().
 
-        fit() checks the PDF at the float32 DEFAULT_Y; evaluating the basis in
-        float32 flipped the sign of the true (positive) density there.
+        pdf() evaluates the basis in float64 even for float32 probabilities;
+        evaluating it in float32 flipped the sign of the true (positive) density.
         """
         rng = np.random.default_rng(3174)
         s = np.where(
@@ -371,8 +374,9 @@ class TestFitIntegration:
         )
         m = fit(data, params)
         assert bool(check_feasibility(get_engine(12), m.a).feasible)
+        y32 = DEFAULT_Y.astype(jnp.float32)
         np.testing.assert_allclose(
-            m.pdf(DEFAULT_Y), m.pdf(DEFAULT_Y.astype(jnp.float64)), rtol=1e-12
+            m.pdf(y32), m.pdf(y32.astype(jnp.float64)), rtol=1e-12
         )
 
 

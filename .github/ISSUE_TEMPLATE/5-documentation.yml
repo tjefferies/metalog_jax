@@ -1,0 +1,38 @@
+name: Documentation
+description: Something in the docs, docstrings, README, examples or notebooks is missing, wrong or unclear.
+labels: ["documentation"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - Missing documentation
+        - Incorrect or outdated
+        - Unclear or confusing
+        - Example or notebook doesn't run
+        - Broken link
+        - Typo or formatting
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Where?
+      description: A docs URL, a docstring (for example `metalog_jax.metalog.fit`), a README section, an example or a notebook.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: The wording or example you'd like to see, if you have one.

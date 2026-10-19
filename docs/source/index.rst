@@ -14,7 +14,8 @@ Features
 - **Multiple fit methods**: OLS, LASSO, and always-feasible fitting (Baucells et al. 2025)
 - **Exact moments and modes**: Closed-form mean, variance, skewness and kurtosis, and
   the exact mode, for unbounded metalogs
-- **JAX integration**: Full support for JIT compilation and autodiff
+- **JAX integration**: ``jax.jit``, ``jax.vmap`` and autodiff over models, parameters
+  and data
 - **Grid search**: Hyperparameter optimization for regularized methods
 - **Flexible fitting**: Support for bounded and unbounded distributions
 

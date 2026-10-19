@@ -24,7 +24,7 @@ See Also:
 import json
 from functools import partial
 from pathlib import Path
-from typing import Type, TypeVar, Union
+from typing import ClassVar, TypeVar
 
 import chex
 import jax
@@ -86,23 +86,30 @@ class MetalogBase:
             Can be MetalogParameters (for Metalog) or SPTMetalogParameters
             (for SPTMetalog). Defined in metalog_jax.base.parameters.
         a: Coefficient vector defining the metalog quantile function. Shape is
-            (num_terms,) where num_terms depends on the configuration.
+            (num_terms,) where num_terms depends on the configuration. A list or
+            tuple is converted to a float JAX array on construction.
 
     Example:
         MetalogBase is not instantiated directly. Use Metalog or SPTMetalog:
 
-            >>> from metalog_jax.metalog import fit, Metalog
-            >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> import jax.numpy as jnp
             >>> from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
+            >>> from metalog_jax.base import MetalogInputData, MetalogParameters
+            >>> from metalog_jax.metalog import fit
+            >>> from metalog_jax.utils import DEFAULT_Y
             >>>
-            >>> data = MetalogInputData.from_values(x=samples, y=probs, precomputed_quantiles=False)
+            >>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+            >>> data = MetalogInputData.from_values(
+            ...     samples, DEFAULT_Y, precomputed_quantiles=False
+            ... )
             >>> params = MetalogParameters(
             ...     boundedness=MetalogBoundedness.UNBOUNDED,
-            ...     method=MetalogFitMethod.OLS,
+            ...     method=MetalogFitMethod.Feasible,
             ...     num_terms=5, lower_bound=0.0, upper_bound=0.0
             ... )
-            >>> m = fit(data, params)  # Returns Metalog instance
-            >>> isinstance(m, MetalogBase)  # True
+            >>> m = fit(data, params)  # Returns a Metalog
+            >>> isinstance(m, MetalogBase)
+            True
 
     See Also:
         metalog_jax.metalog.Metalog: Standard metalog distribution class.
@@ -111,8 +118,26 @@ class MetalogBase:
         metalog_jax.base.parameters.SPTMetalogParameters: Configuration for SPTMetalog.
     """
 
-    metalog_params: Union[SPTMetalogParameters, MetalogParameters]
+    metalog_params: SPTMetalogParameters | MetalogParameters
     a: chex.Numeric
+
+    # The parameter class that load and loads rebuild; SPTMetalog overrides it
+    _params_type: ClassVar[type[MetalogParameters | SPTMetalogParameters]] = (
+        MetalogParameters
+    )
+
+    def __post_init__(self) -> None:
+        """Coerce a list or tuple of coefficients to a float JAX array.
+
+        Every method assumes ``a`` is an array (``jnp.result_type``, ``.shape``,
+        ``.tolist()``, ``@``), so a plain sequence such as hand-copied coefficients
+        would otherwise fail deep inside JAX (issue #9). Only lists and tuples are
+        converted: pytree unflattening under ``jit``/``vmap``/``tree.map`` re-runs
+        ``__init__`` with tracers, ``ShapeDtypeStruct`` or ``None`` as ``a``, and
+        those must pass through untouched.
+        """
+        if isinstance(self.a, (list, tuple)):
+            object.__setattr__(self, "a", jnp.asarray(self.a, dtype=float))
 
     def __eq__(self, other: object) -> bool:
         """Check equality between two metalog distribution instances.
@@ -220,7 +245,7 @@ class MetalogBase:
             NotFittedError: If the distribution has not been fitted (no coefficients).
             checkify.JaxRuntimeError: If the fitted distribution produces non-positive
                 PDF values, indicating an infeasible fit.
-        """
+        """  # noqa: DOC502
         self._assert_has_coefficients()
         self.pdf(DEFAULT_Y)
 
@@ -241,7 +266,7 @@ class MetalogBase:
         Raises:
             checkify.JaxRuntimeError: If any PDF value is less than or equal
                 to zero, indicating an infeasible metalog fit.
-        """
+        """  # noqa: DOC502
         checkify.check(
             jnp.all(m > 0),
             "Metalog PDF returned a non-positive value! "
@@ -307,6 +332,68 @@ class MetalogBase:
         return jnp.log((x - lower_bound) / (upper_bound - x))
 
     @staticmethod
+    def quantile_transform(
+        x: chex.Numeric,
+        boundedness: MetalogBoundedness,
+        lower_bound: chex.Scalar,
+        upper_bound: chex.Scalar,
+    ) -> chex.Numeric:
+        """Transform quantiles to the scale on which the metalog is unbounded.
+
+        Applies the transform that ``boundedness`` selects: none for UNBOUNDED,
+        then strictly_lower_bound_quantile_transform,
+        strictly_upper_bound_quantile_transform or bounded_quantile_transform.
+        ``boundedness`` is a static parameter field, so this dispatches in Python
+        and works inside ``jax.jit`` and ``jax.vmap``.
+
+        Args:
+            x: Quantile values inside the distribution's support.
+            boundedness: Boundedness type of the distribution.
+            lower_bound: Lower bound, used by STRICTLY_LOWER_BOUND and BOUNDED.
+            upper_bound: Upper bound, used by STRICTLY_UPPER_BOUND and BOUNDED.
+
+        Returns:
+            chex.Numeric: Transformed quantile values on the unbounded scale.
+        """
+        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return MetalogBase.strictly_lower_bound_quantile_transform(x, lower_bound)
+        if boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return MetalogBase.strictly_upper_bound_quantile_transform(x, upper_bound)
+        if boundedness == MetalogBoundedness.BOUNDED:
+            return MetalogBase.bounded_quantile_transform(x, lower_bound, upper_bound)
+        return x
+
+    @staticmethod
+    def inverse_quantile_transform(
+        m: chex.Numeric,
+        boundedness: MetalogBoundedness,
+        lower_bound: chex.Scalar,
+        upper_bound: chex.Scalar,
+    ) -> chex.Numeric:
+        """Map values of the unbounded metalog back to the distribution's support.
+
+        The inverse of quantile_transform (Keelin 2016, Section 4): ``L + e^M``
+        for STRICTLY_LOWER_BOUND, ``U - e^(-M)`` for STRICTLY_UPPER_BOUND and
+        ``(L + U e^M) / (1 + e^M)`` for BOUNDED.
+
+        Args:
+            m: Values of the unbounded metalog quantile function.
+            boundedness: Boundedness type of the distribution.
+            lower_bound: Lower bound, used by STRICTLY_LOWER_BOUND and BOUNDED.
+            upper_bound: Upper bound, used by STRICTLY_UPPER_BOUND and BOUNDED.
+
+        Returns:
+            chex.Numeric: Quantile values in the distribution's support.
+        """
+        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return lower_bound + jnp.exp(m)
+        if boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return upper_bound - jnp.exp(-m)
+        if boundedness == MetalogBoundedness.BOUNDED:
+            return (lower_bound + upper_bound * jnp.exp(m)) / (1 + jnp.exp(m))
+        return m
+
+    @staticmethod
     @jax.jit
     def delta_term(x: chex.Numeric) -> chex.Numeric:
         """Compute the delta term (x - 0.5) used in metalog basis functions.
@@ -370,22 +457,15 @@ class MetalogBase:
 
         Raises:
             chex.AssertionError: If the number of data points is less than num_terms.
-        """
+        """  # noqa: DOC502
         x = data.x
         chex.assert_axis_dimension_gteq(x, 0, metalog_params.num_terms)
-        boundedness = metalog_params.boundedness
-
-        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
-            lower_bound = metalog_params.lower_bound
-            x = MetalogBase.strictly_lower_bound_quantile_transform(x, lower_bound)
-        elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
-            upper_bound = metalog_params.upper_bound
-            x = MetalogBase.strictly_upper_bound_quantile_transform(x, upper_bound)
-        elif boundedness == MetalogBoundedness.BOUNDED:
-            lower_bound = metalog_params.lower_bound
-            upper_bound = metalog_params.upper_bound
-            x = MetalogBase.bounded_quantile_transform(x, lower_bound, upper_bound)
-        return x
+        return MetalogBase.quantile_transform(
+            x,
+            metalog_params.boundedness,
+            metalog_params.lower_bound,
+            metalog_params.upper_bound,
+        )
 
     @staticmethod
     @partial(jax.jit, static_argnames=["num_terms"])
@@ -517,22 +597,18 @@ class MetalogBase:
         Raises:
             ValueError: If x contains values outside (0, 1).
             NotFittedError: If the distribution has not been fitted.
-        """
+        """  # noqa: DOC502
         assert_float_array(x)
         assert_probability_range(x)
         self.assert_fitted()
 
-        num_terms = self.num_terms
-        ppf = self._ppf(x, num_terms)
-        if self.boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
-            ppf = self.lower_bound + jnp.exp(ppf)
-        elif self.boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
-            ppf = self.upper_bound - jnp.exp(-1 * ppf)
-        elif self.boundedness == MetalogBoundedness.BOUNDED:
-            ppf = (self.lower_bound + self.upper_bound * jnp.exp(ppf)) / (
-                1 + jnp.exp(ppf)
-            )
-        return ppf
+        # Evaluate the basis in the coefficients' precision, as pdf() does, so
+        # float32 probabilities don't round the basis to float32
+        x = jnp.asarray(x, dtype=jnp.result_type(x, self.a))
+        ppf = self._ppf(x, self.num_terms)
+        return self.inverse_quantile_transform(
+            ppf, self.boundedness, self.lower_bound, self.upper_bound
+        )
 
     def pdf(self, x: chex.Numeric) -> chex.Numeric:
         """Compute the probability density function of the metalog distribution.
@@ -552,7 +628,7 @@ class MetalogBase:
             NotFittedError: If the distribution has not been fitted.
             checkify.JaxRuntimeError: If the PDF contains non-positive values,
                 indicating an infeasible metalog fit.
-        """
+        """  # noqa: DOC502
 
         @partial(jax.jit, static_argnames=["num_terms"])
         def _pdf(x: chex.Numeric, num_terms: int) -> chex.Array:
@@ -595,7 +671,7 @@ class MetalogBase:
         self._assert_has_coefficients()
         # Evaluate the basis in the coefficients' precision: float32 rounding of
         # log(y / (1 - y)) times large coefficients can flip the sign of a small but
-        # positive density (e.g. DEFAULT_Y is float32 and the fit is float64).
+        # positive density (e.g. float32 probabilities with a float64 fit).
         x = jnp.asarray(x, dtype=jnp.result_type(x, self.a))
         num_terms = self.num_terms
         m = _pdf(x, num_terms)
@@ -640,7 +716,10 @@ class MetalogBase:
         """Generate random variates from the fitted metalog distribution.
 
         Samples are generated by drawing uniform random values and applying
-        the quantile function (inverse transform sampling).
+        the quantile function (inverse transform sampling). With
+        HDRPRNGParameters, draw i uses HDR trial ``trial + i``, so the default
+        ``trial=1`` draws trials 1 to size, and ``trial=size + 1`` continues the
+        same stream.
 
         Args:
             rv_params: Parameters controlling random variate generation, including
@@ -652,7 +731,7 @@ class MetalogBase:
         Raises:
             chex.AssertionError: If size is not positive or exceeds max_draws.
             checkify.JaxRuntimeError: If the PDF is infeasible (non-positive values).
-        """
+        """  # noqa: DOC502
 
         @jax.jit
         def _hdr_uniform(trial: int, maxval: int) -> chex.Array:
@@ -682,7 +761,8 @@ class MetalogBase:
             entity = prng_params.entity
             time = prng_params.time
             agent = prng_params.agent
-            trials = jnp.arange(1, size + 1, dtype=int)
+            # One HDR trial per draw, starting at prng_params.trial
+            trials = prng_params.trial + jnp.arange(size, dtype=int)
 
             vectorized_hdr = jax.vmap(_hdr_uniform, in_axes=(0, None))
             mask = vectorized_hdr(trials, maxval)
@@ -892,7 +972,7 @@ class MetalogBase:
         """
         ppf = self.ppf(DEFAULT_Y_FULL)
         pdf = self.pdf(DEFAULT_Y_FULL)
-        grid_mode = ppf[pdf.argmax()]
+        grid_mode = ppf[jnp.argmax(pdf)]
         if not self._has_exact_moments():
             return grid_mode
         engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
@@ -914,7 +994,7 @@ class MetalogBase:
 
         Raises:
             NotFittedError: If the distribution has not been fitted.
-        """
+        """  # noqa: DOC502
         self.assert_fitted()
         x = DEFAULT_Y_FULL
         ppf = self.ppf(x)
@@ -947,68 +1027,31 @@ class MetalogBase:
     def save(self, path: Path) -> None:
         """Save the fitted metalog distribution to a JSON file.
 
-        Serializes the distribution coefficients and parameters to JSON format.
+        Writes the JSON that ``dumps`` returns. Read it back with ``load`` on the
+        same class: ``Metalog.load`` or ``SPTMetalog.load``.
 
         Args:
             path: File path where the JSON file will be written.
         """
-        data = {
-            "a": self.a.tolist(),
-            "metalog_params": {
-                "boundedness": int(self.boundedness),
-                "method": int(self.method),
-                "lower_bound": float(self.lower_bound),
-                "upper_bound": float(self.upper_bound),
-                "num_terms": int(self.num_terms),
-            },
-        }
         with open(path, "w") as f:
-            json.dump(data, f)
+            f.write(self.dumps())
 
     def dumps(self) -> str:
         """Serialize the fitted metalog distribution to a JSON string.
 
+        The JSON holds the coefficients ``a`` and the parameters' ``to_dict()``:
+        boundedness, fit method, bounds and number of terms for a Metalog;
+        boundedness, bounds and alpha for an SPTMetalog.
+
         Returns:
             str: JSON string representation of the distribution.
         """
-        data = {
-            "a": self.a.tolist(),
-            "metalog_params": {
-                "boundedness": int(self.boundedness),
-                "method": int(self.method),
-                "lower_bound": float(self.lower_bound),
-                "upper_bound": float(self.upper_bound),
-                "num_terms": int(self.num_terms),
-            },
-        }
-        return json.dumps(data)
-
-    @staticmethod
-    def _deserialize_boundedness(boundedness: int) -> MetalogBoundedness:
-        """Convert integer value to MetalogBoundedness enum member.
-
-        Args:
-            boundedness: Integer representation of the boundedness type.
-
-        Returns:
-            MetalogBoundedness: The corresponding enum member.
-        """
-        return MetalogBoundedness.from_value(boundedness)
-
-    @staticmethod
-    def _deserialize_method(method: int) -> MetalogFitMethod:
-        """Convert integer value to MetalogFitMethod enum member.
-
-        Args:
-            method: Integer representation of the fit method.
-
-        Returns:
-            MetalogFitMethod: The corresponding enum member.
-        """
-        return MetalogFitMethod.from_value(method)
+        return json.dumps(
+            {"a": self.a.tolist(), "metalog_params": self.metalog_params.to_dict()}
+        )
 
     @classmethod
-    def load(cls: Type[T_MetalogBase], path: Path) -> T_MetalogBase:
+    def load(cls: type[T_MetalogBase], path: Path) -> T_MetalogBase:
         """Load a fitted metalog distribution from a JSON file.
 
         Args:
@@ -1017,26 +1060,18 @@ class MetalogBase:
         Returns:
             T_MetalogBase: A new instance of the metalog class with loaded
                 coefficients and parameters.
-        """
+
+        Raises:
+            KeyError: If the JSON has no ``a`` or ``metalog_params``.
+            ValueError: If the parameters were saved by the other metalog class
+                (for example, an SPTMetalog's JSON loaded with Metalog.load), or
+                hold an unknown enum value.
+        """  # noqa: DOC502
         with open(path) as f:
-            input_data = json.load(f)
-
-        a = jnp.array(input_data["a"])
-        params_dict = input_data["metalog_params"]
-        metalog_params = MetalogParameters(
-            boundedness=MetalogBase._deserialize_boundedness(
-                params_dict["boundedness"]
-            ),
-            method=MetalogBase._deserialize_method(params_dict["method"]),
-            lower_bound=params_dict["lower_bound"],
-            upper_bound=params_dict["upper_bound"],
-            num_terms=params_dict["num_terms"],
-        )
-
-        return cls(metalog_params=metalog_params, a=a)
+            return cls.loads(f.read())
 
     @classmethod
-    def loads(cls: Type[T_MetalogBase], json_string: str) -> T_MetalogBase:
+    def loads(cls: type[T_MetalogBase], json_string: str) -> T_MetalogBase:
         """Load a fitted metalog distribution from a JSON string.
 
         Args:
@@ -1045,28 +1080,22 @@ class MetalogBase:
         Returns:
             T_MetalogBase: A new instance of the metalog class with loaded
                 coefficients and parameters.
-        """
+
+        Raises:
+            KeyError: If the JSON has no ``a`` or ``metalog_params``.
+            ValueError: If the parameters were saved by the other metalog class
+                (for example, an SPTMetalog's JSON loaded with Metalog.loads), or
+                hold an unknown enum value.
+        """  # noqa: DOC502
         input_data = json.loads(json_string)
-
-        a = jnp.array(input_data["a"])
-        params_dict = input_data["metalog_params"]
-        metalog_params = MetalogParameters(
-            boundedness=MetalogBase._deserialize_boundedness(
-                params_dict["boundedness"]
-            ),
-            method=MetalogBase._deserialize_method(params_dict["method"]),
-            lower_bound=params_dict["lower_bound"],
-            upper_bound=params_dict["upper_bound"],
-            num_terms=params_dict["num_terms"],
-        )
-
-        return cls(metalog_params=metalog_params, a=a)
+        metalog_params = cls._params_type.from_dict(input_data["metalog_params"])
+        return cls(metalog_params=metalog_params, a=jnp.array(input_data["a"]))
 
     def q(self, x: chex.Numeric) -> chex.Numeric:
         """Quantile function alias for R metalog package compatibility.
 
         This method provides compatibility with the R metalog package's `qmetalog`
-        function naming convention.
+        function naming convention. Equivalent to ppf().
 
         Args:
             x: Probability values in (0, 1) at which to evaluate the quantile function.
@@ -1077,26 +1106,8 @@ class MetalogBase:
         Raises:
             ValueError: If x contains values outside (0, 1).
             NotFittedError: If the distribution has not been fitted.
-        """
-        assert_float_array(x)
-        assert_probability_range(x)
-        self.assert_fitted()
-
-        boundedness = self.boundedness
-        target = MetalogBase._get_target(x, self.num_terms)
-        ppf = target @ self.a
-
-        if boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
-            lower_bound = self.lower_bound
-            ppf = MetalogBase.strictly_lower_bound_quantile_transform(ppf, lower_bound)
-        elif boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
-            upper_bound = self.upper_bound
-            ppf = MetalogBase.strictly_upper_bound_quantile_transform(ppf, upper_bound)
-        elif boundedness == MetalogBoundedness.BOUNDED:
-            lower_bound = self.lower_bound
-            upper_bound = self.upper_bound
-            ppf = MetalogBase.bounded_quantile_transform(ppf, lower_bound, upper_bound)
-        return ppf
+        """  # noqa: DOC502
+        return self.ppf(x)
 
     def p(self, q: chex.Numeric) -> chex.Numeric:
         """Probability function alias for R metalog package compatibility.

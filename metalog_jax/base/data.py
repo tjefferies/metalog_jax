@@ -16,7 +16,7 @@ See Also:
 """
 
 from dataclasses import fields
-from typing import Type, TypeVar
+from typing import TypeVar
 
 import chex
 import jax.numpy as jnp
@@ -119,7 +119,7 @@ class MetalogInputData(MetalogBaseData):
 
     @classmethod
     def from_values(
-        cls: Type[T_MetalogInputData],
+        cls: type[T_MetalogInputData],
         x: chex.Numeric,
         y: chex.Numeric,
         precomputed_quantiles: bool,
@@ -138,7 +138,7 @@ class MetalogInputData(MetalogBaseData):
 
         Raises:
             AssertionError: If any validation check fails.
-        """
+        """  # noqa: DOC502
 
         def _input_check(
             x: chex.Numeric, y: chex.Numeric, precomputed_quantiles: bool
@@ -168,7 +168,7 @@ class MetalogInputData(MetalogBaseData):
             # Build and return dictionary for dataclass construction
             keys = [f.name for f in fields(cls) if f.name[0] != "_"]
             values = [x, y, precomputed_quantiles]
-            return dict(zip(keys, values))
+            return dict(zip(keys, values, strict=True))
 
         return MetalogBaseData(**_input_check(x, y, precomputed_quantiles))
 

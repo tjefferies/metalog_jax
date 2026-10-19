@@ -22,6 +22,9 @@ htmlcov/
 # pytest
 .pytest_cache/
 
+# hypothesis
+.hypothesis/
+
 # sbom
 grype-vulnerabilities.json
 sbom-cyclonedx.json

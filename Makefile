@@ -5,9 +5,9 @@
 # ║ to match the GitHub Actions pipeline exactly.                                ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-.PHONY: help install format format-check lint typecheck radon radon-mi radon-cc \
-        test test-quick coverage-html license-check semgrep bandit sbom security \
-        build docs docs-html docs-clean docs-serve docs-live docs-rebuild \
+.PHONY: help install format format-check lint typecheck interrogate pydoclint zizmor radon radon-mi radon-cc xenon \
+        test test-quick doctest lowest-deps coverage-html license-check semgrep bandit sbom security \
+        build docs docs-html docs-clean docs-serve docs-live docs-rebuild notebooks \
         quality-gate ci clean
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -24,8 +24,9 @@ DOCS_PORT := 5337
 # License allow list (from CI)
 LICENSE_ALLOWED := MIT;BSD;Apache;PSF;Python Software Foundation;ISC;Unlicense;Public Domain;CC0;Zlib;Historical Permission Notice and Disclaimer;Mozilla Public License;Academic Free License;0BSD
 
-# Packages to ignore in license check (dev/docs/security tools)
-LICENSE_IGNORE := metalog-jax Unidecode text-unidecode css-html-js-minify semgrep docutils loro matplotlib-inline
+# Runtime dependencies to license-check: the base install from uv.lock, without
+# dependency groups (dev/docs/security tools) or the gpu extra (NVIDIA CUDA wheels)
+RUNTIME_PKGS = $(shell uv export --frozen --no-default-groups --no-emit-project --no-hashes --no-header --no-annotate --format requirements.txt | sed -E 's/[ =;].*//' | sort -u)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Help Target
@@ -48,15 +49,21 @@ help:
 	@echo "  make format-check     Check formatting (CI: quality-gate.yml/ruff)"
 	@echo "  make lint             Run Ruff linter (CI: quality-gate.yml/ruff)"
 	@echo "  make typecheck        Run ty type checker (CI: quality-gate.yml/ty)"
+	@echo "  make interrogate      Docstring coverage (CI: quality-gate.yml/interrogate)"
+	@echo "  make pydoclint        Google docstring checks (CI: quality-gate.yml/pydoclint)"
+	@echo "  make zizmor           Audit GitHub Actions workflows (CI: quality-gate.yml/zizmor)"
 	@echo ""
 	@echo "CODE METRICS"
 	@echo "  make radon            Run both maintainability and complexity checks"
 	@echo "  make radon-mi         Maintainability Index (CI: quality-gate.yml/radon)"
 	@echo "  make radon-cc         Cyclomatic Complexity (CI: quality-gate.yml/radon)"
+	@echo "  make xenon            Fail on complexity thresholds (CI: quality-gate.yml/xenon)"
 	@echo ""
 	@echo "TESTING"
 	@echo "  make test             Run pytest with coverage (CI: quality-gate.yml/pytest)"
 	@echo "  make test-quick       Run pytest without coverage (faster iteration)"
+	@echo "  make doctest          Run docstring examples (CI: quality-gate.yml/doctest)"
+	@echo "  make lowest-deps      Test lowest allowed versions on Python 3.11 (CI: quality-gate.yml/lowest-deps)"
 	@echo "  make coverage-html    Open coverage report in browser"
 	@echo ""
 	@echo "SECURITY"
@@ -72,16 +79,17 @@ help:
 	@echo "  make build            Build wheel (CI: build.yml)"
 	@echo ""
 	@echo "DOCUMENTATION"
-	@echo "  make docs             Build HTML documentation (CI: docs.yml)"
+	@echo "  make docs             Build HTML docs from scratch, failing on warnings (CI: quality-gate.yml/docs)"
 	@echo "  make docs-html        Build HTML documentation (alias)"
 	@echo "  make docs-serve       Serve docs at http://localhost:$(DOCS_PORT)"
 	@echo "  make docs-live        Live-reload docs during development"
 	@echo "  make docs-clean       Clean documentation build artifacts"
 	@echo "  make docs-rebuild     Clean and rebuild documentation"
+	@echo "  make notebooks        Execute the docs notebooks in a scratch copy (CI: quality-gate.yml/notebooks)"
 	@echo ""
 	@echo "CI/CD COMPOSITES"
-	@echo "  make quality-gate     Run all 8 quality checks (matches CI quality-gate.yml)"
-	@echo "  make ci               Run full CI pipeline locally"
+	@echo "  make quality-gate     Run the 12 fast quality checks (CI: quality-gate.yml)"
+	@echo "  make ci               Full pipeline: install, quality-gate, build, docs, notebooks, lowest-deps"
 	@echo ""
 	@echo "CLEANUP"
 	@echo "  make clean            Remove all build artifacts"
@@ -121,8 +129,20 @@ typecheck:
 	@echo "Running ty type checker..."
 	uv run ty check
 
+interrogate:
+	@echo "Checking docstring coverage (threshold in pyproject.toml)..."
+	uv run interrogate $(PACKAGE)/
+
+pydoclint:
+	@echo "Checking Google-style docstrings (config in pyproject.toml)..."
+	uv run pydoclint $(PACKAGE)/
+
+zizmor:
+	@echo "Auditing GitHub Actions workflows..."
+	uv run zizmor --offline .github/
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Code Metrics (radon)
+# Code Metrics (radon, xenon)
 # ══════════════════════════════════════════════════════════════════════════════
 
 radon-mi:
@@ -135,6 +155,10 @@ radon-cc:
 
 radon: radon-mi radon-cc
 
+xenon:
+	@echo "Checking complexity thresholds (block B, module A, average A)..."
+	uv run xenon --max-absolute B --max-modules A --max-average A $(PACKAGE)/
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Testing & Coverage
 # ══════════════════════════════════════════════════════════════════════════════
@@ -145,12 +169,19 @@ test:
 		--cov=$(PACKAGE) \
 		--cov-report=term \
 		--cov-report=xml:coverage.xml \
-		--cov-report=html:coverage_html \
-		--cov-fail-under=75
+		--cov-report=html:coverage_html
 
 test-quick:
 	@echo "Running tests without coverage..."
 	uv run pytest $(TESTS)/
+
+doctest:
+	@echo "Running docstring examples..."
+	uv run pytest --doctest-modules $(PACKAGE)/
+
+lowest-deps:
+	@echo "Testing the lowest allowed dependency versions on Python 3.11..."
+	uv run --isolated --resolution lowest-direct --python 3.11 --group test pytest $(TESTS)/
 
 coverage-html: test
 	@echo "Opening coverage report in browser..."
@@ -213,10 +244,11 @@ security: semgrep bandit
 # ══════════════════════════════════════════════════════════════════════════════
 
 license-check:
-	@echo "Checking license compliance..."
+	@echo "Checking license compliance of runtime dependencies..."
 	@echo "=== License Compliance Check ==="
-	uv run pip-licenses --format=markdown --ignore-packages $(LICENSE_IGNORE)
-	uv run pip-licenses --ignore-packages $(LICENSE_IGNORE) --partial-match --allow-only="$(LICENSE_ALLOWED)"
+	@test -n "$(RUNTIME_PKGS)" || { echo "ERROR: uv export listed no runtime packages"; exit 1; }
+	uv run pip-licenses --format=markdown --packages $(RUNTIME_PKGS)
+	uv run pip-licenses --packages $(RUNTIME_PKGS) --partial-match --allow-only="$(LICENSE_ALLOWED)"
 	@echo "All runtime dependencies have approved licenses!"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -236,7 +268,7 @@ docs: docs-html
 
 docs-html:
 	@echo "Building HTML documentation..."
-	cd $(DOCS_DIR) && uv run sphinx-build -b html source build/html
+	cd $(DOCS_DIR) && uv run sphinx-build -E -W --keep-going -b html source build/html
 
 docs-clean:
 	@echo "Cleaning documentation build..."
@@ -254,17 +286,30 @@ docs-live:
 docs-rebuild: docs-clean docs-html
 	@echo "Clean rebuild complete."
 
+# Runs copies in a temp dir (basic_usage writes PNGs beside itself) with a throwaway
+# Jupyter kernel, so neither docs/source nor your Jupyter setup changes
+notebooks:
+	@echo "Executing docs notebooks in a scratch copy..."
+	@tmp=$$(mktemp -d) && \
+		export JUPYTER_DATA_DIR=$$tmp/jupyter JUPYTER_PATH=$$tmp/jupyter && \
+		uv run python -m ipykernel install --user --name metalog_jax > /dev/null && \
+		cp $(DOCS_SOURCE)/*.ipynb $$tmp/ && \
+		for nb in $$tmp/*.ipynb; do \
+			uv run jupyter nbconvert --to notebook --execute --output-dir $$tmp/executed $$nb || exit 1; \
+		done && \
+		rm -rf $$tmp && echo "All notebooks executed."
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CI/CD Composite Targets
 # ══════════════════════════════════════════════════════════════════════════════
 
-quality-gate: format-check lint typecheck radon test license-check semgrep bandit
+quality-gate: format-check lint typecheck interrogate pydoclint zizmor xenon test doctest license-check semgrep bandit
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════════════════════╗"
 	@echo "║                       All quality checks passed!                              ║"
 	@echo "╚══════════════════════════════════════════════════════════════════════════════╝"
 
-ci: install quality-gate build docs
+ci: install quality-gate build docs notebooks lowest-deps
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════════════════════╗"
 	@echo "║                         Full CI pipeline complete!                            ║"

@@ -10,9 +10,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
+from jax.experimental import checkify
 
 from metalog_jax.utils import (
     HDRPRNGParameters,
+    assert_condition,
     assert_numeric_array,
     assert_probability_range,
     hdrprng,
@@ -281,6 +283,68 @@ class AssertProbabilityRangeTest(parameterized.TestCase):
         array = np.array([0.0, 0.5, 1.0])
         with self.assertRaisesRegex(ValueError, "minimum.*greater than 0"):
             assert_probability_range(array)
+
+    def test_nan_raises(self):
+        """An array containing NaN raises ValueError instead of passing."""
+        array = jnp.array([0.2, jnp.nan, 0.8])
+        with self.assertRaisesRegex(ValueError, "minimum nan"):
+            assert_probability_range(array)
+
+    def test_jit_reports_invalid_probabilities(self):
+        """Under a checkified jit, invalid probabilities come back as an error."""
+        check = checkify.checkify(jax.jit(assert_probability_range))
+        err, _ = check(jnp.array([0.2, 0.5, 0.8]))
+        self.assertIsNone(err.get())
+        err, _ = check(jnp.array([0.2, 0.5, 1.0]))
+        self.assertIn("Array maximum 1.0 must be strictly less than 1", err.get())
+
+
+class AssertConditionTest(absltest.TestCase):
+    """Tests for assert_condition, which checks values inside or outside transforms."""
+
+    def test_true_condition_passes(self):
+        """A true predicate, Python or JAX, raises nothing."""
+        assert_condition(True, "unused")
+        assert_condition(jnp.array(1.0) > 0, "unused")
+
+    def test_false_condition_raises_assertion_error(self):
+        """A false predicate raises AssertionError with the formatted message."""
+        with self.assertRaisesRegex(AssertionError, "^x is -1.0, not positive$"):
+            assert_condition(jnp.array(-1.0) > 0, "x is {}, not positive", -1.0)
+
+    def test_error_type_is_configurable(self):
+        """The error argument sets the exception raised outside transforms."""
+        with self.assertRaises(ValueError):
+            assert_condition(False, "bad value", error=ValueError)
+
+    def test_nan_fails(self):
+        """Comparisons with NaN are false, so NaN fails the check."""
+        with self.assertRaises(AssertionError):
+            assert_condition(jnp.array(jnp.nan) > 0, "x must be positive")
+
+    def test_vmap_raises_jax_runtime_error(self):
+        """Under vmap, a false predicate in any row raises JaxRuntimeError."""
+
+        def check_positive(x):
+            """Check that x is positive and return it."""
+            assert_condition(x > 0, "x must be positive")
+            return x
+
+        np.testing.assert_array_equal(
+            jax.vmap(check_positive)(jnp.array([1.0, 2.0])), [1.0, 2.0]
+        )
+        with self.assertRaises(checkify.JaxRuntimeError):
+            jax.vmap(check_positive)(jnp.array([1.0, -2.0]))
+
+    def test_checkified_jit_formats_runtime_values(self):
+        """Under a checkified jit, the error message holds the runtime value."""
+
+        def check_positive(x):
+            """Check that x is positive."""
+            assert_condition(x > 0, "x is {}, not positive", x)
+
+        err, _ = checkify.checkify(jax.jit(check_positive))(jnp.array(-3.0))
+        self.assertIn("x is -3.0, not positive", err.get())
 
 
 class HDRPRNGParametersTest(parameterized.TestCase):

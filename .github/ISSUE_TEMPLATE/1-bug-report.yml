@@ -1,0 +1,169 @@
+name: Bug report
+description: An error, crash or regression in metalog-jax.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. A small script we can run is the most useful thing you can give us.
+
+        - If metalog-jax runs but returns a wrong value, use **Incorrect result** instead.
+        - For slow fits, long compile times or memory use, use **Performance issue**.
+        - Report security vulnerabilities [privately](https://github.com/tjefferies/metalog_jax/security/advisories/new), not here.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the [existing issues](https://github.com/tjefferies/metalog_jax/issues?q=is%3Aissue) and this hasn't been reported.
+          required: true
+        - label: I reproduced this with the latest metalog-jax release.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem in a few sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproducible example
+      description: |
+        A [self-contained script](https://stackoverflow.com/help/minimal-reproducible-example) that shows the bug: imports, data or coefficients inline, and the call that fails. Remove anything not needed to reproduce it.
+      placeholder: |
+        import jax.numpy as jnp
+        from metalog_jax.base import MetalogBoundedness, MetalogFitMethod
+        from metalog_jax.base import MetalogInputData, MetalogParameters
+        from metalog_jax.metalog import fit
+        from metalog_jax.utils import DEFAULT_Y
+
+        x = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+        data = MetalogInputData.from_values(x, DEFAULT_Y, precomputed_quantiles=False)
+        params = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.Feasible,
+            num_terms=5,
+            lower_bound=0.0,
+            upper_bound=0.0,
+        )
+        m = fit(data, params)
+        print(m.ppf(jnp.array([0.1, 0.5, 0.9])))
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: The full traceback or error message, if there is one.
+      render: shell
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Is this a regression?
+      options:
+        - Yes, it worked in an earlier release
+        - No, it never worked
+        - I don't know
+    validations:
+      required: true
+
+  - type: input
+    id: last-working-version
+    attributes:
+      label: Last version that worked
+      description: If this is a regression, the last metalog-jax version where it worked.
+      placeholder: "2.0.0"
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which parts of metalog-jax are involved?
+      multiple: true
+      options:
+        - Fitting (fit)
+        - SPT metalog (fit_spt_metalog)
+        - Grid search (fit_grid and related)
+        - Distribution methods (ppf, pdf, cdf, q, p, d, rvs, moments)
+        - Feasibility tools (metalog_jax.feasibility)
+        - Serialization (save, load, dumps, loads)
+        - Plotting
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: fit-method
+    attributes:
+      label: Fit method
+      multiple: true
+      options:
+        - OLS
+        - Lasso
+        - Feasible
+        - Not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: boundedness
+    attributes:
+      label: Boundedness
+      multiple: true
+      options:
+        - UNBOUNDED
+        - STRICTLY_LOWER_BOUND
+        - STRICTLY_UPPER_BOUND
+        - BOUNDED
+        - Not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transforms
+    attributes:
+      label: JAX transforms
+      description: Does the failing code run inside any of these?
+      multiple: true
+      options:
+        - None (eager)
+        - jax.jit
+        - jax.vmap
+        - jax.grad or another autodiff transform
+        - Other
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Run this and paste the output. Remove anything private, such as the host name.
+
+        ```shell
+        python -c "import importlib.metadata as md, jax; print(*(f'{p}: {md.version(p)}' for p in ('metalog-jax', 'flax', 'chex')), sep='\n'); jax.print_environment_info()"
+        ```
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that helps, such as where the data comes from or what you've already tried.

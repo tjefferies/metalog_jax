@@ -35,6 +35,7 @@ References:
     to JAX, see NOTICE. https://github.com/Stephenxuu/metalog_algorithm
 """
 
+from collections.abc import Callable
 from functools import partial
 
 import chex
@@ -111,7 +112,17 @@ def design_matrix(engine: Engine, y: chex.Array) -> chex.Array:
     return jnp.stack(cols, axis=1)
 
 
-def _G(engine, a, u):
+def _G(engine: Engine, a: chex.Array, u: chex.Numeric) -> chex.Numeric:
+    """Return ``G(y) = y(1-y) M'(y)`` at ``y = sigmoid(u)``.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        a: Metalog coefficients, shape (num_terms,).
+        u: Logit of the probability, ``log(y / (1 - y))``.
+
+    Returns:
+        G at ``sigmoid(u)``. A fit is feasible when G > 0 for every y in (0, 1).
+    """
     mu, s = engine.split(a)
     return engine.level(1, mu, s, u)
 
@@ -186,7 +197,24 @@ def project_onto_polyhedron(z0, A, b, mask, iters: int = 40):
     return z, lam
 
 
-def _golden_min(f, lo, hi, iters: int = 90):
+def _golden_min(
+    f: Callable[[chex.Numeric], chex.Numeric],
+    lo: chex.Numeric,
+    hi: chex.Numeric,
+    iters: int = 90,
+) -> chex.Numeric:
+    """Return the minimizer of ``f`` on ``[lo, hi]`` by golden-section search.
+
+    Args:
+        f: Scalar function to minimize, assumed unimodal on the bracket.
+        lo: Lower end of the bracket.
+        hi: Upper end of the bracket.
+        iters: Number of steps, fixed so the search runs under ``jit``.
+
+    Returns:
+        Midpoint of the final bracket.
+    """
+
     def body(_, st):
         a, b = st
         c, d = b - _GOLD * (b - a), a + _GOLD * (b - a)
@@ -242,8 +270,35 @@ def _violations(engine, a, grid, n_new, tol):
 
 @partial(jax.jit, static_argnames=("engine", "max_cuts", "n_new", "max_iter", "n_grid"))
 def _solve(
-    engine, Y, x, epsilon, tol, max_cuts, n_new, max_iter, n_grid
+    engine: Engine,
+    Y: chex.Array,
+    x: chex.Array,
+    epsilon: float,
+    tol: float,
+    max_cuts: int,
+    n_new: int,
+    max_iter: int,
+    n_grid: int,
 ) -> FeasibleFitResult:
+    """Run the exchange method for ``a*`` (Algorithm 2) on one dataset.
+
+    Starting from the OLS fit, each iteration adds cuts where ``G(y) < 0`` and
+    projects the OLS fit onto them, until no violation remains.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        Y: Basis matrix, shape (n, num_terms).
+        x: Quantile values, shape (n,).
+        epsilon: Margin in ``G(y) >= epsilon``, relative to ``max|x - median(x)|``.
+        tol: Extra slack for the violation and certificate sign tests.
+        max_cuts: Capacity of the cut buffer (static).
+        n_new: Minimum number of grid minima refined per iteration (static).
+        max_iter: Maximum number of exchange iterations (static).
+        n_grid: Number of logit grid points used to locate violations (static).
+
+    Returns:
+        FeasibleFitResult, with coefficients in the units of ``x``.
+    """
     x_mid = jnp.median(x)
     x_scale = jnp.maximum(jnp.max(jnp.abs(x - x_mid)), 1e-300)
     xn = (x - x_mid) / x_scale  # G is linear in a and blind to the intercept
@@ -285,7 +340,7 @@ def _solve(
 
     shift = jnp.zeros(engine.num_terms).at[engine.mu_idx[0]].set(x_mid)
     a_star, a_ls = a * x_scale + shift, a_ols * x_scale + shift
-    rss = lambda c: jnp.sum((x - Y @ c) ** 2)  # noqa: E731
+    rss = lambda c: jnp.sum((x - Y @ c) ** 2)
     return FeasibleFitResult(
         a_star=a_star,
         a_ols=a_ls,
@@ -385,7 +440,7 @@ def fit_feasible(X: chex.Array, y: chex.Array) -> FeasibleModel:
         Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
-    """
+    """  # noqa: DOC502
     engine = get_engine(int(X.shape[1]), TermOrder.KEELIN_2016)
     res = _solve(
         engine,

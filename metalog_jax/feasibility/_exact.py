@@ -15,7 +15,7 @@ References:
 """
 
 from fractions import Fraction
-from functools import lru_cache
+from functools import cache
 from math import comb, factorial, pi
 
 Poly = list[Fraction]
@@ -26,6 +26,7 @@ _SHIFT: Poly = [Fraction(-1, 2), Fraction(1)]  # y - 1/2
 
 
 def _padd(p: Poly, q: Poly) -> Poly:
+    """Return the sum of two polynomials in ascending coefficients."""
     n = max(len(p), len(q))
     return [
         (p[i] if i < len(p) else Fraction(0)) + (q[i] if i < len(q) else Fraction(0))
@@ -34,6 +35,7 @@ def _padd(p: Poly, q: Poly) -> Poly:
 
 
 def _pmul(p: Poly, q: Poly) -> Poly:
+    """Return the product of two polynomials in ascending coefficients."""
     out = [Fraction(0)] * (len(p) + len(q) - 1)
     for i, a in enumerate(p):
         for j, b in enumerate(q):
@@ -42,10 +44,12 @@ def _pmul(p: Poly, q: Poly) -> Poly:
 
 
 def _pscale(p: Poly, c: Fraction) -> Poly:
+    """Return polynomial ``p`` multiplied by the constant ``c``."""
     return [c * a for a in p]
 
 
 def _ppow(p: Poly, n: int) -> Poly:
+    """Return polynomial ``p`` raised to the power ``n``."""
     out: Poly = [Fraction(1)]
     for _ in range(n):
         out = _pmul(out, p)
@@ -53,12 +57,14 @@ def _ppow(p: Poly, n: int) -> Poly:
 
 
 def _pder(p: Poly, n: int = 1) -> Poly:
+    """Return the ``n``-th derivative of ``p`` (``[0]`` once it vanishes)."""
     for _ in range(n):
         p = [i * p[i] for i in range(1, len(p))] or [Fraction(0)]
     return p
 
 
 def _trim(p: Poly) -> Poly:
+    """Return ``p`` without trailing zero coefficients, keeping at least one."""
     p = list(p)
     while len(p) > 1 and p[-1] == 0:
         p.pop()
@@ -73,7 +79,7 @@ def _to_one_minus_y_basis(p: Poly) -> Poly:
     return out
 
 
-@lru_cache(maxsize=None)
+@cache
 def rational_part_row(i: int, t: int) -> tuple[Fraction, ...]:
     """Polynomial (in y) multiplying ``s_t`` in the rational part of ``(y(1-y))^i M^(i)``.
 
@@ -134,6 +140,16 @@ PiPoly = dict[int, Fraction]  # {e: q} represents sum_e q * pi^(2e)
 
 
 def _vadd(a: PiPoly, b: PiPoly, c: Fraction = Fraction(1)) -> PiPoly:
+    """Return ``a + c * b`` for polynomials in pi^2, dropping zero coefficients.
+
+    Args:
+        a: Polynomial in pi^2 as ``{e: q}``, meaning the sum of ``q * pi^(2e)``.
+        b: Polynomial in pi^2 to add.
+        c: Factor applied to ``b``.
+
+    Returns:
+        ``a + c * b`` without zero coefficients.
+    """
     out = dict(a)
     for e, q in b.items():
         out[e] = out.get(e, Fraction(0)) + c * q
@@ -141,6 +157,14 @@ def _vadd(a: PiPoly, b: PiPoly, c: Fraction = Fraction(1)) -> PiPoly:
 
 
 def _eta(jmax: int) -> dict[int, Fraction]:
+    """Return ``eta[j] = zeta(2j) / pi^(2j)`` exactly for ``j = 1..jmax``.
+
+    Args:
+        jmax: Largest index ``j`` to compute.
+
+    Returns:
+        Exact values keyed by ``j``, starting from ``eta[1] = 1/6``.
+    """
     eta = {1: Fraction(1, 6)}
     for j in range(2, jmax + 1):
         v = Fraction((-1) ** (j + 1) * j, factorial(2 * j + 1))
@@ -194,8 +218,18 @@ def _centered_entry(S: dict[tuple[int, int], PiPoly], m: int, u: int) -> PiPoly:
     return {e: q * factorial(u) for e, q in acc.items()}
 
 
-@lru_cache(maxsize=None)
+@cache
 def _i_table(mmax: int, umax: int) -> dict[tuple[int, int], PiPoly]:
+    """Return Lemma 1's ``I(m, u)`` as exact polynomials in pi^2 (cached).
+
+    Args:
+        mmax: Largest power of (y - 1/2).
+        umax: Largest power of logit(y).
+
+    Returns:
+        ``I(m, u)`` keyed by ``(m, u)`` for ``m <= mmax`` and ``u <= umax``, each
+        as ``{e: q}``, meaning the sum of ``q * pi^(2e)``.
+    """
     S = _s_table(mmax, umax)
     return {
         (m, u): _centered_entry(S, m, u)
