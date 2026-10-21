@@ -178,6 +178,27 @@ class SPTMetalog(MetalogBase):
             >>> SPTMetalog.loads(spt.dumps()) == spt
             True
 
+        Show the fitted quantile function. ``print`` writes one line (wrapped
+        here), ``repr`` the same line at full precision, and the ``print`` method
+        one term per line. With a lower bound of 0, Q(y) = 0 + exp(M(y)):
+
+            >>> lower = fit_spt_metalog(
+            ...     data, params.replace(boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND)
+            ... )
+            >>> print(lower)  # doctest: +NORMALIZE_WHITESPACE
+            SPTMetalog(3 terms, alpha = 0.1, lower bound 0): Q(y) = 0 + exp(M(y)),
+            M(y) = 1.41099 + 0.30824 ln(y/(1-y)) - 0.00153176 (y - 0.5) ln(y/(1-y))
+            >>> lower.print()
+            SPTMetalog: 3 terms, alpha = 0.1, lower bound 0
+              Q(y) = 0 + exp(M(y))
+              M(y) = 1.41099
+                     + 0.30824 ln(y/(1-y))
+                     - 0.00153176 (y - 0.5) ln(y/(1-y))
+            >>> lower.print(m=False, verbose=True)  # doctest: +NORMALIZE_WHITESPACE
+            SPTMetalog: 3 terms, alpha = 0.1, lower bound 0
+              Q(y) = 0 + exp(1.41099 + 0.30824 ln(y/(1-y))
+                     - 0.00153176 (y - 0.5) ln(y/(1-y)))
+
     Note:
         SPT metalog distributions may fail feasibility checks if the data does
         not satisfy specific constraints on the symmetry ratio r. The feasibility
@@ -215,6 +236,18 @@ class SPTMetalog(MetalogBase):
             bool: True if the two instances are equal, False otherwise.
         """
         return MetalogBase.__eq__(self, other)
+
+    def __repr__(self) -> str:
+        """Show the SPTMetalog and its quantile function on one line, at full precision.
+
+        Delegates to MetalogBase.__repr__, which flax.struct.dataclass would
+        otherwise replace with a list of the dataclass fields.
+
+        Returns:
+            str: The one-line equation, or a summary if the model is traced or
+                batched.
+        """
+        return MetalogBase.__repr__(self)
 
     @property
     def num_terms(self) -> int:
@@ -310,6 +343,41 @@ class Metalog(MetalogBase):
             >>> # Summary statistics are properties
             >>> mean, variance, skewness = m.mean, m.var, m.skewness
 
+        Show the fitted quantile function of a 5-term OLS fit bounded on (0, 15).
+        ``print`` writes one line (wrapped here), ``repr`` the same line at full
+        precision, and the ``print`` method one term per line, with options:
+
+            >>> bounded = fit(
+            ...     data,
+            ...     MetalogParameters(
+            ...         boundedness=MetalogBoundedness.BOUNDED,
+            ...         method=MetalogFitMethod.OLS,
+            ...         num_terms=5,
+            ...         lower_bound=0.0,
+            ...         upper_bound=15.0,
+            ...     ),
+            ... )
+            >>> print(bounded)  # doctest: +NORMALIZE_WHITESPACE
+            Metalog(5 terms, OLS, bounded on (0, 15)): Q(y) = (0 + 15 exp(M(y))) /
+            (1 + exp(M(y))), M(y) = -0.754464 + 0.0719273 ln(y/(1-y)) - 0.110759
+            (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5) + 1.1187 (y - 0.5)^2
+            >>> bounded.print()
+            Metalog: 5 terms, OLS, bounded on (0, 15)
+              Q(y) = (0 + 15 exp(M(y))) / (1 + exp(M(y)))
+              M(y) = -0.754464
+                     + 0.0719273 ln(y/(1-y))
+                     - 0.110759 (y - 0.5) ln(y/(1-y))
+                     + 2.45794 (y - 0.5)
+                     + 1.1187 (y - 0.5)^2
+            >>> bounded.print(m=False, verbose=True)  # doctest: +NORMALIZE_WHITESPACE
+            Metalog: 5 terms, OLS, bounded on (0, 15)
+              Q(y) = (0 + 15 exp(-0.754464 + 0.0719273 ln(y/(1-y))
+                     - 0.110759 (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5)
+                     + 1.1187 (y - 0.5)^2))
+                     / (1 + exp(-0.754464 + 0.0719273 ln(y/(1-y))
+                     - 0.110759 (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5)
+                     + 1.1187 (y - 0.5)^2))
+
     Note:
         The standard `Metalog` class is the recommended choice for most use cases
         involving sufficient data. Use `SPTMetalog` only when you need a quick
@@ -346,6 +414,18 @@ class Metalog(MetalogBase):
             bool: True if the two instances are equal, False otherwise.
         """
         return MetalogBase.__eq__(self, other)
+
+    def __repr__(self) -> str:
+        """Show the Metalog and its quantile function on one line, at full precision.
+
+        Delegates to MetalogBase.__repr__, which flax.struct.dataclass would
+        otherwise replace with a list of the dataclass fields.
+
+        Returns:
+            str: The one-line equation, or a summary if the model is traced or
+                batched.
+        """
+        return MetalogBase.__repr__(self)
 
     @property
     def num_terms(self) -> int:

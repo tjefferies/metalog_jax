@@ -13,9 +13,11 @@ The MetalogBase class includes:
     - Random variable sampling (rvs)
     - Serialization/deserialization (save, load, dumps, loads)
     - Visualization (plot)
+    - Display of the fitted equation (str, repr, _repr_latex_, print)
 
 See Also:
     metalog_jax.base.data: Input data container classes.
+    metalog_jax.base.display: Text and LaTeX formatting of the fitted equation.
     metalog_jax.base.enums: Enumeration types for boundedness and fit methods.
     metalog_jax.base.parameters: Parameter configuration classes.
     metalog_jax.metalog: Metalog and SPTMetalog distribution classes.
@@ -24,7 +26,7 @@ See Also:
 import json
 from functools import partial
 from pathlib import Path
-from typing import ClassVar, TypeVar
+from typing import ClassVar, TextIO, TypeVar
 
 import chex
 import jax
@@ -34,6 +36,12 @@ from flax import struct
 from jax.experimental import checkify
 
 from metalog_jax.base.data import MetalogInputData
+from metalog_jax.base.display import (
+    DEFAULT_PRECISION,
+    format_block,
+    format_latex,
+    format_line,
+)
 from metalog_jax.base.enums import (
     MetalogBoundedness,
     MetalogFitMethod,
@@ -164,6 +172,85 @@ class MetalogBase:
             return False
 
         return bool(jnp.allclose(self.a, other.a))
+
+    def __str__(self) -> str:
+        """Show the model and its quantile function on one line.
+
+        The coefficients and bounds have 6 significant digits. A traced or batched
+        model shows a one-line summary instead.
+
+        Returns:
+            str: The one-line equation, such as
+                ``Metalog(3 terms, OLS, unbounded): Q(y) = 1.5 - 0.25 ln(y/(1-y)) ...``,
+                or a one-line summary if the model is traced or batched.
+        """
+        return format_line(self)
+
+    def __repr__(self) -> str:
+        """Show the model and its quantile function on one line, at full precision.
+
+        The same line as ``str``, with each number written as Python's shortest
+        ``repr(float)``, so the coefficients parse back to ``a`` exactly. Each
+        subclass defines ``__repr__`` to call this one, because
+        ``flax.struct.dataclass`` would otherwise generate its own.
+
+        Returns:
+            str: The one-line equation, or a one-line summary if the model is traced
+                or batched.
+        """
+        return format_line(self, precision=None)
+
+    def _repr_latex_(self) -> str | None:
+        """Show the quantile function as typeset math in Jupyter and the docs.
+
+        Up to four terms stay on one line. Longer models wrap after every four
+        terms, because MathJax doesn't break long equations.
+
+        Returns:
+            str | None: The LaTeX, or None if the model is traced or batched, which
+                tells IPython to show ``repr`` instead.
+        """
+        return format_latex(self)
+
+    def print(
+        self,
+        *,
+        header: bool = True,
+        q: bool = True,
+        m: bool = True,
+        verbose: bool = False,
+        precision: int = DEFAULT_PRECISION,
+        file: TextIO | None = None,
+    ) -> None:
+        """Print the quantile function, one term per line.
+
+        For a bounded or semi-bounded model, Q(y) maps M(y) back to the support,
+        and the options choose which lines appear. An unbounded model's Q(y) is
+        M(y), so its terms print once, labelled Q(y) (or M(y) when ``q`` is False).
+        A traced or batched model prints a one-line summary instead. The builtin
+        ``print(m)`` still prints ``str(m)``.
+
+        Args:
+            header: Print a first line describing the model, such as ``Metalog: 5
+                terms, OLS, bounded on (0, 15)``, and indent the equations under it.
+                Without it, the equations start at the left margin.
+            q: Print the quantile function Q(y).
+            m: Print M(y), one term per line. For an unbounded model, ``m=False``
+                keeps the terms on Q(y)'s line.
+            verbose: Write Q(y) with M(y)'s terms in place of M(y), so it reads on
+                its own. A bounded Q(y) uses M(y) twice, so the terms appear twice.
+            precision: Significant digits of the coefficients and bounds.
+            file: Where to write, such as an open file or ``io.StringIO``; standard
+                output by default.
+
+        Raises:
+            ValueError: If ``q`` and ``m`` are both False, ``verbose`` is True while
+                ``q`` is False, or ``precision`` isn't a positive integer.
+        """  # noqa: DOC502
+        text = format_block(
+            self, header=header, q=q, m=m, verbose=verbose, precision=precision
+        )
+        print(text, file=file)
 
     @property
     def boundedness(self) -> MetalogBoundedness:
