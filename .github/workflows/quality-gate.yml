@@ -1,20 +1,18 @@
 # Consolidated quality checks - all run in parallel
 # Equivalent to GitLab stages: lint, typing, test, docs, license, sast, sbom
-# Depends on Docker workflow completing successfully
 #
-# Every job runs for pull requests, and for the Docker workflow_run on main only when
-# that run came from this repository (a fork's branch can also be named main).
-# Actions are pinned to commit hashes; Dependabot updates them.
+# Runs for every pull request, and as the first stage of the release in publish.yml,
+# which calls it on the commit pushed to main. Actions are pinned to commit hashes;
+# Dependabot updates them.
 name: Quality Gate
 
 on:
-  # Guarded per job: only Docker runs from this repository proceed
-  workflow_run: # zizmor: ignore[dangerous-triggers]
-    workflows: [Docker]
-    types: [completed]
-    branches: [main]
   pull_request:
     branches: [main, development]
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -28,14 +26,9 @@ jobs:
   ruff:
     # Equivalent to: stages/lint.yml → ruff job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -49,14 +42,9 @@ jobs:
   radon:
     # Equivalent to: stages/lint.yml → radon job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -88,14 +76,9 @@ jobs:
   xenon:
     # Fails on complexity thresholds: no block worse than B, modules and average A
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -106,14 +89,9 @@ jobs:
   interrogate:
     # Docstring coverage; threshold in [tool.interrogate] in pyproject.toml
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -124,14 +102,9 @@ jobs:
   pydoclint:
     # Google-style docstring checks; config in [tool.pydoclint] in pyproject.toml
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -142,14 +115,9 @@ jobs:
   zizmor:
     # Security audit of the GitHub Actions workflows and Dependabot config
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -162,14 +130,9 @@ jobs:
   ty:
     # Equivalent to: stages/typing.yml → ty job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -183,10 +146,6 @@ jobs:
     # Equivalent to: stages/test.yml → pytest job
     # Every supported Python; coverage settings live in [tool.coverage] in pyproject.toml
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     strategy:
       fail-fast: false
       matrix:
@@ -194,7 +153,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
@@ -227,14 +185,9 @@ jobs:
   doctest:
     # Every docstring example runs as written
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -246,14 +199,9 @@ jobs:
     # The oldest supported Python with the lowest versions pyproject.toml allows for
     # direct dependencies (jax, flax, chex, plotly, and the test tools)
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
@@ -265,14 +213,9 @@ jobs:
   docs:
     # The Sphinx build fails on any warning
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
 
       - name: Install pandoc
@@ -292,14 +235,9 @@ jobs:
     # The docs build shows stored notebook outputs; this checks they still run.
     # Copies run in a temp directory because basic_usage writes PNGs beside itself.
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -318,14 +256,9 @@ jobs:
   license-check:
     # Equivalent to: stages/license.yml → license-check job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -352,14 +285,9 @@ jobs:
   semgrep:
     # Equivalent to: stages/sast.yml → semgrep job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -398,14 +326,9 @@ jobs:
   bandit:
     # Equivalent to: stages/sast.yml → bandit job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -434,14 +357,9 @@ jobs:
   sbom:
     # Equivalent to: stages/sbom.yml → sbom job
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - run: uv sync --locked --all-groups
@@ -484,8 +402,8 @@ jobs:
   # === GATE JOB ===
 
   quality-gate:
-    # This job only passes if ALL parallel jobs succeed
-    # Used by downstream workflows (build, docs, publish)
+    # This job only passes if ALL parallel jobs succeed. Pull requests require it as
+    # the quality-gate status check; in a release, Build waits for it.
     needs: [ruff, radon, xenon, interrogate, pydoclint, zizmor, ty, pytest, doctest, lowest-deps, docs, notebooks, license-check, semgrep, bandit, sbom]
     runs-on: ubuntu-latest
     steps:

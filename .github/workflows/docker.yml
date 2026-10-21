@@ -1,14 +1,10 @@
 # Equivalent to: stages/docker.yml → docker-build job
-# Triggered by file changes only (independent of quality-gate)
+# A release stage, called by publish.yml after the Quality Gate passes: builds the
+# CI image from the commit pushed to main and pushes it to GHCR as latest.
 name: Docker
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - Dockerfile
-      - pyproject.toml
-      - uv.lock
+  workflow_call:
 
 permissions: {}
 
