@@ -271,14 +271,13 @@ A release is a pull request from `development` into `main`. Before merging it, c
 - [ ] `development` contains nothing that shouldn't ship.
 - [ ] The description lists every included pull request with its release note.
 
-Merging starts this chain on `main`:
+Merging starts the **Release** workflow (`publish.yml`) on `main`. It runs each stage as a job on the merged commit:
 
-1. **Docker** builds the CI image.
-2. **Quality Gate** runs.
-3. **Build** packages the release.
-4. **Publish** (to PyPI, through trusted publishing in the `pypi` environment) and **Documentation** (to GitHub Pages) run.
+1. **Quality Gate** runs every check.
+2. **Build** packages the wheel and source distribution, and **Docker** builds the CI image and pushes it to GHCR.
+3. **Publish** uploads the build to PyPI (trusted publishing, in the `pypi` environment), and **Documentation** deploys the docs to GitHub Pages.
 
-The Docker workflow runs only when `Dockerfile`, `pyproject.toml` or `uv.lock` changes, so the version bump is also what starts the release.
+The release runs only when the merge changes `Dockerfile`, `pyproject.toml` or `uv.lock`, so the version bump is what starts it. To re-run a release, for example after a stage failed, start it by hand on `main`: `gh workflow run publish.yml --ref main`. Publishing a version that's already on PyPI fails, so bump the version first if the earlier run got that far.
 
 After the merge, the **Sync development** workflow resets `development` to `main`. It refuses if `development` has commits that aren't in `main`; in that case, merge `main` into `development` instead.
 

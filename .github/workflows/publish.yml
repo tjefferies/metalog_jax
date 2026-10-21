@@ -1,39 +1,67 @@
-# Equivalent to: stages/publish.yml → publish job
-# Depends on Build workflow completing successfully
-# Downloads the wheel artifact produced by build
-# Runs in parallel with docs.yml
-name: Publish
+# The release. Runs when a push to main changes Dockerfile, pyproject.toml or uv.lock
+# (a release bumps the version), or by hand with workflow_dispatch on main:
+#
+#   Quality Gate → Build → Publish (PyPI)
+#                        → Documentation (GitHub Pages)
+#                → Docker (GHCR)
+#
+# Every stage is a job in this one run, so all of them use the commit pushed to main
+# (github.sha). The stages used to be separate workflows chained by workflow_run. A
+# workflow_run run executes on the default branch, so once development became the
+# default branch, the chain lost main's commit after its first hop and stopped
+# before Build.
+#
+# The publish job stays in this file, publish.yml, because PyPI's trusted publisher
+# is configured for it and a reusable workflow can't be a trusted publisher
+# (https://docs.pypi.org/trusted-publishers/troubleshooting/).
+name: Release
 
 on:
-  # Guarded below: only release-chain Build runs from this repository proceed
-  workflow_run: # zizmor: ignore[dangerous-triggers]
-    workflows: [Build]
-    types: [completed]
+  push:
     branches: [main]
+    paths:
+      - Dockerfile
+      - pyproject.toml
+      - uv.lock
+  # Re-run a release from main, for example after a stage failed
+  workflow_dispatch:
 
 permissions: {}
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# $/ is GitHub's self-repository syntax: a workflow in this repository at the commit
+# that's running, so every stage runs the definitions pushed to main.
 jobs:
+  quality-gate:
+    # workflow_dispatch can run on any branch; release only from main. Every other
+    # job needs this one, so they're skipped too.
+    if: github.ref == 'refs/heads/main'
+    uses: $/.github/workflows/quality-gate.yml
+    permissions:
+      contents: read
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  build:
+    needs: quality-gate
+    uses: $/.github/workflows/build.yml
+    permissions:
+      contents: read
+
   publish:
+    needs: build
     runs-on: ubuntu-latest
-    # Only a successful Build that the release chain started (push → Docker → Quality
-    # Gate → Build) in this repository; never a pull request build, whose branch can
-    # also be named main.
-    if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_run' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
     environment: pypi
     permissions:
-      actions: read
       contents: read
       id-token: write
     steps:
-      - name: Download wheel artifact from Build workflow
-        uses: dawidd6/action-download-artifact@eab87c9830c39eff17e5a6eadb20bfb4bc880477 # v27
+      - name: Download the dist artifact from Build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          workflow: build.yml
-          run_id: ${{ github.event.workflow_run.id }}
           name: dist
           path: dist
 
@@ -44,3 +72,18 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+
+  docs:
+    needs: build
+    uses: $/.github/workflows/docs.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+  docker:
+    needs: quality-gate
+    uses: $/.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
