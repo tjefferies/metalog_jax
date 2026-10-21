@@ -1,10 +1,16 @@
 # Equivalent to: stages/docker.yml → docker-build job
 # A release stage, called by publish.yml after the Quality Gate passes: builds the
-# CI image from the commit pushed to main and pushes it to GHCR as latest.
+# CI image from the commit pushed to main, once for each Python version CI tests,
+# and pushes each to GHCR as py<version>. latest is the oldest version's image.
 name: Docker
 
 on:
   workflow_call:
+    inputs:
+      python-versions:
+        description: The Python versions to build, as a JSON list, oldest first
+        required: true
+        type: string
 
 permissions: {}
 
@@ -15,6 +21,10 @@ env:
 jobs:
   docker-build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(inputs.python-versions) }}
     permissions:
       contents: read
       packages: write
@@ -30,10 +40,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Choose tags
+        id: tags
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          PY: ${{ matrix.python-version }}
+          OLDEST: ${{ fromJSON(inputs.python-versions)[0] }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "$IMAGE:py$PY"
+            # latest stays on the oldest supported Python, so it doesn't change when a
+            # newer Python is added
+            if [ "$PY" = "$OLDEST" ]; then echo "$IMAGE:latest"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          build-args: PYTHON_VERSION=${{ matrix.python-version }}
+          tags: ${{ steps.tags.outputs.tags }}
           provenance: false
