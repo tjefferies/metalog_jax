@@ -45,6 +45,14 @@ Core
    :no-undoc-members:
    :show-inheritance:
 
+Display
+~~~~~~~
+
+.. automodule:: metalog_jax.base.display
+   :members:
+   :no-undoc-members:
+   :show-inheritance:
+
 Input Data
 ~~~~~~~~~~
 

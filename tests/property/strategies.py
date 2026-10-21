@@ -363,6 +363,22 @@ def coefficient_vectors(draw):
 
 
 @st.composite
+def printable_metalogs(draw):
+    """A Metalog of any boundedness with coefficient_vectors(), feasible or not."""
+    boundedness = draw(st.sampled_from(BOUNDEDNESS))
+    lower, upper = draw(hand_set_bounds(boundedness))
+    a = draw(coefficient_vectors())
+    params = MetalogParameters(
+        boundedness=boundedness,
+        method=draw(st.sampled_from(FIT_METHODS)),
+        lower_bound=lower,
+        upper_bound=upper,
+        num_terms=len(a),
+    )
+    return Metalog(params, jnp.asarray(a, dtype=jnp.float64))
+
+
+@st.composite
 def metalog_batches(draw, size=3, term_counts=NUM_TERMS):
     """Fitted metalogs for jax.vmap: shared static fields, different data and bounds."""
     boundedness = draw(st.sampled_from(BOUNDEDNESS))
