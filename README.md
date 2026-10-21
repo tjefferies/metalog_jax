@@ -340,7 +340,7 @@ also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_dark.svg">
-  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid is about 20 times faster but does not check validity. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
+  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid, measured before it checked validity, is about 20 times faster. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
 </picture>
 
 Measured with `fit_grid_datasets` on a **MacBook Pro (Apple M3, 8 cores: 4 performance
@@ -379,10 +379,13 @@ per dataset is:
   5,000-10,000 datasets per chunk was the fastest per dataset here, memory stays flat
   (50,000 datasets in chunks of 5,000 peaked at 1.4 GB), and every chunk reuses one
   compiled shape. Pad the last chunk to the same size to avoid a recompile.
-- **OLS for comparison:** `fit_grid` with OLS is about 20 times faster (0.09 ms per
-  dataset) but does not check validity. At 10 terms, 65% of these datasets' OLS fits
-  are invalid distributions, and `fit_grid_datasets` with OLS raises for the whole batch
-  if any one fit is invalid.
+- **OLS for comparison:** `fit_grid` with OLS fits in about 0.09 ms per dataset, 20
+  times faster, and checking each fit's validity for its `feasible` mask brings that to
+  about 0.19 ms (at 5,000 datasets, with JAX 0.11.2; the chart's OLS line was measured
+  before `fit_grid` checked validity). At 10 terms, 65% of these datasets' OLS fits are
+  invalid distributions. `fit_grid_datasets` with OLS raises if any fit is invalid,
+  showing which; pass `on_infeasible="flag"` to get every fit with the invalid ones
+  marked.
 
 GPU performance was not measured. To reproduce, or to rerun on your own hardware:
 
@@ -581,6 +584,15 @@ automatically detecting which axes to search based on inputs. It supports the OL
 LASSO fit methods and raises a `ValueError` for `MetalogFitMethod.Feasible`; use `fit`
 for one dataset or `fit_grid_datasets` to fit a batch of datasets with `Feasible`.
 
+OLS and LASSO fits can be infeasible: their quantile function decreases somewhere, so
+they aren't valid distributions, and their KS distance doesn't compare two
+distributions. Every grid result has a `feasible` mask, the same shape as `ks_dist`,
+from the exact `check_feasibility` test. Pass it to `find_best_config` so that only
+valid fits can be chosen; `extract_best_from_grid` uses it automatically. The grids
+that call `fit()` (`fit_grid_datasets`, `fit_grid_hyperparams` and
+`fit_grid_datasets_hyperparams`) raise if any fit is infeasible, showing which;
+`on_infeasible="flag"` returns every fit with the infeasible ones marked instead.
+
 #### Grid Search over L1 Penalties
 
 ```python
@@ -610,8 +622,8 @@ params = MetalogParameters(
 l1_penalties = jnp.array([0.0, 0.001, 0.01, 0.1])
 result = fit_grid(data.x, data.y, params, l1_penalties=l1_penalties)
 
-# Find the best configuration
-best_idx, best_ks = find_best_config(result.ks_dist)
+# Find the best valid configuration
+best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
 print(f"Best L1 penalty: {float(l1_penalties[int(best_idx)]):.4f}")
 print(f"Best KS distance: {float(best_ks):.4f}")
 
@@ -658,8 +670,8 @@ result = fit_grid(
 # Result shape is (len(l1_penalties), len(num_terms_list))
 print(f"Grid shape: {result.ks_dist.shape}")  # (3, 3)
 
-# Find the best configuration
-best_idx, best_ks = find_best_config(result.ks_dist)
+# Find the best valid configuration
+best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
 best_l1_idx, best_terms_idx = int(best_idx[0]), int(best_idx[1])
 print(f"Best L1 penalty: {float(l1_penalties[best_l1_idx]):.4f}")
 print(f"Best num_terms: {num_terms_list[best_terms_idx]}")
@@ -717,7 +729,7 @@ print(f"Grid shape: {result.ks_dist.shape}")  # (3, 2, 2)
 # Find best configuration for each dataset and extract the metalog
 dataset_names = ["left-skewed", "right-skewed", "symmetric"]
 for d, name in enumerate(dataset_names):
-    best_idx, best_ks = find_best_config(result.ks_dist[d])
+    best_idx, best_ks = find_best_config(result.ks_dist[d], result.feasible[d])
     best_l1_idx, best_terms_idx = int(best_idx[0]), int(best_idx[1])
 
     # Extract the best metalog for this dataset

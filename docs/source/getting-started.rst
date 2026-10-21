@@ -349,6 +349,34 @@ Use JAX's ``vmap`` for efficient hyperparameter search:
    vmapped_lasso_fit = jax.vmap(fit_with_lasso_penalty)
    lasso_results = vmapped_lasso_fit(l1_penalties)
 
+``fit`` checks each fit's density, so under ``vmap`` one infeasible fit raises for
+the whole batch. The grid functions in ``metalog_jax.grid_search`` mark it instead:
+``GridResult.feasible`` says which fits are valid distributions, decided exactly by
+``check_feasibility``, and has the same shape as ``ks_dist``. An infeasible fit's KS
+distance doesn't compare two distributions, so pass the mask to
+``find_best_config``, which then picks only valid fits; ``extract_best_from_grid``
+uses it automatically, and both raise a ``ValueError`` if no fit is valid:
+
+.. code-block:: python
+
+   from metalog_jax.grid_search import extract_metalog, find_best_config, fit_grid
+
+   lasso_params = MetalogParameters(
+       boundedness=MetalogBoundedness.BOUNDED,
+       lower_bound=0,
+       upper_bound=1,
+       method=MetalogFitMethod.Lasso,
+       num_terms=11,
+   )
+   result = fit_grid(data.x, data.y, lasso_params, l1_penalties=l1_penalties)
+   best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
+   best = extract_metalog(result, int(best_idx))
+
+The grids that call ``fit`` (``fit_grid_datasets``, ``fit_grid_hyperparams`` and
+``fit_grid_datasets_hyperparams``) still raise by default if a fit is infeasible, and
+the message shows which. Pass ``on_infeasible="flag"`` to get every fit, with the
+infeasible ones marked in ``feasible``.
+
 Fitting Many Datasets with Feasible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -520,7 +548,7 @@ The library is organized into the following modules:
 
   - ``fit_grid()``: Grid over datasets, L1 penalties and term counts (OLS and LASSO)
   - ``fit_grid_datasets()``: Fit a batch of datasets with any fit method
-  - ``find_best_config()``, ``extract_metalog()``: Pick and extract the best fit
+  - ``find_best_config()``, ``extract_metalog()``: Pick the best valid fit and extract it
 
 Next Steps
 ----------

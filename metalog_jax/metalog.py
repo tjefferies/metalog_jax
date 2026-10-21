@@ -471,6 +471,34 @@ def fit(
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
     """  # noqa: DOC502
+    metalog = _fit_coefficients(data, metalog_params, regression_hyperparams)
+    metalog.assert_fitted()
+    return metalog
+
+
+def _fit_coefficients(
+    data: MetalogInputData,
+    metalog_params: MetalogParameters,
+    regression_hyperparams: RegularizedParameters = None,
+) -> Metalog:
+    """Fit the coefficients as fit() does, without checking the density.
+
+    The grid search uses it, so that one infeasible fit in a vmapped batch doesn't
+    raise for the whole batch; it checks each fit with check_feasibility instead.
+
+    Args:
+        data: Input data, as for fit().
+        metalog_params: Parameters, as for fit().
+        regression_hyperparams: Lasso hyperparameters, as for fit().
+
+    Returns:
+        Metalog: The fitted metalog, which may be infeasible.
+
+    Raises:
+        TypeError: As fit() does, for an invalid method or hyperparameters.
+        checkify.JaxRuntimeError: For OLS and Feasible, if the basis matrix is rank
+            deficient, or if Feasible cannot certify its result.
+    """  # noqa: DOC502
     quantiles = Metalog.get_quantiles(data=data, metalog_params=metalog_params)
     target = Metalog.get_target(data=data, metalog_params=metalog_params)
 
@@ -478,9 +506,7 @@ def fit(
     if metalog_params.method != MetalogFitMethod.Lasso:  # Lasso is regularized
         assert_full_column_rank(target)
     model = fit_method(target, quantiles)
-    metalog = Metalog(metalog_params=metalog_params, a=model.weights)
-    metalog.assert_fitted()
-    return metalog
+    return Metalog(metalog_params=metalog_params, a=model.weights)
 
 
 @jax.jit
@@ -1190,6 +1216,14 @@ class GridResult:
             - 1: Worst possible fit (completely non-overlapping distributions)
             - Lower values indicate better fit quality
             Used to select the best metalog configuration from a grid search.
+        feasible: Whether each fit is a valid distribution, with the same shape as
+            ``ks_dist``: True when ``M'(y) >= 0`` on all of (0, 1), as
+            ``metalog_jax.feasibility.check_feasibility`` decides exactly
+            (Baucells et al. 2025, Proposition 5 with Algorithm 1). An infeasible
+            fit's quantile function isn't increasing, so its ``ks_dist`` isn't a
+            distance between two distributions, and ``find_best_config`` and
+            ``extract_best_from_grid`` skip it. Every grid function fills this in;
+            it's None for a GridResult built without it.
 
     Note:
         - This class is immutable due to the `struct.dataclass` decorator
@@ -1219,3 +1253,4 @@ class GridResult:
 
     metalog: Metalog | SPTMetalog
     ks_dist: chex.Scalar
+    feasible: chex.Array | None = None
