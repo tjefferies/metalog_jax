@@ -1,37 +1,21 @@
 # Equivalent to: stages/docs.yml → pages job
-# Depends on Build workflow completing successfully
-# Runs in parallel with publish.yml
+# A release stage, called by publish.yml after Build: builds the Sphinx docs of the
+# commit pushed to main and deploys them to GitHub Pages.
 name: Documentation
 
 on:
-  # Guarded below: only release-chain Build runs from this repository proceed
-  workflow_run: # zizmor: ignore[dangerous-triggers]
-    workflows: [Build]
-    types: [completed]
-    branches: [main]
+  workflow_call:
 
 permissions: {}
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Only a successful Build that the release chain started (push → Docker → Quality
-    # Gate → Build) in this repository; never a pull request build, whose branch can
-    # also be named main.
-    if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'workflow_run' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
       - name: Install pandoc
@@ -55,6 +39,10 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # One Pages deployment at a time; a queued one waits rather than cancelling
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write

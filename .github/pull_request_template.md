@@ -114,7 +114,7 @@ checked the numerical results.
 <details>
 <summary>Release PRs only (<code>development</code> → <code>main</code>)</summary>
 
-Merging runs Quality Gate → Build → Publish to PyPI, then resets `development` to `main`.
+Merging runs the Release workflow on `main` (Quality Gate → Build → Publish to PyPI and the docs, plus the Docker image), then resets `development` to `main`.
 
 - [ ] Version in `pyproject.toml` is bumped (PyPI rejects a version that already exists): patch for fixes, minor for features, major for breaking changes
 - [ ] `uv.lock` is refreshed (`uv lock`)
