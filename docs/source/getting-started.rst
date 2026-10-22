@@ -63,6 +63,25 @@ the ``fit`` function from ``metalog_jax.metalog``:
    variance_val = m.var
    std_val = m.std
 
+Printing the model shows its fitted quantile function, with each coefficient on
+its basis function (Keelin 2016, Definition 1). ``print(m)`` writes one line with 6
+significant digits, ``repr(m)`` the same line at full precision, and ``m.print()``
+one term per line. An unbounded metalog's Q(y) is the sum of its terms:
+
+.. code-block:: pycon
+
+   >>> print(m)
+   Metalog(5 terms, Feasible, unbounded): Q(y) = 3.12062 + 0.648856 ln(y/(1-y)) - 0.489575 (y - 0.5) ln(y/(1-y)) + 0.260971 (y - 0.5) + 3.67023 (y - 0.5)^2
+   >>> m.print()
+   Metalog: 5 terms, Feasible, unbounded
+     Q(y) = 3.12062
+            + 0.648856 ln(y/(1-y))
+            - 0.489575 (y - 0.5) ln(y/(1-y))
+            + 0.260971 (y - 0.5)
+            + 3.67023 (y - 0.5)^2
+
+In Jupyter, a bare ``m`` renders the equation as typeset math.
+
 SPT Metalog (3-Term Closed-Form)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -178,12 +197,34 @@ For data with known bounds, use bounded metalog variants:
 
    m = fit(data, params)
 
-Boundedness options:
+A bounded or semi-bounded metalog maps M(y) back to its support, and ``m.print()``
+shows how. ``verbose=True`` substitutes M(y)'s terms into Q(y), which uses M(y)
+twice when bounded on both sides:
 
-- ``MetalogBoundedness.UNBOUNDED``: Full real line support (-∞, ∞)
-- ``MetalogBoundedness.STRICTLY_LOWER_BOUND``: Support on (lower_bound, ∞)
-- ``MetalogBoundedness.STRICTLY_UPPER_BOUND``: Support on (-∞, upper_bound)
-- ``MetalogBoundedness.BOUNDED``: Support on (lower_bound, upper_bound)
+.. code-block:: pycon
+
+   >>> m.print()
+   Metalog: 5 terms, Feasible, bounded on (0, 100)
+     Q(y) = (0 + 100 exp(M(y))) / (1 + exp(M(y)))
+     M(y) = -3.43207
+            + 0.257519 ln(y/(1-y))
+            - 0.355297 (y - 0.5) ln(y/(1-y))
+            - 0.110991 (y - 0.5)
+            + 1.48334 (y - 0.5)^2
+   >>> m.print(m=False, verbose=True)
+   Metalog: 5 terms, Feasible, bounded on (0, 100)
+     Q(y) = (0 + 100 exp(-3.43207 + 0.257519 ln(y/(1-y)) - 0.355297 (y - 0.5) ln(y/(1-y)) - 0.110991 (y - 0.5) + 1.48334 (y - 0.5)^2))
+            / (1 + exp(-3.43207 + 0.257519 ln(y/(1-y)) - 0.355297 (y - 0.5) ln(y/(1-y)) - 0.110991 (y - 0.5) + 1.48334 (y - 0.5)^2))
+
+Boundedness options, with the quantile function each one prints:
+
+- ``MetalogBoundedness.UNBOUNDED``: Full real line support (-∞, ∞); Q(y) = M(y)
+- ``MetalogBoundedness.STRICTLY_LOWER_BOUND``: Support on (lower_bound, ∞);
+  Q(y) = L + exp(M(y))
+- ``MetalogBoundedness.STRICTLY_UPPER_BOUND``: Support on (-∞, upper_bound);
+  Q(y) = U - exp(-M(y))
+- ``MetalogBoundedness.BOUNDED``: Support on (lower_bound, upper_bound);
+  Q(y) = (L + U exp(M(y))) / (1 + exp(M(y)))
 
 Fit Methods
 -----------
@@ -349,6 +390,13 @@ Use JAX's ``vmap`` for efficient hyperparameter search:
    vmapped_lasso_fit = jax.vmap(fit_with_lasso_penalty)
    lasso_results = vmapped_lasso_fit(l1_penalties)
 
+   # The grid holds a batch of models, so printing it gives a summary:
+   # Metalog(11 terms, Lasso, bounded; batch of shape (4,), index one model to see
+   # its equation). extract_metalog takes one model out, which prints its equation.
+   from metalog_jax.grid_search import extract_metalog
+
+   extract_metalog(lasso_results, 0).print()
+
 ``fit`` checks each fit's density, so under ``vmap`` one infeasible fit raises for
 the whole batch. The grid functions in ``metalog_jax.grid_search`` mark it instead:
 ``GridResult.feasible`` says which fits are valid distributions, decided exactly by
@@ -371,6 +419,7 @@ uses it automatically, and both raise a ``ValueError`` if no fit is valid:
    result = fit_grid(data.x, data.y, lasso_params, l1_penalties=l1_penalties)
    best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
    best = extract_metalog(result, int(best_idx))
+   best.print()
 
 The grids that call ``fit`` (``fit_grid_datasets``, ``fit_grid_hyperparams`` and
 ``fit_grid_datasets_hyperparams``) still raise by default if a fit is infeasible, and
@@ -487,6 +536,25 @@ and properties:
 - ``plot(option)``: Visualize the distribution (PDF, CDF, or SF)
 - ``save(path)``: Save to JSON file
 - ``dumps()``: Serialize to JSON string
+- ``print(header=True, q=True, m=True, verbose=False, precision=6, file=None)``:
+  Print the fitted quantile function, one term per line. ``header`` prints the first
+  line describing the model, ``q`` and ``m`` choose Q(y) and M(y), ``verbose``
+  substitutes M(y)'s terms into Q(y), ``precision`` sets the significant digits, and
+  ``file`` redirects the output. ``q=False`` with ``m=False``, or ``verbose=True``
+  with ``q=False``, raises ``ValueError``.
+
+**Display:**
+
+- ``print(m)`` and ``str(m)``: The model and its quantile function on one line, with
+  6 significant digits
+- ``repr(m)``: The same line at full precision, so the coefficients parse back
+  exactly
+- A bare ``m`` in Jupyter: The equation as typeset math (``_repr_latex_``), wrapped
+  after every 4 terms
+
+A model traced under ``jax.jit``, ``jax.vmap`` or ``jax.eval_shape``, or a batch of
+models such as ``GridResult.metalog``, prints a one-line summary instead of its
+equation.
 
 **Properties:**
 
@@ -521,6 +589,7 @@ The library is organized into the following modules:
 
   - ``metalog_jax.base.core``: MetalogBase class
   - ``metalog_jax.base.data``: MetalogInputData and MetalogBaseData
+  - ``metalog_jax.base.display``: Text and LaTeX display of fitted models
   - ``metalog_jax.base.enums``: MetalogBoundedness, MetalogFitMethod, MetalogPlotOptions
   - ``metalog_jax.base.parameters``: MetalogParameters, SPTMetalogParameters
 

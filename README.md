@@ -186,6 +186,23 @@ print(f"95th percentile: {float(metalog.ppf(jnp.array([0.95]))[0]):.1f} ms")
 print(f"99th percentile: {float(metalog.ppf(jnp.array([0.99]))[0]):.1f} ms")
 ```
 
+Printing the model shows its fitted quantile function. Each coefficient multiplies one basis function (Keelin 2016, Definition 1), and the lower bound L maps M(y) back to the support as Q(y) = L + exp(M(y)). `print(metalog)` gives one line with 6 significant digits, `repr(metalog)` the same line at full precision, and `metalog.print()` one term per line:
+
+```pycon
+>>> print(metalog)
+Metalog(5 terms, Feasible, lower bound 0): Q(y) = 0 + exp(M(y)), M(y) = 4.66017 + 0.0937228 ln(y/(1-y)) + 0.00501658 (y - 0.5) ln(y/(1-y)) + 1.98537 (y - 0.5) + 2.55863 (y - 0.5)^2
+>>> metalog.print()
+Metalog: 5 terms, Feasible, lower bound 0
+  Q(y) = 0 + exp(M(y))
+  M(y) = 4.66017
+         + 0.0937228 ln(y/(1-y))
+         + 0.00501658 (y - 0.5) ln(y/(1-y))
+         + 1.98537 (y - 0.5)
+         + 2.55863 (y - 0.5)^2
+```
+
+`metalog.print()` takes options: `header=False` leaves out the first line, `q=False` or `m=False` prints only M(y) or only Q(y), `verbose=True` writes Q(y) with M(y)'s terms in place of M(y), `precision` sets the significant digits, and `file` writes somewhere other than standard output. In Jupyter, a bare `metalog` renders the equation as typeset math.
+
 ### Working with Bounded Data
 
 Metalog natively supports four boundedness types:
@@ -232,6 +249,32 @@ params = MetalogParameters(
     method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
+```
+
+Each type maps the metalog's M(y) back to its support: Q(y) = L + exp(M(y)) for a lower bound, U - exp(-M(y)) for an upper bound, and (L + U exp(M(y))) / (1 + exp(M(y))) for both. `print` shows the mapping, and with `verbose=True` it substitutes M(y)'s terms into Q(y), which uses M(y) twice when bounded:
+
+```pycon
+>>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+>>> data = MetalogInputData.from_values(samples, DEFAULT_Y, precomputed_quantiles=False)
+>>> bounded = fit(data, MetalogParameters(
+...     boundedness=MetalogBoundedness.BOUNDED,
+...     lower_bound=0.0,
+...     upper_bound=15.0,
+...     method=MetalogFitMethod.Feasible,
+...     num_terms=5,
+... ))
+>>> bounded.print()
+Metalog: 5 terms, Feasible, bounded on (0, 15)
+  Q(y) = (0 + 15 exp(M(y))) / (1 + exp(M(y)))
+  M(y) = -0.754464
+         + 0.0719273 ln(y/(1-y))
+         - 0.110759 (y - 0.5) ln(y/(1-y))
+         + 2.45794 (y - 0.5)
+         + 1.1187 (y - 0.5)^2
+>>> bounded.print(m=False, verbose=True)
+Metalog: 5 terms, Feasible, bounded on (0, 15)
+  Q(y) = (0 + 15 exp(-0.754464 + 0.0719273 ln(y/(1-y)) - 0.110759 (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5) + 1.1187 (y - 0.5)^2))
+         / (1 + exp(-0.754464 + 0.0719273 ln(y/(1-y)) - 0.110759 (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5) + 1.1187 (y - 0.5)^2))
 ```
 
 ### Choosing a Fit Method
@@ -452,6 +495,13 @@ spt_metalog = fit_spt_metalog(response_times, spt_params)
 print(f"SPT Median: {float(spt_metalog.ppf(jnp.array([0.5]))[0]):.1f}")
 ```
 
+An SPT metalog prints its alpha where a regression fit prints its fit method:
+
+```pycon
+>>> print(spt_metalog)
+SPTMetalog(3 terms, alpha = 0.1, lower bound 0): Q(y) = 0 + exp(M(y)), M(y) = 4.68675 + 0.479791 ln(y/(1-y)) + 0.475034 (y - 0.5) ln(y/(1-y))
+```
+
 If you already have the three quantiles, for example an expert's 10th, 50th and 90th percentile estimates, pass them directly. Without `precomputed_quantiles=True`, three values are treated as data and interpolated, so the fit wouldn't pass through them.
 
 ```python
@@ -492,6 +542,11 @@ skewness = metalog.skewness
 kurtosis = metalog.kurtosis  # Pearson (normal = 3); subtract 3 for excess kurtosis
 mode = metalog.mode
 median = metalog.median
+
+# The fitted quantile function
+print(metalog)                # one line, 6 significant digits
+repr(metalog)                 # the same line at full precision
+metalog.print(verbose=True)   # one term per line, with options (see Quick Start)
 ```
 
 Mean, variance, standard deviation, skewness and kurtosis are exact (closed form)

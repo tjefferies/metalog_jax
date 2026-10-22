@@ -3,7 +3,7 @@
 #
 #   Quality Gate → Build → Publish (PyPI)
 #                        → Documentation (GitHub Pages)
-#                → Docker (GHCR)
+#                → Docker (GHCR, one image per Python version)
 #
 # Every stage is a job in this one run, so all of them use the commit pushed to main
 # (github.sha). The stages used to be separate workflows chained by workflow_run. A
@@ -87,3 +87,6 @@ jobs:
     permissions:
       contents: read
       packages: write
+    with:
+      # The versions the Quality Gate tested, read from the pyproject.toml classifiers
+      python-versions: ${{ needs.quality-gate.outputs.python-versions }}
