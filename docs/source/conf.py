@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath("../.."))
 project = "metalog-jax"
 copyright = "2026, Travis Jefferies"
 author = "Travis Jefferies"
-release = "2.1.0"
+release = "2.2.0"
 
 # -- General configuration ---------------------------------------------------
 
