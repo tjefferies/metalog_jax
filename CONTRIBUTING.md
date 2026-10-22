@@ -151,7 +151,7 @@ make doctest                                                       # docstring e
 make lowest-deps                                                   # lowest allowed versions, Python 3.11
 ```
 
-Coverage settings live in `[tool.coverage]` in `pyproject.toml`, so `make test` and CI measure the same thing. CI runs the suite on Python 3.11, 3.12 and 3.13, and again with the lowest versions `pyproject.toml` allows for direct dependencies.
+Coverage settings live in `[tool.coverage]` in `pyproject.toml`, so `make test` and CI measure the same thing. CI runs the suite on every Python version the `pyproject.toml` classifiers list (3.11 to 3.14), and again with the lowest versions `pyproject.toml` allows for direct dependencies. To support a new Python version, add its classifier: the test matrix and the release's Docker images both read the list from there.
 
 #### Property-based tests
 
@@ -243,7 +243,7 @@ uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
    | `interrogate` | docstring coverage at or above the `pyproject.toml` threshold |
    | `pydoclint` | Google-style docstring sections match signatures and bodies |
    | `ty` | type check |
-   | `pytest` | full suite on Python 3.11, 3.12 and 3.13, with branch coverage of at least 95% (3.12 uploads to Codecov) |
+   | `pytest` | full suite on every Python version in the `pyproject.toml` classifiers (3.11 to 3.14), with branch coverage of at least 95% (3.12 uploads to Codecov) |
    | `doctest` | every docstring example runs |
    | `lowest-deps` | full suite on Python 3.11 with the lowest allowed dependency versions |
    | `docs` | Sphinx build with warnings as errors |
@@ -274,7 +274,7 @@ A release is a pull request from `development` into `main`. Before merging it, c
 Merging starts the **Release** workflow (`publish.yml`) on `main`. It runs each stage as a job on the merged commit:
 
 1. **Quality Gate** runs every check.
-2. **Build** packages the wheel and source distribution, and **Docker** builds the CI image and pushes it to GHCR.
+2. **Build** packages the wheel and source distribution, and **Docker** builds the CI image once for each tested Python version and pushes each to GHCR, tagged `py<version>` (for example `:py3.14`). `:latest` is the oldest version's image.
 3. **Publish** uploads the build to PyPI (trusted publishing, in the `pypi` environment), and **Documentation** deploys the docs to GitHub Pages.
 
 The release runs only when the merge changes `Dockerfile`, `pyproject.toml` or `uv.lock`, so the version bump is what starts it. To re-run a release, for example after a stage failed, start it by hand on `main`: `gh workflow run publish.yml --ref main`. Publishing a version that's already on PyPI fails, so bump the version first if the earlier run got that far.
