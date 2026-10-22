@@ -226,6 +226,11 @@ Boundedness options, with the quantile function each one prints:
 - ``MetalogBoundedness.BOUNDED``: Support on (lower_bound, upper_bound);
   Q(y) = (L + U exp(M(y))) / (1 + exp(M(y)))
 
+``MetalogParameters`` raises a ``ValueError`` for a bound the type uses that's
+infinite or NaN, for a ``BOUNDED`` ``lower_bound`` that isn't below
+``upper_bound``, and for ``num_terms`` below 2. A type ignores the bounds it
+doesn't use.
+
 Fit Methods
 -----------
 

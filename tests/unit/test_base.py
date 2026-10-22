@@ -191,6 +191,162 @@ class MetalogParametersTest(parameterized.TestCase):
             params.num_terms = 5
 
 
+class MetalogParametersValidationTest(parameterized.TestCase):
+    """Regression tests for issue #47: parameters that can't describe a metalog raise.
+
+    They used to be accepted: fit then fitted three coefficients for fewer than 2
+    terms, fitted an empty support, or failed with a misleading density error.
+    """
+
+    BOUNDED_PARAMS = MetalogParameters(
+        boundedness=MetalogBoundedness.BOUNDED,
+        method=MetalogFitMethod.OLS,
+        lower_bound=0.0,
+        upper_bound=10.0,
+        num_terms=3,
+    )
+
+    def _params(self, boundedness=MetalogBoundedness.UNBOUNDED, **overrides):
+        """MetalogParameters with valid defaults, and the given fields replaced."""
+        fields = {
+            "method": MetalogFitMethod.OLS,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "num_terms": 5,
+            **overrides,
+        }
+        return MetalogParameters(boundedness=boundedness, **fields)
+
+    @parameterized.parameters(1, 0, -3)
+    def test_rejects_fewer_than_two_terms(self, num_terms):
+        """num_terms below 2 raises; a 1-term metalog is a constant."""
+        with self.assertRaisesRegex(
+            ValueError, f"num_terms must be an integer of at least 2, got {num_terms}"
+        ):
+            self._params(num_terms=num_terms)
+
+    @parameterized.parameters(5.0, True, "5", None)
+    def test_rejects_non_integer_terms(self, num_terms):
+        """A float, bool, string or None num_terms raises."""
+        with self.assertRaisesRegex(ValueError, "num_terms must be an integer"):
+            self._params(num_terms=num_terms)
+
+    @parameterized.parameters(2, np.int64(5), 30)
+    def test_accepts_integer_terms(self, num_terms):
+        """Python and NumPy integers of at least 2 are accepted."""
+        self.assertEqual(self._params(num_terms=num_terms).num_terms, num_terms)
+
+    @parameterized.named_parameters(
+        ("reversed", 20.0, 0.0),
+        ("equal", 5.0, 5.0),
+        ("integers", 3, 1),
+        ("numpy_scalars", np.float64(2.0), np.float64(1.0)),
+        ("one_of_a_numpy_batch", np.array([0.0, 5.0]), np.array([1.0, 5.0])),
+    )
+    def test_bounded_rejects_lower_at_or_above_upper(self, lower_bound, upper_bound):
+        """BOUNDED raises unless lower_bound < upper_bound."""
+        with self.assertRaisesRegex(
+            ValueError, "BOUNDED needs lower_bound < upper_bound"
+        ):
+            self._params(
+                MetalogBoundedness.BOUNDED,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+            )
+
+    @parameterized.product(
+        case=(
+            (MetalogBoundedness.STRICTLY_LOWER_BOUND, "lower_bound"),
+            (MetalogBoundedness.STRICTLY_UPPER_BOUND, "upper_bound"),
+            (MetalogBoundedness.BOUNDED, "lower_bound"),
+            (MetalogBoundedness.BOUNDED, "upper_bound"),
+        ),
+        value=(-np.inf, np.inf, np.nan),
+    )
+    def test_rejects_a_non_finite_bound_the_type_uses(self, case, value):
+        """An infinite or NaN bound raises when the boundedness type uses it."""
+        boundedness, name = case
+        with self.assertRaisesRegex(
+            ValueError, f"{boundedness.name} needs a finite {name}, got {value}"
+        ):
+            self._params(boundedness, **{name: value})
+
+    @parameterized.named_parameters(
+        ("unbounded_nan", MetalogBoundedness.UNBOUNDED, np.nan, np.nan),
+        ("unbounded_reversed", MetalogBoundedness.UNBOUNDED, 20.0, 0.0),
+        (
+            "lower_bound_type_upper_inf",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            0.0,
+            np.inf,
+        ),
+        (
+            "lower_bound_type_upper_below",
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            5.0,
+            0.0,
+        ),
+        (
+            "upper_bound_type_lower_nan",
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            np.nan,
+            10.0,
+        ),
+    )
+    def test_ignores_bounds_the_type_does_not_use(
+        self, boundedness, lower_bound, upper_bound
+    ):
+        """Bounds a type doesn't use aren't checked, so saved models still load."""
+        params = self._params(
+            boundedness, lower_bound=lower_bound, upper_bound=upper_bound
+        )
+        self.assertEqual(params.boundedness, boundedness)
+
+    @parameterized.named_parameters(
+        ("reversed", {"lower_bound": 20.0, "upper_bound": 0.0}, "lower_bound <"),
+        ("nan", {"lower_bound": np.nan}, "finite lower_bound"),
+    )
+    def test_spt_parameters_share_the_bound_checks(self, overrides, message):
+        """SPTMetalogParameters checks its bounds the same way."""
+        fields = {"lower_bound": 0.0, "upper_bound": 10.0, "alpha": 0.1, **overrides}
+        with self.assertRaisesRegex(ValueError, message):
+            SPTMetalogParameters(boundedness=MetalogBoundedness.BOUNDED, **fields)
+
+    def test_from_dict_rejects_invalid_values(self):
+        """Loading saved parameters with an invalid term count raises."""
+        saved = {**self.BOUNDED_PARAMS.to_dict(), "num_terms": 1}
+        with self.assertRaisesRegex(ValueError, "num_terms must be an integer"):
+            MetalogParameters.from_dict(saved)
+
+    def test_transforms_rebuild_parameters_unchecked(self):
+        """Pytree transforms that rebuild parameters with non-bound leaves work.
+
+        Unflattening re-runs __post_init__ with whatever the transform put in the
+        leaves, so only Python and NumPy numbers are checked.
+        """
+        params = self.BOUNDED_PARAMS
+        for name, rebuild in {
+            "tree.map to None": lambda p: jax.tree.map(lambda _: None, p),
+            "eval_shape": lambda p: jax.eval_shape(lambda q: q, p),
+            "zeros_like": lambda p: jax.tree.map(jnp.zeros_like, p),
+            "jit": jax.jit(lambda p: p),
+            "stack": lambda p: jax.tree.map(lambda *xs: jnp.stack(xs), p, p),
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(rebuild(params).boundedness, params.boundedness)
+
+    def test_gradient_with_respect_to_bounds(self):
+        """jax.grad returns parameters whose bounds are gradients, in any order."""
+        m = Metalog(metalog_params=self.BOUNDED_PARAMS, a=jnp.array([0.0, 1.0, 0.0]))
+
+        grads = jax.grad(lambda model: model.ppf(jnp.array(0.1)))(m).metalog_params
+
+        # M(y) = ln(y / (1 - y)) makes Q(y) = (1 - y) L + y U, so at y = 0.1 the
+        # lower bound's gradient is the larger, which a bound check would reject
+        np.testing.assert_allclose(grads.lower_bound, 0.9, rtol=1e-12)
+        np.testing.assert_allclose(grads.upper_bound, 0.1, rtol=1e-12)
+
+
 class MetalogBaseSaveTest(parameterized.TestCase):
     """Test suite for the MetalogBase.save method.
 

@@ -595,11 +595,9 @@ class MetalogBase:
 
         m = y.shape[0]
         intercepts = jnp.ones(m).reshape((m, 1))
-        y_terms = [
-            intercepts,
-            _log_term(y).reshape((m, 1)),
-            (_delta_term(y) * _log_term(y)).reshape((m, 1)),
-        ]
+        y_terms = [intercepts, _log_term(y).reshape((m, 1))]
+        if num_terms > 2:
+            y_terms.append((_delta_term(y) * _log_term(y)).reshape((m, 1)))
         if num_terms > 3:
             y_terms.append(_delta_term(y).reshape((m, 1)))
             if num_terms > 4:
