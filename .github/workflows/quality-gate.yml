@@ -444,9 +444,29 @@ jobs:
 
   quality-gate:
     # This job only passes if ALL parallel jobs succeed. Pull requests require it as
-    # the quality-gate status check; in a release, Build waits for it.
+    # the quality-gate status check; in a release, Build waits for it. The ruleset on
+    # main requires it by this job id, so don't rename it or give it a name.
+    #
+    # Without an if:, a failed check would skip this job rather than fail it, and
+    # GitHub counts a skipped required check as passing. always() rather than
+    # !cancelled(), so a cancelled run fails the check too instead of skipping it.
+    # A skipped job counts as a failure, since none of the jobs above should skip.
     needs: [python-versions, ruff, radon, xenon, interrogate, pydoclint, zizmor, ty, pytest, doctest, lowest-deps, docs, notebooks, license-check, semgrep, bandit, sbom]
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: All quality checks passed
-        run: echo "All quality checks passed successfully!"
+        shell: python
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          import json
+          import os
+
+          needs = json.loads(os.environ["NEEDS"])
+          failed = {job: need["result"] for job, need in needs.items() if need["result"] != "success"}
+          for job, result in failed.items():
+              print(f"::error::{job} ended with: {result}")
+          if failed:
+              raise SystemExit(f"{len(failed)} of {len(needs)} quality checks didn't succeed")
+          print("All quality checks passed successfully!")
