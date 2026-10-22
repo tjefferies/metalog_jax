@@ -1,6 +1,6 @@
 [project]
 name = "metalog-jax"
-version = "2.1.0"
+version = "2.2.0"
 description = "A JAX implementation of the Metalog distribution for flexible probability modeling."
 readme = "README.md"
 license = "MIT"
