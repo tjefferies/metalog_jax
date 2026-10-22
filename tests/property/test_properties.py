@@ -31,6 +31,7 @@ from metalog_jax.base import (
     SPTMetalogParameters,
 )
 from metalog_jax.grid_search import (
+    find_best_config,
     fit_grid,
     fit_grid_datasets,
     fit_grid_datasets_hyperparams,
@@ -737,10 +738,10 @@ class SPTPropertiesTest(parameterized.TestCase):
 
 
 class GridSearchPropertiesTest(parameterized.TestCase):
-    """Regression tests for issue #26: grid fits are scored at the data's grid."""
+    """Regression tests for issues #26 and #40: grid fits' scores and feasibility."""
 
     L1 = (0.0, 0.01)
-    NUM_TERMS = (3, 4)
+    NUM_TERMS = (3, 9)
 
     def _assert_scored_at_y(self, result, x, y, params):
         """Check each KS distance against the fit's own quantiles at y."""
@@ -754,16 +755,12 @@ class GridSearchPropertiesTest(parameterized.TestCase):
             )
             self.assertAlmostEqual(float(ks_i), float(ks_distance(x, fitted)))
 
-    @FEW
-    @given(
-        dataset=strategies.grid_datasets(),
-        boundedness=st.sampled_from(strategies.BOUNDEDNESS),
-        data=st.data(),
-    )
-    def test_grid_functions_score_at_the_data_probabilities(
-        self, dataset, boundedness, data
-    ):
-        """Every grid function's KS distance uses its fit's quantiles at the data's y."""
+    def _grids(self, dataset, boundedness, data):
+        """Run all seven grid functions on a generated dataset, flagging infeasible fits.
+
+        Returns:
+            The OLS parameters, and (result, number of terms of each fit) pairs.
+        """
         x, y = dataset
         x = jnp.asarray(x)
         lower, upper = data.draw(strategies.bounds_around(boundedness, x))
@@ -778,27 +775,78 @@ class GridSearchPropertiesTest(parameterized.TestCase):
             for method in (MetalogFitMethod.OLS, MetalogFitMethod.Lasso)
         )
         input_data = MetalogInputData.from_values(x, y, precomputed_quantiles=True)
-        try:
-            fit(input_data, ols)
-        except checkify.JaxRuntimeError:
-            # fit_grid_datasets and the hyperparameter grids check feasibility
-            assume(False)
         bx, by = jnp.stack([x, x]), jnp.stack([y, y])
         l1 = jnp.asarray(self.L1)
         terms = list(self.NUM_TERMS)
-        results = (
-            fit_grid(x, y, ols, num_terms=terms, precomputed_quantiles=True),
-            fit_grid_num_terms(input_data, ols, terms),
-            fit_grid_datasets_num_terms(bx, by, ols, terms, precomputed_quantiles=True),
-            fit_grid_full(bx, by, lasso, l1, terms, precomputed_quantiles=True),
-            fit_grid_datasets(bx, by, ols, precomputed_quantiles=True),
-            fit_grid_hyperparams(input_data, lasso, l1),
-            fit_grid_datasets_hyperparams(
-                bx, by, lasso, l1, precomputed_quantiles=True
+        flag = {"on_infeasible": "flag"}
+        grids = (
+            (fit_grid(x, y, ols, num_terms=terms, precomputed_quantiles=True), terms),
+            (fit_grid_num_terms(input_data, ols, terms), terms),
+            (
+                fit_grid_datasets_num_terms(
+                    bx, by, ols, terms, precomputed_quantiles=True
+                ),
+                terms,
+            ),
+            (
+                fit_grid_full(bx, by, lasso, l1, terms, precomputed_quantiles=True),
+                terms,
+            ),
+            (fit_grid_datasets(bx, by, ols, precomputed_quantiles=True, **flag), 3),
+            (fit_grid_hyperparams(input_data, lasso, l1, **flag), 3),
+            (
+                fit_grid_datasets_hyperparams(
+                    bx, by, lasso, l1, precomputed_quantiles=True, **flag
+                ),
+                3,
             ),
         )
-        for result in results:
+        return x, y, ols, grids
+
+    @FEW
+    @given(
+        dataset=strategies.grid_datasets(),
+        boundedness=st.sampled_from(strategies.BOUNDEDNESS),
+        data=st.data(),
+    )
+    def test_grid_functions_score_at_the_data_probabilities(
+        self, dataset, boundedness, data
+    ):
+        """Every grid function's KS distance uses its fit's quantiles at the data's y."""
+        x, y, ols, grids = self._grids(dataset, boundedness, data)
+        for result, _ in grids:
             self._assert_scored_at_y(result, x, y, ols)
+
+    @FEW
+    @given(
+        dataset=strategies.grid_datasets(),
+        boundedness=st.sampled_from(strategies.BOUNDEDNESS),
+        data=st.data(),
+    )
+    def test_feasible_marks_exactly_the_valid_fits(self, dataset, boundedness, data):
+        """The feasible mask is check_feasibility of each fit; selection picks only those."""
+        _, _, _, grids = self._grids(dataset, boundedness, data)
+        for result, terms in grids:
+            a = np.asarray(result.metalog.a).reshape(-1, result.metalog.a.shape[-1])
+            counts = np.broadcast_to(terms, result.feasible.shape).reshape(-1)
+            # Each fit at its own term count, not zero-padded as the grid checks it
+            expected = [
+                strategies.is_certified(a_i[:k])
+                for a_i, k in zip(a, counts, strict=True)
+            ]
+            feasible = np.asarray(result.feasible).reshape(-1)
+            self.assertEqual(feasible.tolist(), expected)
+            event(f"{int(feasible.sum())} of {feasible.size} grid fits feasible")
+            if not feasible.any():
+                with self.assertRaises(ValueError):
+                    find_best_config(result.ks_dist, result.feasible)
+                continue
+            idx, best_ks = find_best_config(result.ks_dist, result.feasible)
+            self.assertTrue(
+                bool(np.asarray(result.feasible)[tuple(np.atleast_1d(idx))])
+            )
+            ks = np.asarray(result.ks_dist).reshape(-1)
+            self.assertEqual(float(best_ks), float(ks[feasible].min()))
 
 
 class RvsPropertiesTest(parameterized.TestCase):

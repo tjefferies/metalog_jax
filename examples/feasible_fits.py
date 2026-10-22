@@ -32,7 +32,6 @@ def _(mo):
 
 @app.cell
 def _():
-    import jax
     import jax.numpy as jnp
     import numpy as np
     from scipy.stats import gamma, lognorm, lomax, weibull_min
@@ -43,7 +42,6 @@ def _():
         MetalogInputData,
         MetalogParameters,
     )
-    from metalog_jax.feasibility import check_feasibility, get_engine
     from metalog_jax.grid_search import extract_metalog, fit_grid, fit_grid_datasets
     from metalog_jax.utils import DEFAULT_Y
 
@@ -53,13 +51,10 @@ def _():
         MetalogFitMethod,
         MetalogInputData,
         MetalogParameters,
-        check_feasibility,
         extract_metalog,
         fit_grid,
         fit_grid_datasets,
         gamma,
-        get_engine,
-        jax,
         jnp,
         lognorm,
         lomax,
@@ -117,24 +112,15 @@ def _(
     return batched_x, batched_y, dataset_names
 
 
-@app.cell
-def _(check_feasibility, get_engine, jax):
-    def feasible_flags(coeffs, num_terms):
-        """Exact feasibility test for each row of a (n_datasets, num_terms) array."""
-        engine = get_engine(num_terms)
-        return jax.vmap(lambda a: check_feasibility(engine, a).feasible)(coeffs)
-
-    return (feasible_flags,)
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ---
     ## Case 1: Fixed Number of Terms
 
-    First, fit all datasets with OLS and check each fit with `check_feasibility`. The
-    check is exact: it finds every local minimum of the density and tests both tails,
+    First, fit all datasets with OLS. `fit_grid` returns every fit, and its `feasible`
+    mask says which are valid distributions. The mask comes from `check_feasibility`,
+    which is exact: it finds every local minimum of the density and tests both tails,
     so it also catches negative density outside the probabilities that `fit` checks.
     """)
     return
@@ -147,7 +133,6 @@ def _(
     MetalogParameters,
     batched_x,
     batched_y,
-    feasible_flags,
     fit_grid,
 ):
     FIXED_TERMS = 10
@@ -160,9 +145,9 @@ def _(
         num_terms=FIXED_TERMS,
     )
 
-    # fit_grid returns OLS coefficients without validating them
+    # fit_grid returns every OLS fit, and marks which are valid distributions
     result_ols = fit_grid(batched_x, batched_y, params_ols)
-    ols_feasible = feasible_flags(result_ols.metalog.a, FIXED_TERMS)
+    ols_feasible = result_ols.feasible
     print(
         f"OLS fits that are valid distributions: {int(ols_feasible.sum())} of {len(ols_feasible)}"
     )
@@ -188,7 +173,6 @@ def _(
     batched_x,
     batched_y,
     dataset_names,
-    feasible_flags,
     fit_grid_datasets,
     ols_feasible,
     result_ols,
@@ -202,7 +186,7 @@ def _(
     )
 
     result_feasible = fit_grid_datasets(batched_x, batched_y, params_feasible)
-    feasible_ok = feasible_flags(result_feasible.metalog.a, FIXED_TERMS)
+    feasible_ok = result_feasible.feasible
 
     print(f"Coefficients shape: {result_feasible.metalog.a.shape}")
     print(f"KS Distances shape: {result_feasible.ks_dist.shape}")
@@ -277,7 +261,6 @@ def _(mo):
 def _(
     dataset_names,
     extract_metalog,
-    feasible_flags,
     jnp,
     ks_grid,
     num_terms_list,
@@ -294,7 +277,7 @@ def _(
         _m = extract_metalog(results_by_terms[_k], _i)
         best_metalogs[_name] = _m
         _median, _p90 = _m.ppf(jnp.array([0.5, 0.9]))
-        _valid = bool(feasible_flags(_m.a[None, :], _k)[0])
+        _valid = bool(results_by_terms[_k].feasible[_i])
         print(
             f"{_name:<10} {_k:>6} {float(ks_grid[_i, int(best_term_idx[_i])]):>8.4f}"
             f" {float(_median):>8.3f} {float(_p90):>8.3f} {str(_valid):>6}"
@@ -313,8 +296,8 @@ def _(mo):
     - Use `fit_grid_datasets` to fit a batch of datasets with `Feasible` in one call.
     - To compare term counts, loop over them in Python with one `fit_grid_datasets` call
       each. `fit_grid` raises a `ValueError` for `Feasible`.
-    - `check_feasibility` gives an exact validity check for any coefficient vector, for
-      example to audit OLS fits.
+    - Every grid result marks its valid fits in `feasible`, from `check_feasibility`,
+      an exact validity check that you can also run on any coefficient vector.
     """)
     return
 
