@@ -1,6 +1,6 @@
 [project]
 name = "metalog-jax"
-version = "2.1.0"
+version = "2.2.0"
 description = "A JAX implementation of the Metalog distribution for flexible probability modeling."
 readme = "README.md"
 license = "MIT"
@@ -20,6 +20,9 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",

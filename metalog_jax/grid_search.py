@@ -16,21 +16,33 @@ Key functions:
     - fit_grid_full: 3D grid over datasets x hyperparameters x num_terms
     - find_best_config: Find best configuration in a grid
     - extract_best_from_grid: Extract best result from grid for a dataset
+
+Every grid result says which fits are valid distributions: ``GridResult.feasible``
+is True where ``M'(y) >= 0`` on all of (0, 1), decided exactly by
+``check_feasibility`` (Baucells et al. 2025, Proposition 5 with Algorithm 1). OLS and
+Lasso fits can be infeasible, and an infeasible fit's KS distance doesn't compare two
+distributions, so find_best_config and extract_best_from_grid skip infeasible fits.
+The grids that fit with fit() (fit_grid_datasets, fit_grid_hyperparams and
+fit_grid_datasets_hyperparams) raise for an infeasible fit by default; pass
+``on_infeasible="flag"`` to get every fit with the infeasible ones marked instead.
 """
 # Copyright: Travis Jefferies 2026
 
 from collections.abc import Sequence
-from typing import Any
+from functools import partial
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
+from jax.experimental import checkify
 
 from metalog_jax.base import (
     MetalogBaseData,
     MetalogParameters,
 )
 from metalog_jax.base.enums import MetalogFitMethod
-from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, fit
+from metalog_jax.feasibility import Engine, check_feasibility, get_engine
+from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, _fit_coefficients
 from metalog_jax.regression import LassoParameters, RegularizedParameters
 from metalog_jax.regression.lasso import fit_lasso
 from metalog_jax.regression.ols import fit_ordinary_least_squares
@@ -42,6 +54,141 @@ MAX_TERMS = 30
 
 # Fit methods that support a traced (vmapped) number of terms
 _GRID_METHODS = (MetalogFitMethod.OLS, MetalogFitMethod.Lasso)
+
+# What the grids that call fit() do when a fit is infeasible
+OnInfeasible = Literal["raise", "flag"]
+_ON_INFEASIBLE = ("raise", "flag")
+
+_INFEASIBLE_MESSAGE = (
+    "Some grid fits are infeasible: M'(y) < 0 somewhere in (0, 1), so they aren't "
+    "valid distributions. They're the False entries of feasible = {feasible}. Pass "
+    "on_infeasible='flag' to get every fit, with GridResult.feasible marking these."
+)
+
+
+@partial(jax.jit, static_argnums=0)
+def _check_rows(engine: Engine, a: jnp.ndarray) -> jnp.ndarray:
+    """Return check_feasibility(engine, row).feasible for each row of a."""
+    return jax.vmap(lambda row: check_feasibility(engine, row).feasible)(a)
+
+
+def _with_feasibility(result: GridResult) -> GridResult:
+    """Fill in ``result.feasible`` with check_feasibility of every fit.
+
+    Grids zero-pad each fit's coefficients to the largest term count, which doesn't
+    change its quantile function, so that count's engine checks every fit. The fits
+    are checked in one jitted call. Their count is rounded up, to a power of two or
+    past 1024 to a multiple of 1024, so that grids of similar sizes share a
+    compilation without padding a large grid by much.
+
+    Args:
+        result: A grid result, with coefficients of shape (*batch, num_terms).
+
+    Returns:
+        GridResult: The result, with ``feasible`` of shape ``batch``.
+    """
+    a = result.metalog.a
+    rows = a.reshape(-1, a.shape[-1])
+    n = rows.shape[0]
+    padded = 1 << max(n - 1, 0).bit_length() if n <= 1024 else -(-n // 1024) * 1024
+    rows = jnp.pad(rows, ((0, padded - n), (0, 0)), mode="edge")
+    feasible = _check_rows(get_engine(a.shape[-1]), rows)[:n]
+    return result.replace(feasible=feasible.reshape(a.shape[:-1]))
+
+
+def _check_on_infeasible(on_infeasible: OnInfeasible) -> None:
+    """Raise ValueError unless ``on_infeasible`` is "raise" or "flag".
+
+    Args:
+        on_infeasible: The value passed to a grid function.
+
+    Raises:
+        ValueError: For any other value.
+    """
+    if on_infeasible not in _ON_INFEASIBLE:
+        raise ValueError(
+            f"on_infeasible must be 'raise' or 'flag', not {on_infeasible!r}"
+        )
+
+
+def _score_fit(metalog: Metalog, x: jnp.ndarray, y: jnp.ndarray) -> GridResult:
+    """Score a fit by its KS distance at y, without checking its density.
+
+    ppf checks the density, and under vmap one infeasible fit would raise for the
+    whole batch. _with_feasibility marks infeasible fits instead.
+
+    Args:
+        metalog: A fitted metalog, possibly infeasible.
+        x: The dataset's quantiles at y.
+        y: The dataset's probability levels.
+
+    Returns:
+        GridResult: The fit and its KS distance.
+    """
+    y = jnp.asarray(y, dtype=jnp.result_type(y, metalog.a))
+    fitted = Metalog.inverse_quantile_transform(
+        metalog._ppf(y, metalog.num_terms),
+        metalog.boundedness,
+        metalog.lower_bound,
+        metalog.upper_bound,
+    )
+    return GridResult(metalog=metalog, ks_dist=ks_distance(x, fitted))
+
+
+def _resolve_infeasible(
+    result: GridResult, method: MetalogFitMethod, on_infeasible: OnInfeasible
+) -> GridResult:
+    """Mark each fit's feasibility, and raise if any is infeasible unless flagging.
+
+    MetalogFitMethod.Feasible certifies each fit with the same check_feasibility
+    test, and raises if it can't, so its fits are marked feasible without checking
+    them again.
+
+    Args:
+        result: The vmapped fits from fit_grid_datasets or a hyperparameter grid.
+        method: The fit method.
+        on_infeasible: "raise" to raise if any fit is infeasible, "flag" to return.
+
+    Returns:
+        GridResult: The result, with ``feasible`` filled in.
+
+    Raises:
+        checkify.JaxRuntimeError: If ``on_infeasible`` is "raise" and any fit is
+            infeasible. The message shows the feasibility mask.
+    """  # noqa: DOC502
+    if method == MetalogFitMethod.Feasible:
+        return result.replace(feasible=jnp.ones(result.ks_dist.shape, dtype=bool))
+    result = _with_feasibility(result)
+    if on_infeasible == "raise":
+        checkify.check(
+            jnp.all(result.feasible), _INFEASIBLE_MESSAGE, feasible=result.feasible
+        )
+    return result
+
+
+def _require_a_feasible_fit(feasible: jnp.ndarray, where: str) -> None:
+    """Raise if no entry of ``feasible`` is True, when it can be tested.
+
+    Under jit or vmap the mask is traced and can't be tested in Python, so the
+    selection functions return an infinite KS distance instead.
+
+    Args:
+        feasible: Feasibility of the fits to choose from.
+        where: Which fits they are, for the message, such as "for dataset 2".
+
+    Raises:
+        ValueError: If every fit is infeasible.
+    """
+    try:
+        found = bool(jnp.any(feasible))
+    except jax.errors.ConcretizationTypeError:  # traced
+        return
+    if not found:
+        raise ValueError(
+            f"No configuration {where} is feasible: every fit has M'(y) < 0 "
+            "somewhere in (0, 1). Try fewer terms, larger L1 penalties, or "
+            "MetalogFitMethod.Feasible with fit_grid_datasets."
+        )
 
 
 def _check_grid_method(method: MetalogFitMethod) -> None:
@@ -356,7 +503,9 @@ def fit_grid(
         momentum: Momentum for Lasso optimizer. Default: 0.9.
 
     Returns:
-        GridResult with metalog fits and KS distances. Shape depends on active axes.
+        GridResult with metalog fits, KS distances and ``feasible``, whether each fit
+        is a valid distribution. Shape depends on active axes. Pass ``feasible`` to
+        find_best_config so that it skips infeasible fits.
 
     Raises:
         ValueError: If params.method is MetalogFitMethod.Feasible, which cannot run
@@ -385,9 +534,10 @@ def fit_grid(
     )
 
     # Apply the appropriate vmap structure
-    return _apply_grid_vmaps(
+    result = _apply_grid_vmaps(
         fit_fn, x, y, l1_array, num_terms_array, has_datasets, has_l1, has_num_terms
     )
+    return _with_feasibility(result)
 
 
 def stack_leaves(*leaves: jnp.ndarray) -> jnp.ndarray:
@@ -489,6 +639,8 @@ def fit_grid_datasets(
     params: MetalogParameters,
     fit_params: RegularizedParameters | None = None,
     precomputed_quantiles: bool = False,
+    *,
+    on_infeasible: OnInfeasible = "raise",
 ) -> GridResult:
     """Fit multiple datasets with shared parameters using vmap.
 
@@ -502,22 +654,32 @@ def fit_grid_datasets(
         params: MetalogParameters shared across all fits.
         fit_params: Optional regularization parameters (e.g., LassoParameters).
         precomputed_quantiles: Whether x values are precomputed quantiles.
+        on_infeasible: What to do if an OLS or Lasso fit is infeasible. "raise"
+            raises for the batch, naming the infeasible fits; "flag" returns every
+            fit, with ``feasible`` False for the infeasible ones. Feasible fits are
+            always valid.
 
     Returns:
         GridResult with batched results:
             - metalog.a: Coefficients of shape (n_datasets, num_terms)
             - ks_dist: KS distances of shape (n_datasets,)
-    """
+            - feasible: Whether each fit is a valid distribution, shape (n_datasets,)
+
+    Raises:
+        ValueError: If ``on_infeasible`` isn't "raise" or "flag".
+        checkify.JaxRuntimeError: If ``on_infeasible`` is "raise" and a fit is
+            infeasible.
+    """  # noqa: DOC502
+    _check_on_infeasible(on_infeasible)
 
     def fit_single_dataset(x: jnp.ndarray, y: jnp.ndarray) -> GridResult:
         data = MetalogBaseData(x=x, y=y, precomputed_quantiles=precomputed_quantiles)
-        metalog = fit(data, params, fit_params)
-        fitted_quantiles = metalog.ppf(y)
-        ks_dist = ks_distance(x, fitted_quantiles)
-        return GridResult(metalog=metalog, ks_dist=ks_dist)
+        return _score_fit(_fit_coefficients(data, params, fit_params), x, y)
 
     vmapped_fit = jax.vmap(fit_single_dataset, in_axes=(0, 0))
-    return vmapped_fit(batched_x, batched_y)
+    return _resolve_infeasible(
+        vmapped_fit(batched_x, batched_y), params.method, on_infeasible
+    )
 
 
 def fit_grid_hyperparams(
@@ -528,6 +690,8 @@ def fit_grid_hyperparams(
     num_iters: int = 500,
     tol: float = 1e-6,
     momentum: float = 0.9,
+    *,
+    on_infeasible: OnInfeasible = "raise",
 ) -> GridResult:
     """Fit a single dataset with a grid of L1 penalty values (Lasso).
 
@@ -542,12 +706,22 @@ def fit_grid_hyperparams(
         num_iters: Maximum iterations for Lasso. Default: 500.
         tol: Convergence tolerance for Lasso. Default: 1e-6.
         momentum: Momentum for Lasso optimizer. Default: 0.9.
+        on_infeasible: What to do if a fit is infeasible. "raise" raises for the
+            grid, naming the infeasible fits; "flag" returns every fit, with
+            ``feasible`` False for the infeasible ones.
 
     Returns:
         GridResult with batched results:
             - metalog.a: Coefficients of shape (n_penalties, num_terms)
             - ks_dist: KS distances of shape (n_penalties,)
-    """
+            - feasible: Whether each fit is a valid distribution, shape (n_penalties,)
+
+    Raises:
+        ValueError: If ``on_infeasible`` isn't "raise" or "flag".
+        checkify.JaxRuntimeError: If ``on_infeasible`` is "raise" and a fit is
+            infeasible.
+    """  # noqa: DOC502
+    _check_on_infeasible(on_infeasible)
 
     def fit_with_penalty(l1_penalty: jnp.ndarray) -> GridResult:
         lasso_params = LassoParameters(
@@ -557,13 +731,11 @@ def fit_grid_hyperparams(
             tol=tol,
             momentum=momentum,
         )
-        metalog = fit(data, params, lasso_params)
-        fitted_quantiles = metalog.ppf(data.y)
-        ks_dist = ks_distance(data.x, fitted_quantiles)
-        return GridResult(metalog=metalog, ks_dist=ks_dist)
+        metalog = _fit_coefficients(data, params, lasso_params)
+        return _score_fit(metalog, data.x, data.y)
 
     vmapped_fit = jax.vmap(fit_with_penalty)
-    return vmapped_fit(l1_penalties)
+    return _resolve_infeasible(vmapped_fit(l1_penalties), params.method, on_infeasible)
 
 
 def fit_grid_datasets_hyperparams(
@@ -576,6 +748,8 @@ def fit_grid_datasets_hyperparams(
     num_iters: int = 500,
     tol: float = 1e-6,
     momentum: float = 0.9,
+    *,
+    on_infeasible: OnInfeasible = "raise",
 ) -> GridResult:
     """Fit multiple datasets with a grid of L1 penalty values (Lasso).
 
@@ -592,12 +766,23 @@ def fit_grid_datasets_hyperparams(
         num_iters: Maximum iterations for Lasso. Default: 500.
         tol: Convergence tolerance for Lasso. Default: 1e-6.
         momentum: Momentum for Lasso optimizer. Default: 0.9.
+        on_infeasible: What to do if a fit is infeasible. "raise" raises for the
+            grid, naming the infeasible fits; "flag" returns every fit, with
+            ``feasible`` False for the infeasible ones.
 
     Returns:
         GridResult with batched results:
             - metalog.a: Coefficients of shape (n_datasets, n_penalties, num_terms)
             - ks_dist: KS distances of shape (n_datasets, n_penalties)
-    """
+            - feasible: Whether each fit is a valid distribution, shape
+              (n_datasets, n_penalties)
+
+    Raises:
+        ValueError: If ``on_infeasible`` isn't "raise" or "flag".
+        checkify.JaxRuntimeError: If ``on_infeasible`` is "raise" and a fit is
+            infeasible.
+    """  # noqa: DOC502
+    _check_on_infeasible(on_infeasible)
 
     def fit_dataset_with_penalty(
         x: jnp.ndarray, y: jnp.ndarray, l1_penalty: jnp.ndarray
@@ -610,10 +795,7 @@ def fit_grid_datasets_hyperparams(
             momentum=momentum,
         )
         data = MetalogBaseData(x=x, y=y, precomputed_quantiles=precomputed_quantiles)
-        metalog = fit(data, params, lasso_params)
-        fitted_quantiles = metalog.ppf(y)
-        ks_dist = ks_distance(x, fitted_quantiles)
-        return GridResult(metalog=metalog, ks_dist=ks_dist)
+        return _score_fit(_fit_coefficients(data, params, lasso_params), x, y)
 
     # First vmap over penalties
     vmapped_over_penalties = jax.vmap(fit_dataset_with_penalty, in_axes=(None, None, 0))
@@ -624,7 +806,9 @@ def fit_grid_datasets_hyperparams(
         in_axes=(0, 0),
     )
 
-    return vmapped_over_both(batched_x, batched_y)
+    return _resolve_infeasible(
+        vmapped_over_both(batched_x, batched_y), params.method, on_infeasible
+    )
 
 
 def _pad_coeffs_for_stacking(
@@ -710,6 +894,7 @@ def fit_grid_num_terms(
         GridResult with batched results:
             - metalog.a: Coefficients of shape (n_terms, max_terms)
             - ks_dist: KS distances of shape (n_terms,)
+            - feasible: Whether each fit is a valid distribution, shape (n_terms,)
 
         Where max_terms = max(num_terms_list) and coefficients for smaller term
         counts are zero-padded.
@@ -747,7 +932,7 @@ def fit_grid_num_terms(
 
     # vmap over num_terms
     vmapped_fit = jax.vmap(fit_single_num_terms)
-    return vmapped_fit(num_terms_array)
+    return _with_feasibility(vmapped_fit(num_terms_array))
 
 
 def fit_grid_datasets_num_terms(
@@ -783,6 +968,8 @@ def fit_grid_datasets_num_terms(
         GridResult with batched results:
             - metalog.a: Coefficients of shape (n_datasets, n_terms, max_terms)
             - ks_dist: KS distances of shape (n_datasets, n_terms)
+            - feasible: Whether each fit is a valid distribution, shape
+              (n_datasets, n_terms)
 
         Where max_terms = max(num_terms_list) and coefficients for smaller term
         counts are zero-padded.
@@ -824,7 +1011,7 @@ def fit_grid_datasets_num_terms(
         lambda x, y: vmapped_over_terms(x, y, num_terms_array), in_axes=(0, 0)
     )
 
-    return vmapped_over_all(batched_x, batched_y)
+    return _with_feasibility(vmapped_over_all(batched_x, batched_y))
 
 
 def fit_grid_full(
@@ -871,6 +1058,8 @@ def fit_grid_full(
         GridResult with batched results:
             - metalog.a: Coefficients of shape (n_datasets, n_penalties, n_terms, max_terms)
             - ks_dist: KS distances of shape (n_datasets, n_penalties, n_terms)
+            - feasible: Whether each fit is a valid distribution, shape
+              (n_datasets, n_penalties, n_terms)
 
         Where max_terms = max(num_terms_list) and coefficients for smaller term
         counts are zero-padded.
@@ -924,22 +1113,34 @@ def fit_grid_full(
 
     # Execute the fully vmapped function
     # Result shape: (n_datasets, n_penalties, n_terms, ...)
-    return vmapped_over_all(batched_x, batched_y)
+    return _with_feasibility(vmapped_over_all(batched_x, batched_y))
 
 
-def find_best_config(ks_dists: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+def find_best_config(
+    ks_dists: jnp.ndarray, feasible: jnp.ndarray | None = None
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Find the best configuration (minimum KS distance) in a grid.
 
-    Works with grids of any dimensionality (1D, 2D, 3D, etc.).
+    Works with grids of any dimensionality (1D, 2D, 3D, etc.). Pass the grid's
+    ``feasible`` mask so that infeasible fits, whose KS distances don't compare two
+    distributions, can't be chosen: their KS distances count as infinite.
 
     Args:
         ks_dists: Array of KS distances with shape (d1, d2, ..., dn).
+        feasible: Optional mask of the same shape, such as ``GridResult.feasible``.
 
     Returns:
         Tuple of (best_indices, best_ks) where:
             - best_indices: Indices of the minimum, shape (n,) for n dimensions
-            - best_ks: Minimum KS distance value (scalar)
-    """
+            - best_ks: Minimum KS distance value (scalar); infinite under jit or
+              vmap if no fit is feasible
+
+    Raises:
+        ValueError: If ``feasible`` is given and no fit is feasible.
+    """  # noqa: DOC502
+    if feasible is not None:
+        _require_a_feasible_fit(feasible, "in the grid")
+        ks_dists = jnp.where(feasible, ks_dists, jnp.inf)
     flat_idx = jnp.argmin(ks_dists)
     best_idx = jnp.unravel_index(flat_idx, ks_dists.shape)
     best_ks = ks_dists[best_idx]
@@ -956,8 +1157,9 @@ def extract_best_from_grid(
 ) -> GridResult:
     """Extract the best result from a grid for a specific dataset.
 
-    Finds the configuration with minimum KS distance for the given dataset
-    and extracts the corresponding metalog and KS distance.
+    Finds the feasible configuration with minimum KS distance for the given
+    dataset and extracts the corresponding metalog and KS distance. Infeasible fits,
+    marked by ``grid_results.feasible``, can't be chosen.
 
     Args:
         grid_results: GridResult from fit_grid_datasets_hyperparams or fit_grid_full.
@@ -968,10 +1170,20 @@ def extract_best_from_grid(
     Returns:
         GridResult with:
             - metalog: Best metalog for this dataset
-            - ks_dist: Corresponding KS distance (scalar)
-    """
-    # Get KS distances for this dataset
+            - ks_dist: Corresponding KS distance (scalar); infinite under jit or vmap
+              if none of the dataset's fits is feasible
+            - feasible: Whether that fit is feasible, or None if the grid has no
+              ``feasible`` mask
+
+    Raises:
+        ValueError: If none of the dataset's fits is feasible.
+    """  # noqa: DOC502
+    # Get KS distances for this dataset, with infeasible fits ruled out
     dataset_ks = grid_results.ks_dist[dataset_idx]
+    feasible = grid_results.feasible
+    if feasible is not None:
+        _require_a_feasible_fit(feasible[dataset_idx], f"for dataset {dataset_idx}")
+        dataset_ks = jnp.where(feasible[dataset_idx], dataset_ks, jnp.inf)
 
     # Find best configuration within this dataset's grid
     flat_idx = jnp.argmin(dataset_ks)
@@ -984,8 +1196,9 @@ def extract_best_from_grid(
         lambda x: x[full_idx],
         grid_results.metalog,
     )
-    best_ks = grid_results.ks_dist[full_idx]
-    return GridResult(metalog=best_metalog, ks_dist=best_ks)
+    best_ks = dataset_ks[tuple(best_idx)]
+    best_feasible = None if feasible is None else feasible[full_idx]
+    return GridResult(metalog=best_metalog, ks_dist=best_ks, feasible=best_feasible)
 
 
 def extract_metalog(grid_result: GridResult, *indices: int) -> Metalog:

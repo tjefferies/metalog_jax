@@ -13,6 +13,10 @@ on:
     secrets:
       CODECOV_TOKEN:
         required: false
+    outputs:
+      python-versions:
+        description: The Python versions CI tests, as a JSON list, oldest first
+        value: ${{ jobs.python-versions.outputs.versions }}
 
 permissions:
   contents: read
@@ -21,6 +25,42 @@ env:
   UV_CACHE_DIR: .uv-cache
 
 jobs:
+  # === SETUP ===
+
+  python-versions:
+    # The Python versions to test are the ones the classifiers in pyproject.toml
+    # declare. The pytest matrix reads them here, and Release passes them on to the
+    # Docker stage, so adding a classifier adds a test run and an image.
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.classifiers.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: pyproject.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Read the Python classifiers
+        id: classifiers
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              classifiers = tomllib.load(f)["project"]["classifiers"]
+          pattern = r"Programming Language :: Python :: (3\.\d+)"
+          matches = (re.fullmatch(pattern, c) for c in classifiers)
+          versions = sorted((m[1] for m in matches if m), key=lambda v: int(v[2:]))
+          if not versions:
+              raise SystemExit("pyproject.toml has no Programming Language :: Python :: 3.x classifiers")
+          print("Python versions:", versions)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"versions={json.dumps(versions)}\n")
+
   # === LINT STAGE ===
 
   ruff:
@@ -30,7 +70,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Check formatting
@@ -46,7 +86,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Maintainability Index
@@ -80,7 +120,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Check complexity thresholds
@@ -93,7 +133,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Check docstring coverage
@@ -106,7 +146,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Check docstrings
@@ -119,7 +159,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Audit workflows
@@ -134,7 +174,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Type check
@@ -145,16 +185,17 @@ jobs:
   pytest:
     # Equivalent to: stages/test.yml → pytest job
     # Every supported Python; coverage settings live in [tool.coverage] in pyproject.toml
+    needs: python-versions
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ${{ fromJSON(needs.python-versions.outputs.versions) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --all-groups
@@ -189,7 +230,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Run docstring examples
@@ -203,7 +244,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Test with the lowest allowed dependency versions
         run: uv run --isolated --resolution lowest-direct --python 3.11 --group test pytest tests/
@@ -223,7 +264,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pandoc
 
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Build documentation
@@ -239,7 +280,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Execute notebooks
@@ -260,7 +301,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Check licenses
@@ -289,7 +330,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Run Semgrep scan
@@ -330,7 +371,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Run Bandit scan
@@ -361,7 +402,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv sync --locked --all-groups
 
       - name: Install Syft and Grype
@@ -404,7 +445,7 @@ jobs:
   quality-gate:
     # This job only passes if ALL parallel jobs succeed. Pull requests require it as
     # the quality-gate status check; in a release, Build waits for it.
-    needs: [ruff, radon, xenon, interrogate, pydoclint, zizmor, ty, pytest, doctest, lowest-deps, docs, notebooks, license-check, semgrep, bandit, sbom]
+    needs: [python-versions, ruff, radon, xenon, interrogate, pydoclint, zizmor, ty, pytest, doctest, lowest-deps, docs, notebooks, license-check, semgrep, bandit, sbom]
     runs-on: ubuntu-latest
     steps:
       - name: All quality checks passed

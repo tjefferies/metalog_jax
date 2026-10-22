@@ -33,3 +33,6 @@ sbom-spdx.json
 # marimo
 __marimo__/
 coverage.xml
+
+# local release helper
+publish.sh

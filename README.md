@@ -186,6 +186,23 @@ print(f"95th percentile: {float(metalog.ppf(jnp.array([0.95]))[0]):.1f} ms")
 print(f"99th percentile: {float(metalog.ppf(jnp.array([0.99]))[0]):.1f} ms")
 ```
 
+Printing the model shows its fitted quantile function. Each coefficient multiplies one basis function (Keelin 2016, Definition 1), and the lower bound L maps M(y) back to the support as Q(y) = L + exp(M(y)). `print(metalog)` gives one line with 6 significant digits, `repr(metalog)` the same line at full precision, and `metalog.print()` one term per line:
+
+```pycon
+>>> print(metalog)
+Metalog(5 terms, Feasible, lower bound 0): Q(y) = 0 + exp(M(y)), M(y) = 4.66017 + 0.0937228 ln(y/(1-y)) + 0.00501658 (y - 0.5) ln(y/(1-y)) + 1.98537 (y - 0.5) + 2.55863 (y - 0.5)^2
+>>> metalog.print()
+Metalog: 5 terms, Feasible, lower bound 0
+  Q(y) = 0 + exp(M(y))
+  M(y) = 4.66017
+         + 0.0937228 ln(y/(1-y))
+         + 0.00501658 (y - 0.5) ln(y/(1-y))
+         + 1.98537 (y - 0.5)
+         + 2.55863 (y - 0.5)^2
+```
+
+`metalog.print()` takes options: `header=False` leaves out the first line, `q=False` or `m=False` prints only M(y) or only Q(y), `verbose=True` writes Q(y) with M(y)'s terms in place of M(y), `precision` sets the significant digits, and `file` writes somewhere other than standard output. In Jupyter, a bare `metalog` renders the equation as typeset math.
+
 ### Working with Bounded Data
 
 Metalog natively supports four boundedness types:
@@ -232,6 +249,32 @@ params = MetalogParameters(
     method=MetalogFitMethod.Feasible,
     num_terms=5,
 )
+```
+
+Each type maps the metalog's M(y) back to its support: Q(y) = L + exp(M(y)) for a lower bound, U - exp(-M(y)) for an upper bound, and (L + U exp(M(y))) / (1 + exp(M(y))) for both. `print` shows the mapping, and with `verbose=True` it substitutes M(y)'s terms into Q(y), which uses M(y) twice when bounded:
+
+```pycon
+>>> samples = jnp.array([1.2, 2.3, 2.8, 3.5, 4.1, 5.6, 6.2, 7.8, 9.1, 10.5])
+>>> data = MetalogInputData.from_values(samples, DEFAULT_Y, precomputed_quantiles=False)
+>>> bounded = fit(data, MetalogParameters(
+...     boundedness=MetalogBoundedness.BOUNDED,
+...     lower_bound=0.0,
+...     upper_bound=15.0,
+...     method=MetalogFitMethod.Feasible,
+...     num_terms=5,
+... ))
+>>> bounded.print()
+Metalog: 5 terms, Feasible, bounded on (0, 15)
+  Q(y) = (0 + 15 exp(M(y))) / (1 + exp(M(y)))
+  M(y) = -0.754464
+         + 0.0719273 ln(y/(1-y))
+         - 0.110759 (y - 0.5) ln(y/(1-y))
+         + 2.45794 (y - 0.5)
+         + 1.1187 (y - 0.5)^2
+>>> bounded.print(m=False, verbose=True)
+Metalog: 5 terms, Feasible, bounded on (0, 15)
+  Q(y) = (0 + 15 exp(-0.754464 + 0.0719273 ln(y/(1-y)) - 0.110759 (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5) + 1.1187 (y - 0.5)^2))
+         / (1 + exp(-0.754464 + 0.0719273 ln(y/(1-y)) - 0.110759 (y - 0.5) ln(y/(1-y)) + 2.45794 (y - 0.5) + 1.1187 (y - 0.5)^2))
 ```
 
 ### Choosing a Fit Method
@@ -340,7 +383,7 @@ also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_dark.svg">
-  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid is about 20 times faster but does not check validity. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
+  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid, measured before it checked validity, is about 20 times faster. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
 </picture>
 
 Measured with `fit_grid_datasets` on a **MacBook Pro (Apple M3, 8 cores: 4 performance
@@ -379,10 +422,13 @@ per dataset is:
   5,000-10,000 datasets per chunk was the fastest per dataset here, memory stays flat
   (50,000 datasets in chunks of 5,000 peaked at 1.4 GB), and every chunk reuses one
   compiled shape. Pad the last chunk to the same size to avoid a recompile.
-- **OLS for comparison:** `fit_grid` with OLS is about 20 times faster (0.09 ms per
-  dataset) but does not check validity. At 10 terms, 65% of these datasets' OLS fits
-  are invalid distributions, and `fit_grid_datasets` with OLS raises for the whole batch
-  if any one fit is invalid.
+- **OLS for comparison:** `fit_grid` with OLS fits in about 0.09 ms per dataset, 20
+  times faster, and checking each fit's validity for its `feasible` mask brings that to
+  about 0.19 ms (at 5,000 datasets, with JAX 0.11.2; the chart's OLS line was measured
+  before `fit_grid` checked validity). At 10 terms, 65% of these datasets' OLS fits are
+  invalid distributions. `fit_grid_datasets` with OLS raises if any fit is invalid,
+  showing which; pass `on_infeasible="flag"` to get every fit with the invalid ones
+  marked.
 
 GPU performance was not measured. To reproduce, or to rerun on your own hardware:
 
@@ -449,6 +495,13 @@ spt_metalog = fit_spt_metalog(response_times, spt_params)
 print(f"SPT Median: {float(spt_metalog.ppf(jnp.array([0.5]))[0]):.1f}")
 ```
 
+An SPT metalog prints its alpha where a regression fit prints its fit method:
+
+```pycon
+>>> print(spt_metalog)
+SPTMetalog(3 terms, alpha = 0.1, lower bound 0): Q(y) = 0 + exp(M(y)), M(y) = 4.68675 + 0.479791 ln(y/(1-y)) + 0.475034 (y - 0.5) ln(y/(1-y))
+```
+
 If you already have the three quantiles, for example an expert's 10th, 50th and 90th percentile estimates, pass them directly. Without `precomputed_quantiles=True`, three values are treated as data and interpolated, so the fit wouldn't pass through them.
 
 ```python
@@ -489,6 +542,11 @@ skewness = metalog.skewness
 kurtosis = metalog.kurtosis  # Pearson (normal = 3); subtract 3 for excess kurtosis
 mode = metalog.mode
 median = metalog.median
+
+# The fitted quantile function
+print(metalog)                # one line, 6 significant digits
+repr(metalog)                 # the same line at full precision
+metalog.print(verbose=True)   # one term per line, with options (see Quick Start)
 ```
 
 Mean, variance, standard deviation, skewness and kurtosis are exact (closed form)
@@ -581,6 +639,15 @@ automatically detecting which axes to search based on inputs. It supports the OL
 LASSO fit methods and raises a `ValueError` for `MetalogFitMethod.Feasible`; use `fit`
 for one dataset or `fit_grid_datasets` to fit a batch of datasets with `Feasible`.
 
+OLS and LASSO fits can be infeasible: their quantile function decreases somewhere, so
+they aren't valid distributions, and their KS distance doesn't compare two
+distributions. Every grid result has a `feasible` mask, the same shape as `ks_dist`,
+from the exact `check_feasibility` test. Pass it to `find_best_config` so that only
+valid fits can be chosen; `extract_best_from_grid` uses it automatically. The grids
+that call `fit()` (`fit_grid_datasets`, `fit_grid_hyperparams` and
+`fit_grid_datasets_hyperparams`) raise if any fit is infeasible, showing which;
+`on_infeasible="flag"` returns every fit with the infeasible ones marked instead.
+
 #### Grid Search over L1 Penalties
 
 ```python
@@ -610,8 +677,8 @@ params = MetalogParameters(
 l1_penalties = jnp.array([0.0, 0.001, 0.01, 0.1])
 result = fit_grid(data.x, data.y, params, l1_penalties=l1_penalties)
 
-# Find the best configuration
-best_idx, best_ks = find_best_config(result.ks_dist)
+# Find the best valid configuration
+best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
 print(f"Best L1 penalty: {float(l1_penalties[int(best_idx)]):.4f}")
 print(f"Best KS distance: {float(best_ks):.4f}")
 
@@ -658,8 +725,8 @@ result = fit_grid(
 # Result shape is (len(l1_penalties), len(num_terms_list))
 print(f"Grid shape: {result.ks_dist.shape}")  # (3, 3)
 
-# Find the best configuration
-best_idx, best_ks = find_best_config(result.ks_dist)
+# Find the best valid configuration
+best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
 best_l1_idx, best_terms_idx = int(best_idx[0]), int(best_idx[1])
 print(f"Best L1 penalty: {float(l1_penalties[best_l1_idx]):.4f}")
 print(f"Best num_terms: {num_terms_list[best_terms_idx]}")
@@ -717,7 +784,7 @@ print(f"Grid shape: {result.ks_dist.shape}")  # (3, 2, 2)
 # Find best configuration for each dataset and extract the metalog
 dataset_names = ["left-skewed", "right-skewed", "symmetric"]
 for d, name in enumerate(dataset_names):
-    best_idx, best_ks = find_best_config(result.ks_dist[d])
+    best_idx, best_ks = find_best_config(result.ks_dist[d], result.feasible[d])
     best_l1_idx, best_terms_idx = int(best_idx[0]), int(best_idx[1])
 
     # Extract the best metalog for this dataset
