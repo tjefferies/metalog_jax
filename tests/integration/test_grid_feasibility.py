@@ -48,13 +48,9 @@ def params(method, num_terms, boundedness=UNBOUNDED, lower=0.0, upper=0.0):
     )
 
 
-# Eager check_feasibility takes about a second; compiled, a millisecond
-_certify = jax.jit(check_feasibility, static_argnums=0)
-
-
 def certified(a, num_terms):
     """Whether check_feasibility certifies the first num_terms coefficients."""
-    return bool(_certify(get_engine(num_terms), a[:num_terms]).feasible)
+    return bool(check_feasibility(get_engine(num_terms), a[:num_terms]).feasible)
 
 
 class GridFeasibilityTest(parameterized.TestCase):

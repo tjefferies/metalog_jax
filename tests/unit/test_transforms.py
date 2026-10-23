@@ -6,12 +6,15 @@ inside transforms use checkify, so jitted calls are wrapped in checkify.checkify
 """
 # Copyright: Travis Jefferies 2026
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 from jax.experimental import checkify
 
+from metalog_jax import feasibility
 from metalog_jax.base import (
     MetalogBoundedness,
     MetalogFitMethod,
@@ -27,6 +30,30 @@ from metalog_jax.utils import (
     HDRPRNGParameters,
     JaxUniformDistributionParameters,
 )
+
+
+class _CompileCounter:
+    """Count XLA compilations, from the event jax.monitoring records for each.
+
+    jax 0.8.0, the oldest supported version, can't unregister a listener, so one
+    counter is registered for the whole test session.
+    """
+
+    EVENT = "/jax/core/compile/backend_compile_duration"
+
+    def __init__(self):
+        """Register the listener."""
+        self.count = 0
+        jax.monitoring.register_event_duration_secs_listener(self._record)
+
+    def _record(self, event, duration, **kwargs):
+        """Count a compilation event."""
+        del duration, kwargs
+        if event == self.EVENT:
+            self.count += 1
+
+
+_COMPILES = _CompileCounter()
 
 
 class TransformTestBase(parameterized.TestCase):
@@ -451,6 +478,61 @@ class StaticFieldsTest(TransformTestBase):
         self.assertEqual(loaded, m)
         self.assertIs(loaded.boundedness, boundedness)
         self.assertEqual(m.dumps(), saved)
+
+
+class CompileOnceTest(TransformTestBase):
+    """Regression tests for issue #48: calling a method again doesn't recompile.
+
+    pdf, rvs and Lasso fits used to define their jitted functions on every call, so
+    every call recompiled them. pdf took about 15 ms a call, and ppf, cdf and fit
+    paid it too, through assert_fitted.
+    """
+
+    def _assert_no_recompile(self, call):
+        """After a first call, which may compile, two more calls compile nothing."""
+        jax.block_until_ready(call())
+        before = _COMPILES.count
+        for _ in range(2):
+            jax.block_until_ready(call())
+        self.assertEqual(_COMPILES.count - before, 0)
+
+    @parameterized.named_parameters(*TransformTestBase.FIT_CASES)
+    def test_fit_and_methods_compile_once(self, boundedness, lower, upper, method):
+        """Fitting and each method compile once for a model, not on every call."""
+        data = self._data()
+        params = self._params(boundedness, lower, upper, method)
+        m = fit(data, params)
+        calls = {
+            "fit": lambda: fit(data, params).a,
+            **{name: partial(f, m, v) for name, f, v in self._methods()},
+            "cdf of a float": lambda: m.cdf(5.0),
+            "mode": lambda: m.mode,
+            "mean": lambda: m.mean,
+            "rvs with jax.random": lambda: m.rvs(
+                MetalogRandomVariableParameters(
+                    prng_params=JaxUniformDistributionParameters(seed=0), size=10
+                )
+            ),
+            "rvs with HDR": lambda: m.rvs(
+                MetalogRandomVariableParameters(
+                    prng_params=HDRPRNGParameters(), size=10
+                )
+            ),
+        }
+        for name, call in calls.items():
+            with self.subTest(name):
+                self._assert_no_recompile(call)
+
+    @parameterized.parameters("check_feasibility", "is_feasible", "highest_mode")
+    def test_feasibility_functions_are_jitted(self, name):
+        """They're jitted with the engine static; eagerly they took about 2 s a call."""
+        fn = getattr(feasibility, name)
+        engine = get_engine(5)
+        a = jnp.array([1.0, 1.0, 0.1, 0.1, 0.1])
+
+        fn.lower(engine, a)  # only jitted functions have lower
+
+        self._assert_no_recompile(lambda: fn(engine, a))
 
 
 if __name__ == "__main__":

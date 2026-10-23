@@ -73,6 +73,42 @@ from metalog_jax.utils import (
 T_MetalogBase = TypeVar("T_MetalogBase", bound="MetalogBase")
 
 
+# The rvs index draws are module level: defined inside rvs, each would be a new
+# function on every call, and jax.jit would recompile it every time.
+@partial(jax.jit, static_argnames=["size", "maxval"])
+def _hdr_indices(prng_params: HDRPRNGParameters, size: int, maxval: int) -> chex.Array:
+    """Draw size indices into a table of maxval values with the HDR PRNG.
+
+    Args:
+        prng_params: HDR parameters; draw i uses trial ``prng_params.trial + i``.
+        size: Number of draws.
+        maxval: Length of the table.
+
+    Returns:
+        chex.Array: Integer indices, shape (size,).
+    """
+    trials = prng_params.trial + jnp.arange(size, dtype=int)
+    draws = jax.vmap(lambda trial: hdrprng(prng_params.replace(trial=trial)))(trials)
+    return (draws * (maxval - 1)).astype(int)
+
+
+@partial(jax.jit, static_argnames=["size", "maxval"])
+def _jax_indices(key: chex.PRNGKey, size: int, maxval: int) -> chex.Array:
+    """Draw size indices into a table of maxval values with jax.random.
+
+    Args:
+        key: PRNG key.
+        size: Number of draws.
+        maxval: Length of the table.
+
+    Returns:
+        chex.Array: int32 indices, shape (size,).
+    """
+    return jax.random.randint(
+        key, shape=(size,), minval=0, maxval=maxval, dtype="int32"
+    )
+
+
 @struct.dataclass
 class MetalogBase:
     """Base class for metalog distribution implementations.
@@ -695,6 +731,52 @@ class MetalogBase:
             ppf, self.boundedness, self.lower_bound, self.upper_bound
         )
 
+    @partial(jax.jit, static_argnames=["num_terms"])
+    def _pdf(self, x: chex.Numeric, num_terms: int) -> chex.Numeric:
+        """Compute the unbounded metalog density m(y) = 1 / M'(y) (internal PDF).
+
+        A method compiled once per model structure, like ``_ppf``. Defined inside
+        ``pdf``, it would be a new function on every call, so ``jax.jit`` would
+        recompile it every time.
+
+        Args:
+            x: Probability values in (0, 1) at which to evaluate the density.
+            num_terms: Number of terms in the metalog expansion.
+
+        Returns:
+            chex.Numeric: Density values on the unbounded scale.
+        """
+        product_term = self.product_term(x)
+        delta_term = self.delta_term(x)
+        log_term = self.log_term(x)
+
+        if num_terms == 2:
+            return product_term / self.a[1]
+
+        m_inv = self.a[1] / product_term
+        if num_terms >= 3:
+            m_inv += self.a[2] * ((delta_term / product_term) + log_term)
+        if num_terms >= 4:
+            m_inv += self.a[3]
+        if num_terms >= 5:
+            odd_term = 1
+            even_term = 1
+            for term in range(5, num_terms + 1):
+                if term % 2 == 1:  # Odd term
+                    m_inv += (
+                        (odd_term + 1)
+                        * self.a[term - 1]
+                        * jnp.power(delta_term, odd_term)
+                    )
+                    odd_term += 1
+                else:  # Even term
+                    m_inv += self.a[term - 1] * (
+                        (jnp.power(delta_term, even_term + 1) / product_term)
+                        + (even_term + 1) * jnp.power(delta_term, even_term) * log_term
+                    )
+                    even_term += 1
+        return 1.0 / m_inv
+
     def pdf(self, x: chex.Numeric) -> chex.Numeric:
         """Compute the probability density function of the metalog distribution.
 
@@ -714,43 +796,6 @@ class MetalogBase:
             checkify.JaxRuntimeError: If the PDF contains non-positive values,
                 indicating an infeasible metalog fit.
         """  # noqa: DOC502
-
-        @partial(jax.jit, static_argnames=["num_terms"])
-        def _pdf(x: chex.Numeric, num_terms: int) -> chex.Array:
-            product_term = self.product_term(x)
-            delta_term = self.delta_term(x)
-            log_term = self.log_term(x)
-
-            if num_terms == 2:
-                return product_term / self.a[1]
-
-            m_inv = self.a[1] / product_term
-            if num_terms >= 3:
-                m_inv += self.a[2] * ((delta_term / product_term) + log_term)
-            if num_terms >= 4:
-                m_inv += self.a[3]
-            if num_terms >= 5:
-                odd_term = 1
-                even_term = 1
-                for term in range(5, num_terms + 1):
-                    if term % 2 == 1:  # Odd term
-                        m_inv += (
-                            (odd_term + 1)
-                            * self.a[term - 1]
-                            * jnp.power(delta_term, odd_term)
-                        )
-                        odd_term += 1
-                    else:  # Even term
-                        m_inv += self.a[term - 1] * (
-                            (jnp.power(delta_term, even_term + 1) / product_term)
-                            + (even_term + 1)
-                            * jnp.power(delta_term, even_term)
-                            * log_term
-                        )
-                        even_term += 1
-            m = 1.0 / m_inv
-            return m
-
         assert_float_array(x)
         assert_probability_range(x)
         self._assert_has_coefficients()
@@ -759,7 +804,7 @@ class MetalogBase:
         # positive density (e.g. float32 probabilities with a float64 fit).
         x = jnp.asarray(x, dtype=jnp.result_type(x, self.a))
         num_terms = self.num_terms
-        m = _pdf(x, num_terms)
+        m = self._pdf(x, num_terms)
         if self.boundedness != MetalogBoundedness.UNBOUNDED:
             M = self._ppf(x, num_terms)
             if self.boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
@@ -817,44 +862,16 @@ class MetalogBase:
             chex.AssertionError: If size is not positive or exceeds max_draws.
             checkify.JaxRuntimeError: If the PDF is infeasible (non-positive values).
         """  # noqa: DOC502
-
-        @jax.jit
-        def _hdr_uniform(trial: int, maxval: int) -> chex.Array:
-            params = HDRPRNGParameters(
-                trial=trial,
-                variable=variable,
-                entity=entity,
-                time=time,
-                agent=agent,
-            )
-            rv = hdrprng(params)
-            return (rv * (maxval - 1)).astype(int)
-
-        @partial(jax.jit, static_argnames=["size", "maxval"])
-        def _jax_uniform(key: chex.PRNGKey, size: int, maxval: int) -> chex.Array:
-            return jax.random.randint(
-                key, shape=(size,), minval=0, maxval=maxval, dtype="int32"
-            )
-
         prng_params = rv_params.prng_params
         size = rv_params.size
         chex.assert_scalar_positive(size)
         chex.assert_scalar_non_negative(rv_params.max_draws - size)
         maxval = len(DEFAULT_Y_FULL)
         if isinstance(prng_params, HDRPRNGParameters):
-            variable = prng_params.variable
-            entity = prng_params.entity
-            time = prng_params.time
-            agent = prng_params.agent
-            # One HDR trial per draw, starting at prng_params.trial
-            trials = prng_params.trial + jnp.arange(size, dtype=int)
-
-            vectorized_hdr = jax.vmap(_hdr_uniform, in_axes=(0, None))
-            mask = vectorized_hdr(trials, maxval)
+            mask = _hdr_indices(prng_params, size, maxval)
         elif isinstance(prng_params, JaxUniformDistributionParameters):
-            seed = prng_params.seed
-            key = jax.random.PRNGKey(seed)
-            mask = _jax_uniform(key, size, maxval)
+            key = jax.random.PRNGKey(prng_params.seed)
+            mask = _jax_indices(key, size, maxval)
 
         self.pdf(DEFAULT_Y_FULL)  # asserts feasibility
         ppf = self.ppf(DEFAULT_Y_FULL)

@@ -10,9 +10,15 @@ its reference implementation by Zixin (Stephen) Xu (CC BY 4.0; see NOTICE):
 * :func:`highest_mode` - the highest-density mode (used by ``Metalog.mode``).
 * :func:`summary_stats` / :func:`raw_moment` - exact moments (Lemma 1, Prop. 3).
 
-Every function is jit-compatible and can be vmapped over batches. They use the
-Keelin (2016) term assignment of ``metalog_jax`` by default; ``TermOrder.METALOG_2``
-selects the paper's Metalog 2.0 assignment, which differs from the 7th term on.
+Every function is jit-compatible and can be vmapped over batches.
+:func:`check_feasibility`, :func:`is_feasible`, :func:`highest_mode`,
+:func:`mean_and_variance` and :func:`summary_stats` are jitted, with the engine as
+a static argument, so even a call outside ``jax.jit`` compiles once per engine and
+coefficient shape, then runs in about a millisecond.
+
+The functions use the Keelin (2016) term assignment of ``metalog_jax`` by default;
+``TermOrder.METALOG_2`` selects the paper's Metalog 2.0 assignment, which differs
+from the 7th term on.
 
 References:
     Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the

@@ -184,13 +184,23 @@ jobs:
 
   pytest:
     # Equivalent to: stages/test.yml → pytest job
-    # Every supported Python; coverage settings live in [tool.coverage] in pyproject.toml
+    # Every supported Python. Coverage is measured on one version, the one that
+    # uploads to Codecov (settings in [tool.coverage] in pyproject.toml); on 3.11
+    # it traces with sys.settrace, which made that job the slowest.
     needs: python-versions
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ${{ fromJSON(needs.python-versions.outputs.versions) }}
+    env:
+      COVERAGE_PYTHON: "3.12"
+      # JAX's persistent compilation cache, kept between runs by actions/cache.
+      # Cache every compilation, not only those over a second; the suite writes
+      # about 50 MB. (Capping it with JAX_COMPILATION_CACHE_MAX_SIZE needs the
+      # filelock package, which isn't installed; without it nothing is cached.)
+      JAX_COMPILATION_CACHE_DIR: .jax-cache
+      JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -200,16 +210,32 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --all-groups
 
+      - name: Restore JAX compilations
+        # Saves a new entry every run, restored from the latest one for the same
+        # lock file and Python, so a new uv.lock starts an empty cache. A run reads
+        # only its own branch's or pull request's caches and the default branch's,
+        # so a pull request's first run starts cold.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .jax-cache
+          key: jax-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}-${{ github.run_id }}
+          restore-keys: jax-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}-
+
       - name: Run tests with coverage
+        if: matrix.python-version == env.COVERAGE_PYTHON
         run: |
-          uv run pytest tests/ \
+          uv run pytest tests/ --durations=30 \
             --cov=metalog_jax \
             --cov-report=term \
             --cov-report=xml:coverage.xml \
             --cov-report=html:coverage_html
 
+      - name: Run tests
+        if: matrix.python-version != env.COVERAGE_PYTHON
+        run: uv run pytest tests/ --durations=30
+
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == env.COVERAGE_PYTHON
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: coverage.xml
@@ -217,7 +243,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload coverage HTML artifact
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == env.COVERAGE_PYTHON
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-html
@@ -247,7 +273,7 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Test with the lowest allowed dependency versions
-        run: uv run --isolated --resolution lowest-direct --python 3.11 --group test pytest tests/
+        run: uv run --isolated --resolution lowest-direct --python 3.11 --group test pytest tests/ --durations=30
 
   # === DOCS STAGE ===
 

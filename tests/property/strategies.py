@@ -9,7 +9,6 @@ a compilation.
 
 from itertools import pairwise
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from hypothesis import strategies as st
@@ -33,10 +32,6 @@ NUM_TERMS = (3, 5, 7, 9)
 SAMPLE_SIZE = 200
 GRID_SIZE = 16
 
-# Eager check_feasibility takes about a second; compiled, a few milliseconds.
-# Engines are hashable by identity, so the engine can be a static argument.
-_certify = jax.jit(check_feasibility, static_argnums=0)
-_highest_mode = jax.jit(highest_mode, static_argnums=0)
 
 MIRROR_BOUNDEDNESS = {
     MetalogBoundedness.UNBOUNDED: MetalogBoundedness.UNBOUNDED,
@@ -156,13 +151,13 @@ def mirror(m):
 def feasibility_report(a):
     """check_feasibility's report for the coefficients."""
     a = jnp.asarray(a, dtype=jnp.float64)
-    return _certify(get_engine(a.shape[0]), a)
+    return check_feasibility(get_engine(a.shape[0]), a)
 
 
 def highest_density_mode(a):
     """highest_mode's (quantile, probability, found) for unbounded coefficients."""
     a = jnp.asarray(a, dtype=jnp.float64)
-    return _highest_mode(get_engine(a.shape[0]), a)
+    return highest_mode(get_engine(a.shape[0]), a)
 
 
 def is_certified(a):

@@ -243,7 +243,7 @@ uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
    | `interrogate` | docstring coverage at or above the `pyproject.toml` threshold |
    | `pydoclint` | Google-style docstring sections match signatures and bodies |
    | `ty` | type check |
-   | `pytest` | full suite on every Python version in the `pyproject.toml` classifiers (3.11 to 3.14), with branch coverage of at least 95% (3.12 uploads to Codecov) |
+   | `pytest` | full suite on every Python version in the `pyproject.toml` classifiers (3.11 to 3.14); branch coverage of at least 95% is measured on 3.12, which uploads to Codecov |
    | `doctest` | every docstring example runs |
    | `lowest-deps` | full suite on Python 3.11 with the lowest allowed dependency versions |
    | `docs` | Sphinx build with warnings as errors |

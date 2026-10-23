@@ -108,6 +108,7 @@ def tail_feasibility(
     return out[0], out[1]
 
 
+@partial(jax.jit, static_argnames=("engine",))
 def check_feasibility(
     engine: Engine, a: chex.Array, tol: float = 0.0
 ) -> FeasibilityReport:
@@ -155,11 +156,13 @@ def check_feasibility(
     )
 
 
+@partial(jax.jit, static_argnames=("engine",))
 def is_feasible(engine: Engine, a: chex.Array, tol: float = 0.0) -> chex.Array:
     """Shorthand for ``check_feasibility(engine, a, tol).feasible``."""
     return check_feasibility(engine, a, tol).feasible
 
 
+@partial(jax.jit, static_argnames=("engine",))
 def highest_mode(
     engine: Engine, a: chex.Array
 ) -> tuple[chex.Numeric, chex.Numeric, chex.Array]:

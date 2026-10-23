@@ -164,6 +164,7 @@ def soft_thresholding(x: chex.Numeric, lam: float) -> chex.Numeric:
     return jnp.sign(x) * jnp.maximum(jnp.abs(x) - lam, 0.0)
 
 
+@jax.jit
 def fit_lasso(
     X: chex.Numeric,
     y: chex.Numeric,
