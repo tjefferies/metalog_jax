@@ -2,13 +2,16 @@
 # Equivalent to GitLab stages: lint, typing, test, docs, license, sast, sbom
 #
 # Runs for every pull request, and as the first stage of the release in publish.yml,
-# which calls it on the commit pushed to main. Actions are pinned to commit hashes;
-# Dependabot updates them.
+# which calls it on the commit pushed to main. Start it by hand on any branch with
+# `gh workflow run quality-gate.yml --ref <branch>`. Actions are pinned to commit
+# hashes; Dependabot updates them.
 name: Quality Gate
 
 on:
   pull_request:
     branches: [main, development]
+  # By hand, for a branch that has no pull request
+  workflow_dispatch:
   workflow_call:
     secrets:
       CODECOV_TOKEN:
