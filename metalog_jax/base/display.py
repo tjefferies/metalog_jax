@@ -270,8 +270,8 @@ def _quantile(
 
 
 def _count(num_terms: int) -> str:
-    """Write the number of terms, such as ``5 terms``."""
-    return f"{num_terms} term" + ("" if num_terms == 1 else "s")
+    """Write the number of terms, such as ``5 terms``; there are at least 2."""
+    return f"{num_terms} terms"
 
 
 def _header_parts(
@@ -370,9 +370,7 @@ def _latex(model: Any, precision: int | None) -> str | None:
     label = "Q(y)" if unbounded else "M(y)"
     if len(terms) <= _LATEX_TERMS_PER_LINE:
         header = _render([(False, f"{snap.name}("), *parts, (False, "):")], latex=True)
-        equations = [*q, f"{label} = {_join(terms)}"]
-        if len(terms) > 1:  # \ell(y) appears from the second term on
-            equations.append(_LATEX_LOGIT)
+        equations = [*q, f"{label} = {_join(terms)}", _LATEX_LOGIT]
         return f"${header}\\quad " + r",\quad ".join(equations) + "$"
     step = _LATEX_TERMS_PER_LINE
     chunks = [terms[i : i + step] for i in range(0, len(terms), step)]

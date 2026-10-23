@@ -18,6 +18,7 @@ See Also:
 from typing import ClassVar, Self
 
 import chex
+import numpy as np
 from flax import struct
 
 from metalog_jax.base.enums import MetalogBoundedness, MetalogFitMethod
@@ -59,6 +60,35 @@ class MetalogRandomVariableParameters:
         chex.assert_scalar_positive(self.size)
 
 
+# The boundedness types whose support each bound limits
+_USES_LOWER_BOUND = (
+    MetalogBoundedness.STRICTLY_LOWER_BOUND,
+    MetalogBoundedness.BOUNDED,
+)
+_USES_UPPER_BOUND = (
+    MetalogBoundedness.STRICTLY_UPPER_BOUND,
+    MetalogBoundedness.BOUNDED,
+)
+
+
+def _concrete_bound(bound: object) -> np.ndarray | None:
+    """Return a bound as a float array if it's a Python or NumPy number.
+
+    Args:
+        bound: A ``lower_bound`` or ``upper_bound`` value.
+
+    Returns:
+        np.ndarray | None: The bound as floats, or None for anything else: JAX
+            arrays and tracers, ``None``, ``ShapeDtypeStruct`` and the other
+            placeholders that pytree unflattening passes.
+    """
+    if isinstance(bound, (int, float, np.number)) or (
+        isinstance(bound, np.ndarray) and np.issubdtype(bound.dtype, np.number)
+    ):
+        return np.asarray(bound, dtype=float)
+    return None
+
+
 @struct.dataclass
 class MetalogParametersBase:
     """Base class for metalog distribution parameter configurations.
@@ -74,15 +104,47 @@ class MetalogParametersBase:
     values, and models stacked for ``jax.vmap`` must share them. The bounds are
     ordinary leaves and can be traced.
 
+    The bounds are checked on construction when they're Python or NumPy numbers.
+    JAX arrays aren't checked, because pytree transforms rebuild parameters with
+    tracers, gradients, stacked batches or placeholders as the bounds.
+
     Attributes:
         boundedness: Type of domain constraint for the distribution. Static.
-        lower_bound: Lower boundary value for the distribution's support.
-        upper_bound: Upper boundary value for the distribution's support.
+        lower_bound: Lower boundary value for the distribution's support. Must be
+            finite for STRICTLY_LOWER_BOUND and BOUNDED, and below ``upper_bound``
+            for BOUNDED; ignored otherwise.
+        upper_bound: Upper boundary value for the distribution's support. Must be
+            finite for STRICTLY_UPPER_BOUND and BOUNDED; ignored otherwise.
     """
 
     boundedness: MetalogBoundedness = struct.field(pytree_node=False)
     lower_bound: chex.Scalar
     upper_bound: chex.Scalar
+
+    def __post_init__(self) -> None:
+        """Check that the bounds the boundedness type uses describe a support.
+
+        Raises:
+            ValueError: If a bound that the boundedness type uses is infinite or
+                NaN, or a BOUNDED distribution's ``lower_bound`` isn't below its
+                ``upper_bound``.
+        """
+        lower = upper = None
+        if self.boundedness in _USES_LOWER_BOUND:
+            lower = _concrete_bound(self.lower_bound)
+        if self.boundedness in _USES_UPPER_BOUND:
+            upper = _concrete_bound(self.upper_bound)
+        for name, bound in (("lower_bound", lower), ("upper_bound", upper)):
+            if bound is not None and not np.all(np.isfinite(bound)):
+                raise ValueError(
+                    f"{self.boundedness.name} needs a finite {name}, got "
+                    f"{getattr(self, name)!r}"
+                )
+        if lower is not None and upper is not None and not np.all(lower < upper):
+            raise ValueError(
+                "BOUNDED needs lower_bound < upper_bound, got "
+                f"lower_bound={self.lower_bound!r} and upper_bound={self.upper_bound!r}"
+            )
 
 
 def _check_serialized_keys(cls: type, params: dict, keys: tuple[str, ...]) -> None:
@@ -121,7 +183,8 @@ class MetalogParameters(MetalogParametersBase):
         method: Regression method used for fitting. Static. One of:
             - MetalogFitMethod.OLS: metalog_jax.regression.ols
             - MetalogFitMethod.Lasso: metalog_jax.regression.lasso
-        num_terms: Number of terms in the metalog series expansion. Static.
+        num_terms: Number of terms in the metalog series expansion: an integer of
+            at least 2. Static.
 
     See Also:
         MetalogParametersBase: Parent class with boundedness and bound attributes.
@@ -141,6 +204,23 @@ class MetalogParameters(MetalogParametersBase):
         "upper_bound",
         "num_terms",
     )
+
+    def __post_init__(self) -> None:
+        """Check the bounds, as the base class does, and the number of terms.
+
+        Raises:
+            ValueError: If ``num_terms`` isn't an integer of at least 2 (a 1-term
+                metalog is a constant, not a distribution), or a bound is invalid.
+        """
+        super().__post_init__()
+        if (
+            isinstance(self.num_terms, bool)
+            or not isinstance(self.num_terms, (int, np.integer))
+            or self.num_terms < 2
+        ):
+            raise ValueError(
+                f"num_terms must be an integer of at least 2, got {self.num_terms!r}"
+            )
 
     def to_dict(self) -> dict:
         """Return the parameters as the JSON-ready dict that Metalog.dumps writes.

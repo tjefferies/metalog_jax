@@ -415,15 +415,6 @@ class LatexTest(parameterized.TestCase):
         )
         self.assertEqual(latex.count("{"), latex.count("}"))
 
-    def test_one_term_model(self):
-        """A 1-term model is a constant, with no logit to define."""
-        model = metalog([2.5])
-        self.assertEqual(str(model), "Metalog(1 term, OLS, unbounded): Q(y) = 2.5")
-        self.assertEqual(
-            model._repr_latex_(),
-            r"$\text{Metalog(1 term, OLS, unbounded):}\quad Q(y) = 2.5$",
-        )
-
     def test_sixteen_term_powers(self):
         r"""The 16th term is (y - 0.5)^7 \ell(y)."""
         latex = metalog([1.0] * 16)._repr_latex_()

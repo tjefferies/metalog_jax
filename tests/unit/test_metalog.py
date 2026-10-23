@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 from jax.experimental import checkify
+from scipy import stats
 
 from metalog_jax.base import (
     MetalogBoundedness,
@@ -19,7 +20,9 @@ from metalog_jax.base import (
     MetalogParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.metalog import THETA_3, fit, fit_spt_metalog
+from metalog_jax.grid_search import fit_grid
+from metalog_jax.metalog import THETA_3, Metalog, fit, fit_spt_metalog
+from metalog_jax.utils import DEFAULT_Y
 
 # NOTE: GetQuantilesTest class has been removed as get_quantiles() is now an
 # internal function (_get_quantiles) within fit(). The quantile transformation
@@ -786,11 +789,14 @@ class SPTMetalogPropositionsTest(parameterized.TestCase):
         """Quantiles outside the support raise instead of giving NaN coefficients."""
         # The 10th and 90th percentiles are 1.9 and 9.1
         data = jnp.linspace(1.0, 10.0, 101)
+        # JAX array bounds, which construction doesn't check (Python floats with
+        # upper below lower raise there), so the fit's own checks run, as they do
+        # for bounds traced under jit or vmap
         params = SPTMetalogParameters(
             boundedness=boundedness,
             alpha=0.1,
-            lower_bound=lower_bound,
-            upper_bound=upper_bound,
+            lower_bound=jnp.asarray(lower_bound),
+            upper_bound=jnp.asarray(upper_bound),
         )
         with self.assertRaises(AssertionError):
             fit_spt_metalog(data, params)
@@ -1066,6 +1072,116 @@ class GetFitFunctionTest(absltest.TestCase):
 
         for method in MetalogFitMethod:
             self.assertIn(method, _FIT_METHOD_DISPATCH)
+
+
+class TwoTermFitTest(parameterized.TestCase):
+    """Regression tests for issue #47: a 2-term fit regresses on two basis functions.
+
+    The design matrix used to have three columns for any num_terms up to 3, so a
+    2-term fit was a 3-term fit with its third coefficient dropped.
+    """
+
+    LOWER_BOUND = 0.0
+    UPPER_BOUND = 20.0
+    DATA = MetalogInputData.from_values(
+        jnp.asarray(np.random.default_rng(0).gamma(2.0, size=300)),
+        DEFAULT_Y,
+        precomputed_quantiles=False,
+    )
+
+    def _params(self, boundedness, method):
+        """2-term parameters whose bounds contain the data (0.11 to 7.96)."""
+        return MetalogParameters(
+            boundedness=boundedness,
+            method=method,
+            lower_bound=self.LOWER_BOUND,
+            upper_bound=self.UPPER_BOUND,
+            num_terms=2,
+        )
+
+    def _least_squares(self, boundedness):
+        """The 2-term least-squares coefficients, from NumPy.
+
+        M(y) = a1 + a2 ln(y / (1 - y)) (Keelin 2016, Definition 1, k = 2), fitted to
+        the quantiles on the boundedness type's scale: x, ln(x - L), -ln(U - x) or
+        ln((x - L) / (U - x)).
+        """
+        x, y = np.asarray(self.DATA.x), np.asarray(self.DATA.y)
+        lower, upper = self.LOWER_BOUND, self.UPPER_BOUND
+        z = {
+            MetalogBoundedness.UNBOUNDED: x,
+            MetalogBoundedness.STRICTLY_LOWER_BOUND: np.log(x - lower),
+            MetalogBoundedness.STRICTLY_UPPER_BOUND: -np.log(upper - x),
+            MetalogBoundedness.BOUNDED: np.log((x - lower) / (upper - x)),
+        }[boundedness]
+        basis = np.column_stack([np.ones_like(y), np.log(y / (1 - y))])
+        return np.linalg.lstsq(basis, z, rcond=None)[0]
+
+    @parameterized.product(
+        boundedness=tuple(MetalogBoundedness),
+        method=(MetalogFitMethod.OLS, MetalogFitMethod.Feasible),
+    )
+    def test_matches_least_squares(self, boundedness, method):
+        """OLS and Feasible return the two least-squares coefficients.
+
+        The least-squares fit has a2 > 0, so it's feasible and Feasible returns it.
+        """
+        m = fit(self.DATA, self._params(boundedness, method))
+
+        self.assertEqual(m.a.shape, (2,))
+        np.testing.assert_allclose(m.a, self._least_squares(boundedness), rtol=1e-10)
+
+    @parameterized.parameters(*MetalogBoundedness)
+    def test_lasso_is_close_to_least_squares(self, boundedness):
+        """Lasso returns two coefficients, shrunk slightly by its default penalty.
+
+        The shrinkage is below 0.03% of each coefficient here, while the 3-term
+        regression's intercept differed by 20% in the unbounded case.
+        """
+        m = fit(self.DATA, self._params(boundedness, MetalogFitMethod.Lasso))
+
+        self.assertEqual(m.a.shape, (2,))
+        np.testing.assert_allclose(m.a, self._least_squares(boundedness), rtol=1e-3)
+
+    @parameterized.product(
+        boundedness=tuple(MetalogBoundedness),
+        method=(MetalogFitMethod.OLS, MetalogFitMethod.Lasso),
+    )
+    def test_matches_fit_grid(self, boundedness, method):
+        """The fit matches fit_grid, which builds its own, masked design matrix."""
+        params = self._params(boundedness, method)
+
+        m = fit(self.DATA, params)
+        grid = fit_grid(self.DATA.x, self.DATA.y, params)
+
+        np.testing.assert_allclose(m.a, grid.metalog.a, rtol=1e-12)
+
+    def test_unbounded_fit_is_logistic(self):
+        """An unbounded 2-term metalog is the logistic distribution (loc a1, scale a2)."""
+        m = fit(
+            self.DATA, self._params(MetalogBoundedness.UNBOUNDED, MetalogFitMethod.OLS)
+        )
+        loc, scale = (float(c) for c in m.a)
+        y = np.array([0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99])
+        logistic = stats.logistic(loc=loc, scale=scale)
+
+        np.testing.assert_allclose(m.ppf(jnp.asarray(y)), logistic.ppf(y), rtol=1e-12)
+        np.testing.assert_allclose(
+            m.pdf(jnp.asarray(y)), logistic.pdf(logistic.ppf(y)), rtol=1e-12
+        )
+        np.testing.assert_allclose(m.mean, logistic.mean(), rtol=1e-12)
+        np.testing.assert_allclose(m.var, logistic.var(), rtol=1e-12)
+
+    @parameterized.parameters(2, 3, 4, 5, 9)
+    def test_design_matrix_has_one_column_per_term(self, num_terms):
+        """The design matrix has num_terms columns, starting 1, ln(y / (1 - y))."""
+        y = np.asarray(DEFAULT_Y)
+
+        target = Metalog._get_target(jnp.asarray(y), num_terms)
+
+        self.assertEqual(target.shape, (len(y), num_terms))
+        np.testing.assert_allclose(target[:, 0], 1.0)
+        np.testing.assert_allclose(target[:, 1], np.log(y / (1 - y)), rtol=1e-12)
 
 
 if __name__ == "__main__":
