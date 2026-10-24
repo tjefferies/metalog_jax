@@ -551,9 +551,18 @@ metalog.print(verbose=True)   # one term per line, with options (see Quick Start
 
 Mean, variance, standard deviation, skewness and kurtosis are exact (closed form)
 for unbounded metalogs, using the moment formulas of Baucells, Chrisman, Keelin and
-Xu (2025) (Lemma 1, Proposition 3), and estimated from 20,000 draws for bounded ones.
+Xu (2025) (Lemma 1, Proposition 3). For bounded and semi-bounded ones they're
+integrals of the quantile function, by quadrature on the logit scale. A semi-bounded
+metalog's open end has a power-law tail, so some of its moments can be infinite; as
+in `scipy.stats`, a mean or variance that doesn't exist is `inf` (`-inf` for the
+mean of an upper-bounded metalog), and a skewness or kurtosis `nan`.
 For unbounded metalogs `mode` is exact too: the highest-density root of M'' (their
-Algorithm 1), which also finds modes too close to a tail for a grid search.
+Algorithm 1), which also finds modes too close to a tail for a grid search. Other
+modes maximize the density on the logit scale, refined to rounding.
+
+`cdf` inverts the quantile function exactly, so `cdf(ppf(y))` returns `y` to rounding
+anywhere in (0, 1), and `sf` stays accurate far into the upper tail. `rvs` returns
+`ppf(u)` for continuous uniform draws `u`.
 
 ### Random Sampling
 

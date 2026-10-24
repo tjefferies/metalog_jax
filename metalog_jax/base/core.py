@@ -24,6 +24,7 @@ See Also:
 """
 
 import json
+from enum import Enum, unique
 from functools import partial
 from pathlib import Path
 from typing import ClassVar, TextIO, TypeVar
@@ -31,9 +32,11 @@ from typing import ClassVar, TextIO, TypeVar
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 import plotly.graph_objects as go
 from flax import struct
 from jax.experimental import checkify
+from jax.scipy.special import logit
 
 from metalog_jax.base.data import MetalogInputData
 from metalog_jax.base.display import (
@@ -57,7 +60,7 @@ from metalog_jax.feasibility.analysis import (
     mean_and_variance,
     summary_stats,
 )
-from metalog_jax.feasibility.engine import TermOrder, get_engine
+from metalog_jax.feasibility.engine import Engine, TermOrder, _horner, get_engine
 from metalog_jax.utils import (
     DEFAULT_Y,
     DEFAULT_Y_FULL,
@@ -66,47 +69,144 @@ from metalog_jax.utils import (
     NotFittedError,
     assert_float_array,
     assert_probability_range,
-    find_nearest_index,
     hdrprng,
 )
 
 T_MetalogBase = TypeVar("T_MetalogBase", bound="MetalogBase")
 
 
-# The rvs index draws are module level: defined inside rvs, each would be a new
+# The smallest positive normal float64, the lower end of the uniform draws
+_TINY = float(np.finfo(np.float64).tiny)
+
+
+# The rvs uniform draws are module level: defined inside rvs, each would be a new
 # function on every call, and jax.jit would recompile it every time.
-@partial(jax.jit, static_argnames=["size", "maxval"])
-def _hdr_indices(prng_params: HDRPRNGParameters, size: int, maxval: int) -> chex.Array:
-    """Draw size indices into a table of maxval values with the HDR PRNG.
+@partial(jax.jit, static_argnames=["size"])
+def _hdr_uniforms(prng_params: HDRPRNGParameters, size: int) -> chex.Array:
+    """Draw size uniforms in (0, 1) with the HDR PRNG.
 
     Args:
         prng_params: HDR parameters; draw i uses trial ``prng_params.trial + i``.
         size: Number of draws.
-        maxval: Length of the table.
 
     Returns:
-        chex.Array: Integer indices, shape (size,).
+        chex.Array: Uniforms in the open interval (0, 1), shape (size,).
     """
     trials = prng_params.trial + jnp.arange(size, dtype=int)
-    draws = jax.vmap(lambda trial: hdrprng(prng_params.replace(trial=trial)))(trials)
-    return (draws * (maxval - 1)).astype(int)
+    return jax.vmap(lambda trial: hdrprng(prng_params.replace(trial=trial)))(trials)
 
 
-@partial(jax.jit, static_argnames=["size", "maxval"])
-def _jax_indices(key: chex.PRNGKey, size: int, maxval: int) -> chex.Array:
-    """Draw size indices into a table of maxval values with jax.random.
+@partial(jax.jit, static_argnames=["size"])
+def _jax_uniforms(key: chex.PRNGKey, size: int) -> chex.Array:
+    """Draw size uniforms in (0, 1) with jax.random.
 
     Args:
         key: PRNG key.
         size: Number of draws.
-        maxval: Length of the table.
 
     Returns:
-        chex.Array: int32 indices, shape (size,).
+        chex.Array: float64 uniforms in the open interval (0, 1), shape (size,).
     """
-    return jax.random.randint(
-        key, shape=(size,), minval=0, maxval=maxval, dtype="int32"
-    )
+    # minval excludes 0, where ppf is undefined; uniform already excludes maxval
+    return jax.random.uniform(key, (size,), dtype=jnp.float64, minval=_TINY, maxval=1.0)
+
+
+@unique
+class _LogitScale(Enum):
+    """Numerical settings for working on the logit scale, t = logit(y).
+
+    cdf, the bounded moments and mode evaluate the quantile function at logits
+    rather than probabilities, which keeps both tails exact. ``@unique`` stops two
+    members with equal values from becoming aliases of each other.
+
+    Attributes:
+        BOUND: The logit range [-BOUND, BOUND] that cdf's bisection brackets and
+            the quadrature nodes stay inside: y from about 1e-304 to 1 - 1e-304,
+            above the smallest normal float64.
+        BISECTION_STEPS: Halvings of cdf's and mode's brackets. After 80, a
+            bracket as wide as [-BOUND, BOUND] is narrower than the float64
+            spacing anywhere inside it.
+        QUADRATURE_STEP: The trapezoid step of the tanh-sinh rule. 1/16 gives 195
+            nodes, and an error far below rounding for integrands analytic inside
+            (0, 1).
+        MODE_GRID_BOUND: mode searches logits in [-MODE_GRID_BOUND,
+            MODE_GRID_BOUND], y within about 4e-18 of 0 and 1, for the highest
+            density.
+        MODE_GRID_POINTS: Points of that grid: 2 * 40 / 0.01 + 1, so 0.01 apart.
+        SCALE_PROBABILITIES: The quartiles. The bounded moments divide X - mean by
+            their spread, the interquartile range, before taking powers, so
+            (X - mean)^4 doesn't overflow in a heavy tail whatever the units of X.
+        LOWER_TAIL_X: x = y - 0.5 as y approaches 0. The scale polynomial there
+            sets the power-law lower tail of a STRICTLY_UPPER_BOUND metalog.
+        UPPER_TAIL_X: x = y - 0.5 as y approaches 1. The scale polynomial there
+            sets the power-law upper tail of a STRICTLY_LOWER_BOUND metalog.
+    """
+
+    BOUND = 700.0
+    BISECTION_STEPS = 80
+    QUADRATURE_STEP = 1 / 16
+    MODE_GRID_BOUND = 40.0
+    MODE_GRID_POINTS = 8001
+    SCALE_PROBABILITIES = (0.25, 0.75)
+    LOWER_TAIL_X = -0.5
+    UPPER_TAIL_X = 0.5
+
+
+def _tanh_sinh_rule(step: float) -> tuple[np.ndarray, np.ndarray]:
+    """Nodes and weights for integrals over (0, 1) on the logit scale.
+
+    The tanh-sinh (double exponential) substitution y = sigmoid(pi sinh(r)) makes
+    logit(y) = pi sinh(r), so the trapezoid rule in r with nodes t = pi sinh(r)
+    integrates g(y) dy = g(sigmoid(t)) sigmoid(t) sigmoid(-t) dt. It converges
+    exponentially for integrands analytic inside (0, 1), and nodes reach the
+    tails without rounding y. The outermost nodes are the last inside
+    |t| <= _LogitScale.BOUND, at about 675.
+
+    Args:
+        step: The trapezoid step in r.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Logit nodes t and weights w, so that
+        sum(w * g(sigmoid(t))) approximates the integral of g over (0, 1).
+    """
+    r_max = np.arcsinh(_LogitScale.BOUND.value / np.pi)
+    r = step * np.arange(-np.floor(r_max / step), np.floor(r_max / step) + 1)
+    t = np.pi * np.sinh(r)
+    # sigmoid(t) sigmoid(-t), computed in logs so it doesn't underflow early
+    density = np.exp(-np.logaddexp(0.0, t) - np.logaddexp(0.0, -t))
+    return t, step * np.pi * np.cosh(r) * density
+
+
+_QUADRATURE_NODES, _QUADRATURE_WEIGHTS = _tanh_sinh_rule(
+    _LogitScale.QUADRATURE_STEP.value
+)
+
+# mode searches this logit grid for the highest density, then refines it
+_MODE_GRID = np.linspace(
+    -_LogitScale.MODE_GRID_BOUND.value,
+    _LogitScale.MODE_GRID_BOUND.value,
+    _LogitScale.MODE_GRID_POINTS.value,
+)
+
+
+def _unbounded_ppf_at_logit(
+    mu: chex.Array, s: chex.Array, t: chex.Numeric
+) -> chex.Numeric:
+    """Evaluate M(y) = mu(y - 0.5) + s(y - 0.5) logit(y) at logit(y) = t.
+
+    Using t rather than y keeps full precision in both tails, where y rounds to
+    0 or 1; t = -inf and +inf give the limits of M.
+
+    Args:
+        mu: Ascending coefficients of the location polynomial (Engine.split).
+        s: Ascending coefficients of the scale polynomial (Engine.split).
+        t: Logits of the probabilities.
+
+    Returns:
+        chex.Numeric: The unbounded quantile function M at sigmoid(t).
+    """
+    x = 0.5 * jnp.tanh(0.5 * t)  # y - 0.5
+    return _horner(mu, x) + _horner(s, x) * t
 
 
 @struct.dataclass
@@ -818,38 +918,145 @@ class MetalogBase:
         self.assert_fit_valid(m=m)
         return m
 
+    def _logit_parts(self) -> tuple[Engine, chex.Array, chex.Array]:
+        """The engine and the location and scale polynomials of the coefficients.
+
+        Returns:
+            tuple[Engine, chex.Array, chex.Array]: ``(engine, mu, s)``, so that
+            M(y) = mu(y - 0.5) + s(y - 0.5) logit(y).
+        """
+        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        mu, s = engine.split(jnp.asarray(self.a, jnp.float64))
+        return engine, mu, s
+
+    def _from_unbounded(self, m: chex.Numeric) -> chex.Numeric:
+        """Map the unbounded metalog M to the support, without overflowing.
+
+        The same back-transform as inverse_quantile_transform, with BOUNDED written
+        as L + (U - L) sigmoid(M) so that a large M gives U rather than inf / inf.
+
+        Args:
+            m: Values of the unbounded quantile function M.
+
+        Returns:
+            chex.Numeric: Quantile values in the distribution's support.
+        """
+        lower, upper = self.lower_bound, self.upper_bound
+        if self.boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return lower + jnp.exp(m)
+        if self.boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return upper - jnp.exp(-m)
+        if self.boundedness == MetalogBoundedness.BOUNDED:
+            return lower + (upper - lower) * jax.nn.sigmoid(m)
+        return m
+
+    def _log_dx_dm(self, m: chex.Numeric) -> chex.Numeric:
+        """Log of the back-transform's slope dX/dM at M = m.
+
+        Args:
+            m: Values of the unbounded quantile function M.
+
+        Returns:
+            chex.Numeric: log(dX/dM), which is 0 for UNBOUNDED.
+        """
+        if self.boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            return m
+        if self.boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            return -m
+        if self.boundedness == MetalogBoundedness.BOUNDED:
+            width = jnp.log(self.upper_bound - self.lower_bound)
+            return width + jax.nn.log_sigmoid(m) + jax.nn.log_sigmoid(-m)
+        return jnp.zeros_like(m)
+
+    @jax.jit
+    def _cdf_logit(self, q: chex.Numeric) -> chex.Numeric:
+        """Return logit(cdf(q)), by inverting the quantile function.
+
+        A feasible metalog's M is non-decreasing in t = logit(y), so bisection over
+        t in [-_LogitScale.BOUND, _LogitScale.BOUND] converges to the t with M(t)
+        equal to q on the unbounded scale. Working with t keeps both tails exact.
+
+        Args:
+            q: Quantile values, in the coefficients' float dtype.
+
+        Returns:
+            chex.Numeric: logit(P(X <= q)): -inf at or below the support, +inf at
+            or above it, and NaN where q is NaN.
+        """
+        _, mu, s = self._logit_parts()
+        z = self.quantile_transform(
+            q, self.boundedness, self.lower_bound, self.upper_bound
+        )
+
+        def halve(_, bracket):
+            lo, hi = bracket
+            mid = 0.5 * (lo + hi)
+            below = _unbounded_ppf_at_logit(mu, s, mid) < z
+            return jnp.where(below, mid, lo), jnp.where(below, hi, mid)
+
+        bound = _LogitScale.BOUND.value
+        start = (jnp.full_like(z, -bound), jnp.full_like(z, bound))
+        lo, hi = jax.lax.fori_loop(0, _LogitScale.BISECTION_STEPS.value, halve, start)
+        t = jnp.where(jnp.isnan(z), jnp.nan, 0.5 * (lo + hi))
+        t = jnp.where(z == -jnp.inf, -jnp.inf, jnp.where(z == jnp.inf, jnp.inf, t))
+        # Outside the support the transform gives NaN; the CDF is 0 or 1 there
+        if self.boundedness in (
+            MetalogBoundedness.STRICTLY_LOWER_BOUND,
+            MetalogBoundedness.BOUNDED,
+        ):
+            t = jnp.where(q <= self.lower_bound, -jnp.inf, t)
+        if self.boundedness in (
+            MetalogBoundedness.STRICTLY_UPPER_BOUND,
+            MetalogBoundedness.BOUNDED,
+        ):
+            t = jnp.where(q >= self.upper_bound, jnp.inf, t)
+        return t
+
+    def _checked_cdf_logit(self, q: chex.Numeric) -> chex.Numeric:
+        """Check the fit, then return _cdf_logit of q as a float array.
+
+        Args:
+            q: Quantile values: a Python or NumPy number, or an array of any shape.
+
+        Returns:
+            chex.Numeric: logit(P(X <= q)), with the shape of q.
+
+        Raises:
+            NotFittedError: If the distribution has not been fitted.
+            checkify.JaxRuntimeError: If the fit is infeasible.
+        """  # noqa: DOC502
+        self.assert_fitted()
+        q = jnp.asarray(q, dtype=jnp.result_type(q, self.a, float))
+        return self._cdf_logit(q)
+
     def cdf(self, q: chex.Numeric) -> chex.Numeric:
         """Compute the cumulative distribution function.
 
-        Returns P(X <= q) for the fitted metalog distribution. Uses numerical
-        inversion of the quantile function via nearest-neighbor lookup.
+        Returns P(X <= q) for the fitted metalog distribution, by inverting the
+        quantile function: bisection on the logit scale finds the y with
+        ppf(y) = q, so cdf(ppf(y)) = y to rounding over all of (0, 1).
 
         Args:
-            q: Quantile values at which to evaluate the CDF. Can be a scalar
-                or 1D array.
+            q: Quantile values at which to evaluate the CDF: a Python or NumPy
+                number, or an array of any shape, including a 0-d array.
 
         Returns:
-            chex.Numeric: Probability values in (0, 1). Same shape as input.
-        """
-        ppf = self.ppf(DEFAULT_Y_FULL)
-        if not isinstance(q, jax.Array):
-            chex.assert_rank(q, 0)  # assert scalar
-            index = find_nearest_index(ppf, q)
-            return DEFAULT_Y_FULL[index]
-        else:
-            chex.assert_rank(q, 1)  # assert vector
-            find_nearest_batch = jax.vmap(find_nearest_index, in_axes=(None, 0))
-            indices = find_nearest_batch(ppf, q)
-            return DEFAULT_Y_FULL[indices]
+            chex.Numeric: Probabilities in [0, 1], with the shape of q: 0 at or
+            below the support's lower bound, and 1 at or above its upper bound.
+
+        Raises:
+            NotFittedError: If the distribution has not been fitted.
+            checkify.JaxRuntimeError: If the fit is infeasible.
+        """  # noqa: DOC502
+        return jax.nn.sigmoid(self._checked_cdf_logit(q))
 
     def rvs(self, rv_params: MetalogRandomVariableParameters) -> chex.Numeric:
         """Generate random variates from the fitted metalog distribution.
 
-        Samples are generated by drawing uniform random values and applying
-        the quantile function (inverse transform sampling). With
-        HDRPRNGParameters, draw i uses HDR trial ``trial + i``, so the default
-        ``trial=1`` draws trials 1 to size, and ``trial=size + 1`` continues the
-        same stream.
+        Samples are generated by inverse transform sampling: uniform draws u in
+        the open interval (0, 1), returned as ppf(u). With HDRPRNGParameters,
+        draw i uses HDR trial ``trial + i``, so the default ``trial=1`` draws
+        trials 1 to size, and ``trial=size + 1`` continues the same stream.
 
         Args:
             rv_params: Parameters controlling random variate generation, including
@@ -866,16 +1073,13 @@ class MetalogBase:
         size = rv_params.size
         chex.assert_scalar_positive(size)
         chex.assert_scalar_non_negative(rv_params.max_draws - size)
-        maxval = len(DEFAULT_Y_FULL)
         if isinstance(prng_params, HDRPRNGParameters):
-            mask = _hdr_indices(prng_params, size, maxval)
+            u = _hdr_uniforms(prng_params, size)
         elif isinstance(prng_params, JaxUniformDistributionParameters):
-            key = jax.random.PRNGKey(prng_params.seed)
-            mask = _jax_indices(key, size, maxval)
+            u = _jax_uniforms(jax.random.PRNGKey(prng_params.seed), size)
 
         self.pdf(DEFAULT_Y_FULL)  # asserts feasibility
-        ppf = self.ppf(DEFAULT_Y_FULL)
-        return ppf[mask]
+        return self.ppf(u)
 
     def logpdf(self, x: chex.Numeric) -> chex.Numeric:
         """Compute the natural logarithm of the probability density function.
@@ -908,9 +1112,11 @@ class MetalogBase:
             x: Quantile values at which to evaluate the survival function.
 
         Returns:
-            chex.Numeric: Survival probabilities in (0, 1). Same shape as input.
+            chex.Numeric: Survival probabilities in [0, 1], with the shape of x.
+            Computed from the complementary logit, so it stays accurate in the upper
+            tail, where 1 - cdf(x) would round to 0.
         """
-        return 1.0 - self.cdf(x)
+        return jax.nn.sigmoid(-self._checked_cdf_logit(x))
 
     def logsf(self, x: chex.Numeric) -> chex.Numeric:
         """Compute the natural logarithm of the survival function.
@@ -919,9 +1125,9 @@ class MetalogBase:
             x: Quantile values at which to evaluate log(SF).
 
         Returns:
-            chex.Numeric: Log-survival probabilities. Same shape as input.
+            chex.Numeric: Log-survival probabilities, with the shape of x.
         """
-        return jnp.log(self.sf(x))
+        return jax.nn.log_sigmoid(-self._checked_cdf_logit(x))
 
     def isf(self, q: chex.Numeric) -> chex.Numeric:
         """Compute the inverse survival function (inverse complementary CDF).
@@ -951,20 +1157,69 @@ class MetalogBase:
         stats = summary_stats(engine, jnp.asarray(self.a, jnp.float64))
         return stats["skewness"], stats["kurtosis"]
 
-    def _sampled_shape(self) -> tuple[chex.Scalar, chex.Scalar]:
-        """Skewness and kurtosis of the 20,000 moment draws (biased, as scipy)."""
-        c = self._moment_samples()
-        c = c - jnp.mean(c)
-        m2 = jnp.mean(c**2)
-        return jnp.mean(c**3) / m2**1.5, jnp.mean(c**4) / m2**2
+    @jax.jit
+    def _quadrature_moments(
+        self,
+    ) -> tuple[chex.Scalar, chex.Scalar, chex.Scalar, chex.Scalar]:
+        """Mean, variance, skewness and kurtosis by quadrature on the logit scale.
 
-    def _moment_samples(self) -> chex.Numeric:
-        """20,000 draws used to estimate moments of bounded metalogs."""
-        return self.rvs(
-            MetalogRandomVariableParameters(
-                prng_params=JaxUniformDistributionParameters(seed=0), size=20_000
-            )
+        E[g(X)] is the integral of g(Q(y)) over (0, 1), here by the tanh-sinh rule
+        of _tanh_sinh_rule. A semi-bounded metalog has a power-law tail: as y
+        approaches the unbounded end, M(y) grows like s_end logit(y), where s_end is
+        the scale polynomial at that end, so X behaves like a Pareto variable with
+        index 1 / s_end, and E[|X|^k] is finite only when k s_end < 1. Moments
+        that don't exist follow scipy.stats: the mean is -inf or inf, the variance
+        inf, and the skewness and kurtosis NaN.
+
+        Returns:
+            tuple: ``(mean, variance, skewness, kurtosis)``, kurtosis as Pearson's.
+        """
+        _, mu, s = self._logit_parts()
+        x = self._from_unbounded(_unbounded_ppf_at_logit(mu, s, _QUADRATURE_NODES))
+        mean = jnp.sum(_QUADRATURE_WEIGHTS * x)
+        # Centre and scale by the interquartile range before taking powers, so
+        # (X - mean)^4 doesn't overflow in a heavy tail whatever the units of X
+        quartile_logits = logit(jnp.asarray(_LogitScale.SCALE_PROBABILITIES.value))
+        quartiles = self._from_unbounded(
+            _unbounded_ppf_at_logit(mu, s, quartile_logits)
         )
+        scale = quartiles[1] - quartiles[0]
+        c = (x - mean) / scale
+        m2, m3, m4 = (jnp.sum(_QUADRATURE_WEIGHTS * c**p) for p in (2, 3, 4))
+
+        if self.boundedness == MetalogBoundedness.STRICTLY_LOWER_BOUND:
+            upper_end = jnp.asarray(_LogitScale.UPPER_TAIL_X.value)
+            tail, infinite_mean = _horner(s, upper_end), jnp.inf
+        elif self.boundedness == MetalogBoundedness.STRICTLY_UPPER_BOUND:
+            lower_end = jnp.asarray(_LogitScale.LOWER_TAIL_X.value)
+            tail, infinite_mean = _horner(s, lower_end), -jnp.inf
+        else:  # BOUNDED: every moment is finite
+            tail, infinite_mean = jnp.asarray(0.0), jnp.nan
+
+        def exists(order: int) -> chex.Array:
+            return order * tail < 1
+
+        return (
+            jnp.where(exists(1), mean, infinite_mean),
+            jnp.where(exists(2), m2 * scale**2, jnp.inf),
+            jnp.where(exists(3), m3 / m2**1.5, jnp.nan),
+            jnp.where(exists(4), m4 / m2**2, jnp.nan),
+        )
+
+    def _bounded_moments(
+        self,
+    ) -> tuple[chex.Scalar, chex.Scalar, chex.Scalar, chex.Scalar]:
+        """Check the fit, then return _quadrature_moments.
+
+        Returns:
+            tuple: ``(mean, variance, skewness, kurtosis)``.
+
+        Raises:
+            NotFittedError: If the distribution has not been fitted.
+            checkify.JaxRuntimeError: If the fit is infeasible.
+        """  # noqa: DOC502
+        self.assert_fitted()
+        return self._quadrature_moments()
 
     @property
     def mean(self) -> chex.Scalar:
@@ -973,8 +1228,9 @@ class MetalogBase:
         Exact for unbounded metalogs, via the closed-form integrals of Baucells,
         Chrisman, Keelin and Xu (2025) (Lemma 1, Proposition 3). Bounded and
         semi-bounded metalogs have no closed form after the log/logit
-        back-transform, so their mean is estimated by Monte Carlo sampling with
-        20,000 draws.
+        back-transform, so their mean is the integral of the quantile function,
+        by tanh-sinh quadrature on the logit scale. A semi-bounded metalog's mean
+        is infinite when its tail is too heavy (see ``var``).
 
         Returns:
             chex.Scalar: The mean of the distribution.
@@ -986,7 +1242,7 @@ class MetalogBase:
         """
         if self._has_exact_moments():
             return self._exact_mean_and_variance()[0]
-        return jnp.mean(self._moment_samples())
+        return self._bounded_moments()[0]
 
     @property
     def median(self) -> chex.Scalar:
@@ -1003,44 +1259,48 @@ class MetalogBase:
     def var(self) -> chex.Scalar:
         """Compute the variance of the metalog distribution.
 
-        Exact for unbounded metalogs (see ``mean``); estimated by Monte Carlo
-        sampling with 20,000 draws for bounded and semi-bounded metalogs.
+        Exact for unbounded metalogs (see ``mean``), and by quadrature for bounded
+        and semi-bounded metalogs. A semi-bounded metalog's open end has a
+        power-law tail: its k-th moment is finite only when k times the scale
+        polynomial at that end, s(0.5) for STRICTLY_LOWER_BOUND or s(-0.5) for
+        STRICTLY_UPPER_BOUND, is below 1. As in scipy.stats, a mean that doesn't
+        exist is -inf or inf, a variance inf, and a skewness or kurtosis NaN.
 
         Returns:
             chex.Scalar: The variance of the distribution.
         """
         if self._has_exact_moments():
             return self._exact_mean_and_variance()[1]
-        return jnp.var(self._moment_samples())
+        return self._bounded_moments()[1]
 
     @property
     def std(self) -> chex.Scalar:
         """Compute the standard deviation of the metalog distribution.
 
-        Exact for unbounded metalogs (see ``mean``); estimated by Monte Carlo
-        sampling with 20,000 draws for bounded and semi-bounded metalogs.
+        Exact for unbounded metalogs (see ``mean``), and by quadrature for bounded
+        and semi-bounded metalogs (see ``var``).
 
         Returns:
             chex.Scalar: The standard deviation of the distribution.
         """
         if self._has_exact_moments():
             return jnp.sqrt(self._exact_mean_and_variance()[1])
-        return jnp.std(self._moment_samples())
+        return jnp.sqrt(self._bounded_moments()[1])
 
     @property
     def skewness(self) -> chex.Scalar:
         """Compute the skewness of the metalog distribution.
 
         Skewness is the third standardized central moment, E[(X - mean)^3] / std^3.
-        Exact for unbounded metalogs (see ``mean``); estimated from 20,000 draws
-        for bounded and semi-bounded metalogs.
+        Exact for unbounded metalogs (see ``mean``), and by quadrature for bounded
+        and semi-bounded metalogs (see ``var``).
 
         Returns:
             chex.Scalar: The skewness of the distribution.
         """
         if self._has_exact_moments():
             return self._exact_shape()[0]
-        return self._sampled_shape()[0]
+        return self._bounded_moments()[2]
 
     @property
     def kurtosis(self) -> chex.Scalar:
@@ -1048,15 +1308,51 @@ class MetalogBase:
 
         Pearson kurtosis, E[(X - mean)^4] / var^2: 3 for a normal distribution and
         4.2 for the logistic. Subtract 3 for excess kurtosis (scipy's default
-        convention). Exact for unbounded metalogs (see ``mean``); estimated from
-        20,000 draws for bounded and semi-bounded metalogs.
+        convention). Exact for unbounded metalogs (see ``mean``), and by quadrature
+        for bounded and semi-bounded metalogs (see ``var``).
 
         Returns:
             chex.Scalar: The kurtosis of the distribution.
         """
         if self._has_exact_moments():
             return self._exact_shape()[1]
-        return self._sampled_shape()[1]
+        return self._bounded_moments()[3]
+
+    @jax.jit
+    def _density_mode(self) -> chex.Scalar:
+        """The quantile with the highest density, found on the logit scale.
+
+        The density of X at y = sigmoid(t) is y (1 - y) / (dM/dt dX/dM). Its log
+        is maximized over a grid of t in [-40, 40], then refined to rounding by
+        bisection on the sign of its derivative between the neighbouring grid
+        points. A mode at an edge of the grid is where the density keeps rising
+        toward a bound of the support, so it returns that bound, to rounding.
+
+        Returns:
+            chex.Scalar: The mode of the distribution.
+        """
+        engine, mu, s = self._logit_parts()
+
+        def log_density(t: chex.Numeric) -> chex.Numeric:
+            m = _unbounded_ppf_at_logit(mu, s, t)
+            # dM/dt is 0 at a binding mode of a feasible fit: infinite density
+            slope = jnp.maximum(engine.level(1, mu, s, t), 0.0)
+            logw = jax.nn.log_sigmoid(t) + jax.nn.log_sigmoid(-t)
+            return logw - jnp.log(slope) - self._log_dx_dm(m)
+
+        grid = jnp.asarray(_MODE_GRID)
+        i = jnp.argmax(jax.vmap(log_density)(grid))
+        rising = jax.grad(log_density)
+
+        def halve(_, bracket):
+            lo, hi = bracket
+            mid = 0.5 * (lo + hi)
+            up = rising(mid) > 0
+            return jnp.where(up, mid, lo), jnp.where(up, hi, mid)
+
+        start = (grid[jnp.maximum(i - 1, 0)], grid[jnp.minimum(i + 1, grid.size - 1)])
+        lo, hi = jax.lax.fori_loop(0, _LogitScale.BISECTION_STEPS.value, halve, start)
+        return self._from_unbounded(_unbounded_ppf_at_logit(mu, s, 0.5 * (lo + hi)))
 
     @property
     def mode(self) -> chex.Scalar:
@@ -1064,22 +1360,25 @@ class MetalogBase:
 
         For unbounded metalogs the mode is exact: the highest-density root of
         ``M''``, found by Algorithm 1 of Baucells, Chrisman, Keelin and Xu (2025).
-        This also finds modes that a grid misses, such as the binding modes of a
-        Feasible fit, which can sit at y < 0.001. Bounded and semi-bounded metalogs
-        (whose back-transform moves the modes) and metalogs without an interior mode
-        use the maximum of the PDF over a fine grid of probabilities.
+        This also finds binding modes of a Feasible fit, which can sit at
+        y < 0.001. Bounded and semi-bounded metalogs, whose back-transform moves
+        the modes, and metalogs without an interior mode maximize the density on
+        the logit scale, refined to rounding. Where the density rises all the way
+        to a bound, the mode is that bound, to rounding.
 
         Returns:
             chex.Scalar: The mode of the distribution.
-        """
-        ppf = self.ppf(DEFAULT_Y_FULL)
-        pdf = self.pdf(DEFAULT_Y_FULL)
-        grid_mode = ppf[jnp.argmax(pdf)]
+
+        Raises:
+            NotFittedError: If the distribution has not been fitted.
+            checkify.JaxRuntimeError: If the fit is infeasible.
+        """  # noqa: DOC502
+        self.assert_fitted()
         if not self._has_exact_moments():
-            return grid_mode
+            return self._density_mode()
         engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
         value, _, found = highest_mode(engine, jnp.asarray(self.a, jnp.float64))
-        return jnp.where(found, value, grid_mode)
+        return jnp.where(found, value, self._density_mode())
 
     def plot(self, plot_option: MetalogPlotOptions) -> go.Figure:
         """Visualize the fitted metalog distribution using interactive Plotly plots.
@@ -1235,6 +1534,9 @@ class MetalogBase:
             q: Quantile values at which to evaluate the density.
 
         Returns:
-            chex.Numeric: Probability density values.
+            chex.Numeric: Probability density values; 0 outside the support,
+            where the CDF is 0 or 1.
         """
-        return self.pdf(self.cdf(q))
+        y = self.cdf(q)
+        inside = (y > 0) & (y < 1)
+        return jnp.where(inside, self.pdf(jnp.where(inside, y, 0.5)), 0.0)
