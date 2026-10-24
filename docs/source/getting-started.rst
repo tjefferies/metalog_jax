@@ -327,7 +327,9 @@ probabilities it checks:
 LASSO Regression
 ~~~~~~~~~~~~~~~~
 
-L1 regularization for sparse solutions using proximal gradient descent:
+L1 regularization for sparse solutions. ``fit`` solves the Lasso exactly by
+feature-sign search, an active-set method, and leaves the intercept a1
+unpenalized; at ``lam=0`` the fit is the least-squares fit:
 
 .. code-block:: python
 
@@ -348,10 +350,8 @@ L1 regularization for sparse solutions using proximal gradient descent:
    # Specify LASSO hyperparameters
    lasso_params = LassoParameters(
        lam=0.1,               # L1 regularization strength
-       learning_rate=0.01,
-       num_iters=500,
-       tol=1e-6,
-       momentum=0.9
+       num_iters=500,         # maximum active-set steps
+       tol=1e-6,              # optimality tolerance
    )
 
    # Fit with LASSO regression

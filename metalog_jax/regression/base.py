@@ -73,13 +73,7 @@ class RegularizedParameters:
             ...     if isinstance(params, LassoParameters):
             ...         print(f"Lasso with L1={params.lam}")
             >>>
-            >>> lasso_params = LassoParameters(
-            ...     lam=1.0,
-            ...     learning_rate=0.01,
-            ...     num_iters=500,
-            ...     tol=1e-6,
-            ...     momentum=0.9
-            ... )
+            >>> lasso_params = LassoParameters(lam=1.0, num_iters=500, tol=1e-6)
             >>> validate_regularization(lasso_params)  # Valid
             Lasso with L1=1.0
 
@@ -87,13 +81,7 @@ class RegularizedParameters:
 
             >>> # Lasso regression (L1 only)
             >>> from metalog_jax.regression.lasso import LassoParameters
-            >>> lasso = LassoParameters(
-            ...     lam=0.5,
-            ...     learning_rate=0.01,
-            ...     num_iters=500,
-            ...     tol=1e-6,
-            ...     momentum=0.9
-            ... )
+            >>> lasso = LassoParameters(lam=0.5, num_iters=500, tol=1e-6)
             >>> isinstance(lasso, RegularizedParameters)
             True
 

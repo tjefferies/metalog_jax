@@ -29,8 +29,6 @@ from metalog_jax.regression.base import RegressionModel, RegularizedParameters
 from metalog_jax.regression.lasso import (
     DEFAULT_LASSO_ITERATIONS,
     DEFAULT_LASSO_LAMBDA,
-    DEFAULT_LASSO_LEARNING_RATE,
-    DEFAULT_LASSO_MOMENTUM,
     DEFAULT_LASSO_PARAMETERS,
     DEFAULT_LASSO_TOLERANCE,
     LassoModel,
@@ -48,8 +46,6 @@ __all__ = [
     # LASSO
     "DEFAULT_LASSO_ITERATIONS",
     "DEFAULT_LASSO_LAMBDA",
-    "DEFAULT_LASSO_LEARNING_RATE",
-    "DEFAULT_LASSO_MOMENTUM",
     "DEFAULT_LASSO_PARAMETERS",
     "DEFAULT_LASSO_TOLERANCE",
     "LassoModel",

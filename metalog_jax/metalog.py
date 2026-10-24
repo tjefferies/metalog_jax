@@ -32,6 +32,7 @@ import chex
 import jax
 import jax.numpy as jnp
 from flax import struct
+from jax.experimental import checkify
 
 from metalog_jax.base import (
     MetalogBase,
@@ -43,6 +44,8 @@ from metalog_jax.base import (
 )
 from metalog_jax.feasibility.a_star import fit_feasible
 from metalog_jax.regression import (
+    LassoModel,
+    RegressionModel,
     RegularizedParameters,
     fit_lasso,
     fit_ordinary_least_squares,
@@ -58,10 +61,12 @@ from metalog_jax.utils import (
 # Keelin 2016 rounds it to 1.66711).
 THETA_3 = 1.6671131192019295
 
-# Dispatch table mapping fit methods to their implementation functions
+# Dispatch table mapping fit methods to their implementation functions. The first
+# basis column is the intercept, a1, which Lasso leaves unpenalized, so that the
+# penalty doesn't depend on the data's location.
 _FIT_METHOD_DISPATCH = {
     MetalogFitMethod.OLS: fit_ordinary_least_squares,
-    MetalogFitMethod.Lasso: fit_lasso,
+    MetalogFitMethod.Lasso: partial(fit_lasso, intercept=True),
     MetalogFitMethod.Feasible: fit_feasible,
 }
 
@@ -501,6 +506,9 @@ def fit(
             deficient so the fit is not unique (e.g. n = k symmetric probabilities
             with 7, 11, 15, ... terms; Baucells et al. 2025, Proposition 2), or if
             Feasible cannot certify its result.
+        checkify.JaxRuntimeError: For Lasso, if the coefficients aren't finite, or
+            the solver stopped at LassoParameters.num_iters steps without
+            converging. Both are checked before the density.
 
     Example:
         Basic usage with OLS (no regularization):
@@ -551,9 +559,37 @@ def fit(
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
     """  # noqa: DOC502
-    metalog = _fit_coefficients(data, metalog_params, regression_hyperparams)
+    metalog, model = _fit_regression(data, metalog_params, regression_hyperparams)
+    _assert_lasso_solved(model)
     metalog.assert_fitted()
     return metalog
+
+
+def _assert_lasso_solved(model: RegressionModel) -> None:
+    """Raise if a Lasso fit isn't finite or stopped before converging.
+
+    Other fit methods return models without a convergence flag, and pass.
+
+    Args:
+        model: The regression model that fitted the coefficients.
+
+    Raises:
+        checkify.JaxRuntimeError: If the Lasso coefficients aren't finite, or the
+            solver stopped at LassoParameters.num_iters steps.
+    """  # noqa: DOC502
+    if not isinstance(model, LassoModel):
+        return
+    checkify.check(
+        jnp.all(jnp.isfinite(model.weights)),
+        "The Lasso coefficients aren't finite; check that the data are finite "
+        "and lie inside the bounds.",
+    )
+    checkify.check(
+        model.converged,
+        "Lasso stopped after {} steps without meeting its optimality "
+        "conditions; raise LassoParameters.num_iters.",
+        model.iterations,
+    )
 
 
 def _fit_coefficients(
@@ -579,6 +615,30 @@ def _fit_coefficients(
         checkify.JaxRuntimeError: For OLS and Feasible, if the basis matrix is rank
             deficient, or if Feasible cannot certify its result.
     """  # noqa: DOC502
+    return _fit_regression(data, metalog_params, regression_hyperparams)[0]
+
+
+def _fit_regression(
+    data: MetalogInputData,
+    metalog_params: MetalogParameters,
+    regression_hyperparams: RegularizedParameters = None,
+) -> tuple[Metalog, RegressionModel]:
+    """Fit the coefficients, and return the regression model with the metalog.
+
+    Args:
+        data: Input data, as for fit().
+        metalog_params: Parameters, as for fit().
+        regression_hyperparams: Lasso hyperparameters, as for fit().
+
+    Returns:
+        tuple[Metalog, RegressionModel]: The fitted metalog, which may be
+        infeasible, and the model, which for Lasso says whether it converged.
+
+    Raises:
+        TypeError: As fit() does, for an invalid method or hyperparameters.
+        checkify.JaxRuntimeError: For OLS and Feasible, if the basis matrix is rank
+            deficient, or if Feasible cannot certify its result.
+    """  # noqa: DOC502
     quantiles = Metalog.get_quantiles(data=data, metalog_params=metalog_params)
     target = Metalog.get_target(data=data, metalog_params=metalog_params)
 
@@ -586,7 +646,7 @@ def _fit_coefficients(
     if metalog_params.method != MetalogFitMethod.Lasso:  # Lasso is regularized
         assert_full_column_rank(target)
     model = fit_method(target, quantiles)
-    return Metalog(metalog_params=metalog_params, a=model.weights)
+    return Metalog(metalog_params=metalog_params, a=model.weights), model
 
 
 @jax.jit

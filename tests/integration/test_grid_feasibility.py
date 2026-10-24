@@ -66,13 +66,15 @@ class GridFeasibilityTest(parameterized.TestCase):
     EXPECTED = ((True, True), (True, False), (True, True))
 
     # Quantiles of 3-term metalogs: |a3| / a2 = 1.7 is past THETA_3 = 1.667, so an
-    # unpenalized Lasso fit is infeasible and larger penalties shrink it back
+    # unpenalized Lasso fit is infeasible and larger penalties shrink it back. The
+    # exact Lasso fit at 1.0 has |a3| / a2 = 0.98 (scikit-learn's Lasso agrees);
+    # at 10.0 both slopes are 0, a constant that check_feasibility accepts.
     LOGIT = jnp.log(DEFAULT_Y / (1 - DEFAULT_Y))
     LASSO_GOOD = 10 + 2 * LOGIT + 1.0 * (DEFAULT_Y - 0.5) * LOGIT
     LASSO_BAD = 10 + 2 * LOGIT + 3.4 * (DEFAULT_Y - 0.5) * LOGIT
     LASSO = params(MetalogFitMethod.Lasso, 3)
     L1 = jnp.array([0.0, 1.0, 3.0, 10.0])
-    LASSO_EXPECTED = ((True, True, True, True), (False, False, True, True))
+    LASSO_EXPECTED = ((True, True, True, True), (False, True, True, True))
 
     def assert_feasible_is_certified(self, result, num_terms):
         """Check feasible against check_feasibility of each fit's own terms."""
@@ -194,8 +196,8 @@ class OnInfeasibleTest(parameterized.TestCase):
         """The default raises one error for the batch, showing the feasibility mask."""
         masks = {
             "fit_grid_datasets": r"\[ True False  True\]",
-            "fit_grid_hyperparams": r"\[False False  True  True\]",
-            "fit_grid_datasets_hyperparams": r"\[\[ True  True  True  True\]\s+\[False False  True  True\]\]",
+            "fit_grid_hyperparams": r"\[False  True  True  True\]",
+            "fit_grid_datasets_hyperparams": r"\[\[ True  True  True  True\]\s+\[False  True  True  True\]\]",
         }
         for name, run in self.grids("raise").items():
             with self.subTest(function=name):

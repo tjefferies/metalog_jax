@@ -441,7 +441,9 @@ uv run --with matplotlib python benchmarks/feasible_scaling/plot.py \
 
 ### Regularized Fitting
 
-For noisy data or when using many terms, LASSO regularization improves stability:
+For noisy data or when using many terms, LASSO regularization improves stability.
+`fit` solves the Lasso exactly by an active-set method and leaves the intercept a1
+unpenalized; at `lam=0` the fit is the least-squares fit:
 
 ```python
 from metalog_jax.base import MetalogInputData, MetalogParameters
@@ -452,10 +454,8 @@ from metalog_jax.regression import LassoParameters
 # LASSO (L1 regularization for sparse coefficients)
 lasso_params = LassoParameters(
     lam=0.01,              # L1 regularization strength
-    learning_rate=1e-3,
-    num_iters=1000,
-    tol=1e-6,
-    momentum=0.9,
+    num_iters=500,         # maximum active-set steps (a fit takes a handful)
+    tol=1e-6,              # optimality tolerance
 )
 params = MetalogParameters(
     boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
@@ -968,6 +968,7 @@ And, if you use `MetalogFitMethod.Feasible`, `metalog_jax.feasibility` or the ex
 
 ### Optimization Algorithms
 
+- Lee, H., Battle, A., Raina, R., & Ng, A. Y. (2007). Efficient sparse coding algorithms. *Advances in Neural Information Processing Systems 19*, 801-808. The feature-sign search that `fit_lasso` uses.
 - Beck, A., & Teboulle, M. (2009). [A Fast Iterative Shrinkage-Thresholding Algorithm for Linear Inverse Problems](https://doi.org/10.1137/080716542). *SIAM Journal on Imaging Sciences*, 2(1), 183-202.
 - Parikh, N., & Boyd, S. (2014). [Proximal Algorithms](https://doi.org/10.1561/2400000003). *Foundations and Trends in Optimization*, 1(3), 127-239.
 
