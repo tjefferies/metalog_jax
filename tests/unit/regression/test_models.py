@@ -23,7 +23,6 @@ from metalog_jax.regression import (
     fit_lasso,
     fit_ordinary_least_squares,
     predict_ordinary_least_squares,
-    soft_thresholding,
 )
 
 
@@ -417,93 +416,26 @@ class LassoModelTest(parameterized.TestCase):
         self.assertIsInstance(model, RegressionModel)
 
 
-class SoftThresholdingTest(absltest.TestCase):
-    """Test suite for the soft-thresholding operator."""
-
-    def test_positive_scalar(self):
-        """Test soft thresholding with positive scalar values."""
-        # Case where x > lambda
-        result = soft_thresholding(jnp.array(3.0), 1.0)
-        self.assertAlmostEqual(float(result), 2.0, places=7)
-
-        # Case where x = lambda
-        result = soft_thresholding(jnp.array(1.0), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-        # Case where 0 < x < lambda
-        result = soft_thresholding(jnp.array(0.5), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-    def test_negative_scalar(self):
-        """Test soft thresholding with negative scalar values."""
-        # Case where x < -lambda
-        result = soft_thresholding(jnp.array(-3.0), 1.0)
-        self.assertAlmostEqual(float(result), -2.0, places=7)
-
-        # Case where x = -lambda
-        result = soft_thresholding(jnp.array(-1.0), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-        # Case where -lambda < x < 0
-        result = soft_thresholding(jnp.array(-0.5), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-    def test_zero(self):
-        """Test soft thresholding with zero."""
-        result = soft_thresholding(jnp.array(0.0), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-    def test_array_input(self):
-        """Test soft thresholding with array input."""
-        x = jnp.array([-3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0])
-        lam = 1.0
-        expected = jnp.array([-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
-        result = soft_thresholding(x, lam)
-        np.testing.assert_allclose(result, expected, rtol=1e-7)
-
-    def test_zero_threshold(self):
-        """Test soft thresholding with zero threshold (identity)."""
-        x = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
-        result = soft_thresholding(x, 0.0)
-        np.testing.assert_allclose(result, x, rtol=1e-7)
-
-    def test_large_threshold(self):
-        """Test soft thresholding with very large threshold."""
-        x = jnp.array([-10.0, -5.0, 0.0, 5.0, 10.0])
-        result = soft_thresholding(x, 100.0)
-        np.testing.assert_allclose(result, jnp.zeros_like(x), rtol=1e-7)
-
-    def test_jit_compilation(self):
-        """Test that soft thresholding works with JIT compilation."""
-        x = jnp.array([1.0, 2.0, 3.0])
-        jitted_fn = jax.jit(soft_thresholding)
-        result1 = soft_thresholding(x, 1.5)
-        result2 = jitted_fn(x, 1.5)
-        np.testing.assert_allclose(result1, result2, rtol=1e-7)
-
-
-class LassoNesterovTest(absltest.TestCase):
-    """Test suite for the LASSO regression with Nesterov acceleration."""
+class LassoSolverTest(absltest.TestCase):
+    """Test suite for LASSO regression by feature-sign search."""
 
     def setUp(self):
         """Set random seed for reproducibility."""
         np.random.seed(42)
 
     def test_zero_regularization(self):
-        """Test that zero regularization gives OLS solution."""
+        """Test that zero regularization gives the OLS solution, to rounding."""
         n_samples, n_features = 100, 5
         X = jnp.array(np.random.randn(n_samples, n_features))
         w_true = jnp.array(np.random.randn(n_features))
         y = X @ w_true + 0.01 * jnp.array(np.random.randn(n_samples))
 
         # LASSO with lambda=0 should give OLS solution
-        params = LassoParameters(
-            lam=0.0, learning_rate=0.1, num_iters=1000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.0, num_iters=1000, tol=1e-6)
         w_lasso = fit_lasso(X, y, params=params).weights
         w_ols = jnp.linalg.lstsq(X, y)[0]
 
-        np.testing.assert_allclose(w_lasso, w_ols, atol=1e-3)
+        np.testing.assert_allclose(w_lasso, w_ols, rtol=1e-10, atol=1e-12)
 
     def test_large_regularization_zeros(self):
         """Test that very large regularization gives zero weights."""
@@ -512,9 +444,7 @@ class LassoNesterovTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples))
 
         # Very large lambda should zero out all weights
-        params = LassoParameters(
-            lam=1000.0, learning_rate=0.01, num_iters=100, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=1000.0, num_iters=100, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         np.testing.assert_allclose(w, jnp.zeros(n_features), atol=1e-6)
 
@@ -531,9 +461,7 @@ class LassoNesterovTest(absltest.TestCase):
         y = X @ w_true + 0.1 * jnp.array(np.random.randn(n_samples))
 
         # Run LASSO with moderate regularization
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=2000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=2000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
 
         # Check that solution is sparse
@@ -549,15 +477,11 @@ class LassoNesterovTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples))
 
         # Run with tight tolerance
-        params1 = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=1000, tol=1e-8, momentum=0.9
-        )
+        params1 = LassoParameters(lam=0.1, num_iters=1000, tol=1e-8)
         w1 = fit_lasso(X, y, params=params1).weights
 
         # Run more iterations - should give same result if converged
-        params2 = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=2000, tol=1e-8, momentum=0.9
-        )
+        params2 = LassoParameters(lam=0.1, num_iters=2000, tol=1e-8)
         w2 = fit_lasso(X, y, params=params2).weights
 
         np.testing.assert_allclose(w1, w2, atol=1e-7)
@@ -578,9 +502,7 @@ class LassoNesterovTest(absltest.TestCase):
         obj_init = lasso_objective(jnp.ones(n_features))
 
         # Final objective
-        params = LassoParameters(
-            lam=lam, learning_rate=0.01, num_iters=1000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=lam, num_iters=1000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         obj_final = lasso_objective(w)
 
@@ -603,22 +525,20 @@ class LassoNesterovTest(absltest.TestCase):
         alpha = lam
 
         # Our implementation
-        params = LassoParameters(
-            lam=lam, learning_rate=0.1, num_iters=2000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=lam, num_iters=2000, tol=1e-6)
         w_ours = fit_lasso(X, y, params=params).weights
 
         # Sklearn implementation
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             sklearn_lasso = SklearnLasso(
-                alpha=alpha, fit_intercept=False, max_iter=2000, tol=1e-6
+                alpha=alpha, fit_intercept=False, max_iter=1_000_000, tol=1e-14
             )
             sklearn_lasso.fit(X_np, y_np)
             w_sklearn = sklearn_lasso.coef_
 
-        # Should be close (allowing for differences in optimization)
-        np.testing.assert_allclose(w_ours, w_sklearn, atol=0.1)
+        # Both reach the same minimizer: ours exactly, scikit-learn to tol 1e-14
+        np.testing.assert_allclose(w_ours, w_sklearn, atol=1e-10)
 
     def test_single_feature(self):
         """Test with single feature (1D regression)."""
@@ -626,9 +546,7 @@ class LassoNesterovTest(absltest.TestCase):
         X = jnp.array(np.random.randn(n_samples, 1))
         y = 2.0 * X[:, 0] + 0.1 * jnp.array(np.random.randn(n_samples))
 
-        params = LassoParameters(
-            lam=0.01, learning_rate=0.1, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.01, num_iters=500, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertEqual(w.shape, (1,))
         self.assertLess(
@@ -641,9 +559,7 @@ class LassoNesterovTest(absltest.TestCase):
         y = jnp.array([1.0])
 
         # With single sample, solution is not unique but should run
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=100, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=100, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertEqual(w.shape, (3,))
         self.assertFalse(jnp.any(jnp.isnan(w)))
@@ -656,9 +572,7 @@ class LassoNesterovTest(absltest.TestCase):
         y = X @ w_true  # Perfect fit, no noise
 
         # With small regularization, should recover true weights
-        params = LassoParameters(
-            lam=1e-6, learning_rate=0.1, num_iters=1000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=1e-6, num_iters=1000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         np.testing.assert_allclose(w, w_true, atol=1e-3)
 
@@ -668,9 +582,7 @@ class LassoNesterovTest(absltest.TestCase):
         X = jnp.array(np.random.randn(n_samples, n_features))
         y = jnp.array(np.random.randn(n_samples))
 
-        params = LassoParameters(
-            lam=0.01, learning_rate=0.01, num_iters=1000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.01, num_iters=1000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertEqual(w.shape, (n_features,))
         self.assertFalse(jnp.any(jnp.isnan(w)))
@@ -682,9 +594,7 @@ class LassoNesterovTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples))
 
         # LASSO should still work and produce sparse solution
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.001, num_iters=2000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=2000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertEqual(w.shape, (n_features,))
         self.assertFalse(jnp.any(jnp.isnan(w)))
@@ -699,9 +609,7 @@ class LassoNesterovTest(absltest.TestCase):
         X = jnp.array(np.random.randn(n_samples, n_features))
         y = jnp.array(np.random.randn(n_samples))
 
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=500, tol=1e-6)
         w1 = fit_lasso(X, y, params=params).weights
         w2 = fit_lasso(X, y, params=params).weights
 
@@ -717,55 +625,11 @@ class LassoNesterovTest(absltest.TestCase):
         lasso_jitted = jax.jit(fit_lasso, static_argnums=(2,))
 
         # Compare results
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=500, tol=1e-6)
         w1 = fit_lasso(X, y, params=params).weights
         w2 = lasso_jitted(X, y, params=params).weights
 
         np.testing.assert_allclose(w1, w2)
-
-
-class LearningRateTest(parameterized.TestCase):
-    """Parameterized tests for different learning rates."""
-
-    @parameterized.parameters(0.001, 0.01, 0.1)
-    def test_different_learning_rates(self, lr):
-        """Test stability with different learning rates."""
-        np.random.seed(42)
-        n_samples, n_features = 50, 10
-        X = jnp.array(np.random.randn(n_samples, n_features))
-        y = jnp.array(np.random.randn(n_samples))
-
-        params = LassoParameters(
-            lam=0.1, learning_rate=lr, num_iters=2000, tol=1e-6, momentum=0.9
-        )
-        w = fit_lasso(X, y, params=params).weights
-        self.assertFalse(jnp.any(jnp.isnan(w)))
-
-        # Check that solution is reasonable (not exploding)
-        self.assertLess(float(jnp.max(jnp.abs(w))), 100.0)
-
-
-class MomentumTest(parameterized.TestCase):
-    """Parameterized tests for momentum values."""
-
-    @parameterized.parameters(0.0, 0.5, 0.9, 0.99)
-    def test_momentum_values(self, momentum):
-        """Test different momentum values."""
-        np.random.seed(42)
-        n_samples, n_features = 100, 20
-        X = jnp.array(np.random.randn(n_samples, n_features))
-        y = jnp.array(np.random.randn(n_samples))
-
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=500, tol=1e-6, momentum=momentum
-        )
-        w = fit_lasso(X, y, params=params).weights
-
-        # Should produce valid solutions for all momentum values
-        self.assertFalse(jnp.any(jnp.isnan(w)))
-        self.assertFalse(jnp.any(jnp.isinf(w)))
 
 
 class EdgeCasesTest(absltest.TestCase):
@@ -781,9 +645,7 @@ class EdgeCasesTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples))
 
         # Should handle collinearity gracefully
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.001, num_iters=1000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=1000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertFalse(jnp.any(jnp.isnan(w)))
         self.assertFalse(jnp.any(jnp.isinf(w)))
@@ -796,9 +658,7 @@ class EdgeCasesTest(absltest.TestCase):
         X = X.at[:, 2].set(1.0)  # Make third feature constant
         y = jnp.array(np.random.randn(n_samples))
 
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=500, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertFalse(jnp.any(jnp.isnan(w)))
 
@@ -809,9 +669,7 @@ class EdgeCasesTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples))
 
         # With zero features, weights should be zero
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=100, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=100, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         np.testing.assert_allclose(w, jnp.zeros(n_features))
 
@@ -823,9 +681,7 @@ class EdgeCasesTest(absltest.TestCase):
         y = jnp.zeros(n_samples)
 
         # With zero targets, optimal weights are zero
-        params = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.1, num_iters=500, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         np.testing.assert_allclose(w, jnp.zeros(n_features), atol=1e-6)
 
@@ -837,9 +693,7 @@ class EdgeCasesTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples)) * 1000
 
         # Should handle large values without overflow
-        params = LassoParameters(
-            lam=10.0, learning_rate=1e-7, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=10.0, num_iters=500, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertFalse(jnp.any(jnp.isnan(w)))
         self.assertFalse(jnp.any(jnp.isinf(w)))
@@ -852,9 +706,7 @@ class EdgeCasesTest(absltest.TestCase):
         y = jnp.array(np.random.randn(n_samples)) * 1e-6
 
         # Should handle small values without underflow
-        params = LassoParameters(
-            lam=1e-8, learning_rate=0.1, num_iters=500, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=1e-8, num_iters=500, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
         self.assertFalse(jnp.any(jnp.isnan(w)))
 
@@ -875,18 +727,14 @@ class PerformanceTest(absltest.TestCase):
 
         params1 = LassoParameters(
             lam=0.1,
-            learning_rate=0.01,
             num_iters=max_iters,
             tol=tight_tol,
-            momentum=0.9,
         )
         w = fit_lasso(X, y, params=params1).weights
 
         # Run again with fewer iterations but loose tolerance
         # Should give similar result if early stopping worked
-        params2 = LassoParameters(
-            lam=0.1, learning_rate=0.01, num_iters=100, tol=1e-4, momentum=0.9
-        )
+        params2 = LassoParameters(lam=0.1, num_iters=100, tol=1e-4)
         w2 = fit_lasso(X, y, params=params2).weights
 
         np.testing.assert_allclose(w, w2, atol=12e-4)
@@ -900,9 +748,7 @@ class PerformanceTest(absltest.TestCase):
             X = jnp.array(np.random.randn(n_samples, n_features))
             y = jnp.array(np.random.randn(n_samples))
 
-            params = LassoParameters(
-                lam=0.1, learning_rate=0.01, num_iters=500, tol=1e-6, momentum=0.9
-            )
+            params = LassoParameters(lam=0.1, num_iters=500, tol=1e-6)
             w = fit_lasso(X, y, params=params).weights
             self.assertEqual(w.shape, (n_features,))
             self.assertFalse(jnp.any(jnp.isnan(w)))
@@ -927,9 +773,7 @@ class IntegrationTest(absltest.TestCase):
         y = (y - y.mean()) / y.std()
 
         # Run LASSO regression
-        params = LassoParameters(
-            lam=0.05, learning_rate=0.01, num_iters=2000, tol=1e-6, momentum=0.9
-        )
+        params = LassoParameters(lam=0.05, num_iters=2000, tol=1e-6)
         w = fit_lasso(X, y, params=params).weights
 
         # Check basic properties
@@ -960,9 +804,7 @@ class RegularizationPathTest(parameterized.TestCase):
 
         sparsities = []
         for lam in lambdas:
-            params = LassoParameters(
-                lam=lam, learning_rate=0.01, num_iters=1000, tol=1e-6, momentum=0.9
-            )
+            params = LassoParameters(lam=lam, num_iters=1000, tol=1e-6)
             w = fit_lasso(X, y, params=params).weights
             sparsity = jnp.sum(jnp.abs(w) < 1e-6) / n_features
             sparsities.append(float(sparsity))

@@ -2,23 +2,20 @@
 """LASSO regression implementation with L1 regularization.
 
 This module provides LASSO (Least Absolute Shrinkage and Selection Operator)
-regression for fitting metalog distributions with L1 regularization using
-proximal gradient descent with Nesterov acceleration.
+regression. fit_lasso solves it exactly by feature-sign search, an active-set
+method (Lee, Battle, Raina and Ng 2007), and reports whether it converged.
 
 Classes:
     LassoParameters: Hyperparameters for LASSO regression.
-    LassoModel: Structure for trained LASSO model weights.
+    LassoModel: A fitted LASSO model: its weights, and whether it converged.
 
 Functions:
-    fit_lasso: Fit a LASSO regression model via proximal gradient descent.
-    soft_thresholding: Apply the soft-thresholding operator (proximal for L1).
+    fit_lasso: Fit a LASSO regression model by feature-sign search.
 
 Constants:
     DEFAULT_LASSO_LAMBDA: Default L1 regularization strength (0).
-    DEFAULT_LASSO_LEARNING_RATE: Default learning rate (0.01).
-    DEFAULT_LASSO_ITERATIONS: Default maximum iterations (500).
-    DEFAULT_LASSO_TOLERANCE: Default convergence tolerance (1e-6).
-    DEFAULT_LASSO_MOMENTUM: Default Nesterov momentum factor (0.9).
+    DEFAULT_LASSO_ITERATIONS: Default maximum number of active-set steps (500).
+    DEFAULT_LASSO_TOLERANCE: Default optimality tolerance (1e-6).
     DEFAULT_LASSO_PARAMETERS: Default LassoParameters instance.
 
 This module is used when MetalogFitMethod.Lasso is specified in MetalogParameters.
@@ -28,6 +25,8 @@ See Also:
     metalog_jax.metalog.fit: High-level fitting function that dispatches to LASSO.
 """
 
+from functools import partial
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -36,10 +35,8 @@ from flax import struct
 from metalog_jax.regression.base import RegressionModel, RegularizedParameters
 
 DEFAULT_LASSO_LAMBDA: float = 0.0
-DEFAULT_LASSO_LEARNING_RATE: float = 0.01
 DEFAULT_LASSO_ITERATIONS: int = 500
 DEFAULT_LASSO_TOLERANCE: float = 1e-6
-DEFAULT_LASSO_MOMENTUM: float = 0.9
 
 
 @struct.dataclass
@@ -48,261 +45,292 @@ class LassoParameters(RegularizedParameters):
 
     Attributes:
         lam: L1 regularization strength λ ≥ 0. Controls sparsity of the solution:
-            - λ = 0: No regularization (equivalent to OLS, but solved iteratively)
+            - λ = 0: No regularization; the fit is the least-squares fit
             - λ > 0: Promotes sparsity; larger values → more coefficients set to zero
             - Typical values: 0.001 to 10.0, depending on data scale
-        learning_rate: Learning rate (step size) for gradient descent. Default: 0.01.
-            Controls the size of parameter updates. Should be tuned based on problem:
-            - Too large: May cause divergence or oscillation
-            - Too small: Slow convergence
-            - Typical values: 0.001 to 0.1
-        num_iters: Maximum number of iterations. Default: 500.
-            Training will stop early if convergence is reached before this limit.
-        tol: Convergence tolerance for weight changes. Default: 1e-6.
-            Training stops when ||w_new - w|| < tol, indicating the solution has stabilized.
-            Smaller values require more precise convergence but may take longer.
-        momentum: Nesterov momentum factor, must satisfy 0 < momentum < 1. Default: 0.9.
-            Controls acceleration of convergence:
-            - Higher values (e.g., 0.9, 0.99): Faster convergence but less stable
-            - Lower values (e.g., 0.5, 0.7): More stable but slower convergence
-            - Standard choice: 0.9
+        num_iters: Maximum number of active-set steps. Default: 500. Each step
+            adds or removes coefficients from the active set, so a fit takes about
+            as many steps as it has nonzero coefficients.
+        tol: Optimality tolerance, relative to ``max |Xᵀy| / n``. Default: 1e-6. The
+            fit has converged when every coefficient satisfies the Lasso's
+            optimality (KKT) conditions to within it.
     """
 
     lam: float
-    learning_rate: float
-    num_iters: int
-    tol: float
-    momentum: float
+    num_iters: int = DEFAULT_LASSO_ITERATIONS
+    tol: float = DEFAULT_LASSO_TOLERANCE
 
 
 DEFAULT_LASSO_PARAMETERS = LassoParameters(
     lam=DEFAULT_LASSO_LAMBDA,
-    learning_rate=DEFAULT_LASSO_LEARNING_RATE,
     num_iters=DEFAULT_LASSO_ITERATIONS,
     tol=DEFAULT_LASSO_TOLERANCE,
-    momentum=DEFAULT_LASSO_MOMENTUM,
 )
 
 
 @struct.dataclass
 class LassoModel(RegressionModel):
-    """Structure for trained LASSO Regression model weights.
+    """Structure for a fitted LASSO regression model.
 
     Attributes:
         weights: Coefficient vector of shape (n_features,).
-        bias: Intercept term (scalar).
+        converged: Whether the optimality conditions hold to within ``tol``. False
+            when fit_lasso stops at ``num_iters`` steps, or when the data aren't
+            finite. None for a model built by hand.
+        iterations: The number of active-set steps taken. None for a model built
+            by hand.
     """
 
-    pass
+    converged: chex.Array | None = None
+    iterations: chex.Array | None = None
 
 
-@jax.jit
-def soft_thresholding(x: chex.Numeric, lam: float) -> chex.Numeric:
-    """Apply the soft-thresholding operator (proximal operator for L1 norm).
+def _lasso_objective(
+    R: chex.Array, c: chex.Array, n: int, lam: chex.Array, w: chex.Array
+) -> chex.Array:
+    """(1/2n) ||Rw - c||² + Σ lam_j |w_j|, for w or each row of a batch of w.
 
-    The soft-thresholding operator is the proximal operator for the L1 norm and is
-    fundamental to LASSO regression and other sparse optimization methods. It shrinks
-    values toward zero and sets values below the threshold to exactly zero, promoting
-    sparsity in the solution.
-
-    The operator is defined element-wise as:
-        ``soft_threshold(x, λ) = sign(x) * max(|x| - λ, 0)``
-
-    Equivalently:
-        - If x > λ: return x - λ
-        - If x < -λ: return x + λ
-        - If ``|x| ≤ λ``: return 0
-
-    This function is the proximal operator for the L1 penalty:
-        prox_{λ||·||₁}(x) = argmin_z { (1/2)||z - x||² + λ||z||₁ }
+    With X = QR and c = Qᵀy, this differs from (1/2n) ||Xw - y||² + Σ lam_j |w_j|
+    by a constant, the part of y outside X's column space.
 
     Args:
-        x: Input value(s) to threshold. Can be a scalar or array of any shape.
-        lam: Threshold parameter λ ≥ 0. Controls the amount of shrinkage:
-            - λ = 0: No shrinkage (returns x unchanged)
-            - λ > 0: Shrinks values toward zero, setting small values to 0
-            - Larger λ produces sparser solutions with more zeros
+        R: The R factor of X's QR decomposition.
+        c: Qᵀy.
+        n: The number of samples.
+        lam: The penalty on each coefficient.
+        w: Coefficients, shape (k,) or (m, k).
 
     Returns:
-        Thresholded value(s) with the same shape as x. Values are shrunk toward
-        zero by amount λ, with values ``|x| ≤ λ`` set to exactly zero.
-
-    Example:
-        Scalar inputs:
-
-            >>> import jax.numpy as jnp
-            >>> float(soft_thresholding(5.0, 2.0))
-            3.0
-            >>> float(soft_thresholding(-3.0, 1.0))
-            -2.0
-            >>> float(soft_thresholding(1.5, 2.0))  # Below threshold -> zero
-            0.0
-
-        Array inputs:
-
-            >>> x = jnp.array([-5.0, -1.0, 0.5, 2.0, 4.0])
-            >>> soft_thresholding(x, 1.5).tolist()
-            [-3.5, -0.0, 0.0, 0.5, 2.5]
-
-    Note:
-        - This function is JIT-compiled for efficient execution
-        - The operation is element-wise and preserves the input shape
-        - Setting lam=0 returns the input unchanged
-        - This is also known as the "shrinkage operator" or "soft thresholding"
-
-    See Also:
-        fit_lasso: LASSO regression that uses this operator in proximal gradient descent.
-
-    References:
-        Parikh, N., & Boyd, S. (2014). Proximal Algorithms. Foundations and Trends
-        in Optimization, 1(3), 127-239.
-
-        Beck, A., & Teboulle, M. (2009). A Fast Iterative Shrinkage-Thresholding
-        Algorithm for Linear Inverse Problems. SIAM Journal on Imaging Sciences,
-        2(1), 183-202.
+        chex.Array: The objective, shape () or (m,).
     """
-    return jnp.sign(x) * jnp.maximum(jnp.abs(x) - lam, 0.0)
+    residual = jnp.sum((w @ R.T - c) ** 2, axis=-1)
+    return residual / (2 * n) + jnp.sum(lam * jnp.abs(w), axis=-1)
 
 
-@jax.jit
+def _kkt_violations(
+    R: chex.Array,
+    c: chex.Array,
+    n: int,
+    lam: chex.Array,
+    w: chex.Array,
+    active: chex.Array,
+    sign: chex.Array,
+) -> tuple[chex.Array, chex.Array, chex.Array]:
+    """How far w is from the Lasso's optimality (KKT) conditions.
+
+    With g the gradient of the smooth part, an active coefficient needs
+    g_j + lam_j sign_j = 0, and a zero coefficient needs |g_j| <= lam_j.
+
+    Args:
+        R: The R factor of X's QR decomposition.
+        c: Qᵀy.
+        n: The number of samples.
+        lam: The penalty on each coefficient.
+        w: Coefficients.
+        active: Which coefficients are in the active set.
+        sign: The signs of the active coefficients.
+
+    Returns:
+        tuple: ``(g, worst_active, excess)``: the gradient, the largest violation
+        among active coefficients, and |g_j| - lam_j for each inactive one (-inf
+        for active ones).
+    """
+    g = R.T @ (R @ w - c) / n
+    worst_active = jnp.max(jnp.where(active, jnp.abs(g + lam * sign), 0.0))
+    excess = jnp.where(active, -jnp.inf, jnp.abs(g) - lam)
+    return g, worst_active, excess
+
+
+def _signed_least_squares(
+    R: chex.Array,
+    c: chex.Array,
+    n: int,
+    lam: chex.Array,
+    active: chex.Array,
+    sign: chex.Array,
+) -> chex.Array:
+    """Minimize the objective over the active set, with the signs held fixed.
+
+    The minimizer solves R_AᵀR_A w_A = R_Aᵀc - n lam_A sign_A. The
+    pseudo-inverse P of R with its inactive columns zeroed gives
+    w = Pc - n P Pᵀ (lam sign) without forming R_AᵀR_A, so the solve is as well
+    conditioned as R itself, and inactive coefficients stay 0.
+
+    Args:
+        R: The R factor of X's QR decomposition.
+        c: Qᵀy.
+        n: The number of samples.
+        lam: The penalty on each coefficient.
+        active: Which coefficients are in the active set.
+        sign: The signs of the active coefficients.
+
+    Returns:
+        chex.Array: The coefficients, 0 outside the active set.
+    """
+    P = jnp.linalg.pinv(R * active)
+    w = P @ c - n * P @ (P.T @ (lam * sign))
+    return jnp.where(active, w, 0.0)
+
+
+def _line_search(
+    R: chex.Array,
+    c: chex.Array,
+    n: int,
+    lam: chex.Array,
+    w: chex.Array,
+    w_new: chex.Array,
+) -> chex.Array:
+    """The best point on the segment from w to w_new.
+
+    The objective is quadratic between the points where a penalized coefficient
+    crosses zero, so its minimum on the segment is w_new or one of those points.
+    Each crossing point has its coefficient set exactly to 0.
+
+    Args:
+        R: The R factor of X's QR decomposition.
+        c: Qᵀy.
+        n: The number of samples.
+        lam: The penalty on each coefficient.
+        w: The current coefficients.
+        w_new: The signed least-squares solution.
+
+    Returns:
+        chex.Array: The candidate with the smallest objective.
+    """
+    d = w_new - w
+    crosses = (lam > 0) & (w != 0) & (jnp.sign(w_new) != jnp.sign(w))
+    t = jnp.where(crosses, -w / jnp.where(crosses, d, 1.0), jnp.inf)
+    t = jnp.where((t > 0) & (t < 1), t, jnp.inf)
+    # Row j is the point where coefficient j reaches 0, or w_new if it doesn't
+    points = w + jnp.minimum(t, 1.0)[:, None] * d
+    at_zero = jnp.diag(jnp.isfinite(t))
+    points = jnp.where(at_zero, 0.0, points)
+    candidates = jnp.concatenate([points, w_new[None, :]])
+    return candidates[jnp.argmin(_lasso_objective(R, c, n, lam, candidates))]
+
+
+@partial(jax.jit, static_argnames=("intercept",))
 def fit_lasso(
     X: chex.Numeric,
     y: chex.Numeric,
     params: LassoParameters = DEFAULT_LASSO_PARAMETERS,
+    *,
+    intercept: bool = False,
 ) -> LassoModel:
-    """Fit a LASSO regression model using proximal gradient descent with Nesterov acceleration.
+    """Fit a LASSO regression model by feature-sign search.
 
-    Trains a linear regression model with L1 regularization (LASSO - Least Absolute Shrinkage
-    and Selection Operator) using an accelerated proximal gradient method. LASSO promotes
-    sparse solutions by shrinking coefficients toward zero and setting many coefficients to
-    exactly zero, making it useful for feature selection and interpretable models.
+    Minimizes the LASSO objective exactly::
 
-    This implementation uses:
+        (1/2n) ||y - Xw||² + λ Σ_j |w_j|
 
-    - **Proximal gradient descent**: Combines gradient steps on the smooth loss (MSE) with
-      the proximal operator (soft-thresholding) for the non-smooth L1 penalty
-    - **Nesterov momentum**: Accelerates convergence using momentum-based lookahead steps
-    - **Early stopping**: Terminates when weight changes fall below tolerance threshold
-    - **JAX compatibility**: Fully vectorized and compatible with JAX transformations
+    The solver is the feature-sign search of Lee, Battle, Raina and Ng (2007), an
+    active-set method. Each step:
 
-    The LASSO objective function is:
-        min_w { (1/2n)||y - Xw||² + λ||w||₁ }
+    1. Adds the zero coefficient that most violates its optimality condition to
+       the active set, once the active coefficients are optimal.
+    2. Solves least squares on the active set with the signs of its coefficients
+       fixed, a linear solve.
+    3. Moves to the best point between the current coefficients and that
+       solution: the solution, or a point where a coefficient reaches zero, which
+       then leaves the active set.
 
-    where λ is the L1 regularization strength that controls sparsity.
+    Each step lowers the objective, so the active set never repeats, and the
+    search ends in a finite number of steps at the exact minimizer. Unlike
+    gradient methods, it needs no step size, and badly conditioned designs such
+    as the metalog basis don't slow it down. At λ = 0 it is the least-squares fit,
+    in one step.
 
-    Algorithm:
-        1. Initialize weights w and velocity v to zero
-        2. For each iteration (until convergence or max iterations):
-           a. Compute lookahead weights: w_lookahead = w + momentum * v
-           b. Compute gradient at lookahead position
-           c. Update velocity with momentum and gradient: v = momentum * v - learning_rate * grad
-           d. Apply proximal operator: w = soft_threshold(w + v, learning_rate * λ)
-           e. Check convergence: stop if ||w_new - w|| < tol
-        3. Return final weights
+    The design is reduced by a QR decomposition first, so every step works with
+    a k x k matrix, and solves are as well conditioned as X itself.
 
     Args:
-        X: Feature matrix of shape (n_samples, n_features). The design matrix containing
-            the independent variables for regression.
-        y: Target vector of shape (n_samples,). The dependent variable values to predict.
-        params: LassoParameters containing optimization hyperparameters.
-            Defaults to DEFAULT_LASSO_PARAMETERS. The object contains:
-            - lam: L1 regularization strength λ ≥ 0. Default: 0.
-            - learning_rate (float): Step size for gradient descent. Default: 0.01.
-            - num_iters (int): Maximum number of iterations. Default: 500.
-            - tol (float): Convergence tolerance for weight changes. Default: 1e-6.
-            - momentum (float): Nesterov momentum factor (0 < momentum < 1). Default: 0.9.
+        X: Design matrix of shape (n_samples, n_features).
+        y: Target vector of shape (n_samples,).
+        params: LassoParameters: the penalty ``lam``, the step limit ``num_iters``
+            and the optimality tolerance ``tol``.
+        intercept: Whether X's first column is an intercept, whose coefficient
+            isn't penalized, as for scikit-learn's ``fit_intercept``. Static.
 
     Returns:
-        LassoModel containing the fitted weights vector of shape (n_features,).
-        Many coefficients may be exactly zero due to L1 regularization, achieving
-        feature selection and model sparsity.
+        LassoModel: The weights, of shape (n_features,), with whether the
+        optimality conditions hold to within ``tol`` (``converged``) and the
+        number of steps taken (``iterations``).
 
     Example:
-        Basic LASSO regression with default parameters:
+        At λ = 0 the fit is the least-squares fit:
 
             >>> import jax.numpy as jnp
-            >>> from metalog_jax.regression.lasso import fit_lasso
+            >>> from metalog_jax.regression.lasso import LassoParameters, fit_lasso
             >>>
-            >>> # Create sample data
-            >>> X = jnp.array([[1.0, 2.0, 0.5],
-            ...                [3.0, 4.0, 1.5],
-            ...                [5.0, 6.0, 2.5]])
-            >>> y = jnp.array([1.0, 2.0, 3.0])
-            >>>
-            >>> # Fit LASSO with defaults
+            >>> X = jnp.array([[1.0, 0.5], [1.0, 1.5], [1.0, 2.5], [1.0, 4.0]])
+            >>> y = jnp.array([1.0, 2.0, 2.5, 4.0])
             >>> model = fit_lasso(X, y)
-            >>> model.weights.shape  # Some coefficients may be exactly zero
-            (3,)
+            >>> bool(model.converged)
+            True
+            >>> bool(jnp.allclose(model.weights, jnp.linalg.lstsq(X, y)[0]))
+            True
+
+        A penalty shrinks the slope, and with ``intercept=True`` leaves the first
+        column's coefficient unpenalized:
+
+            >>> model = fit_lasso(X, y, LassoParameters(lam=0.5), intercept=True)
+            >>> [round(float(v), 4) for v in model.weights]
+            [1.243, 0.5327]
 
     Note:
-        - Unlike Ridge regression, LASSO does not have a closed-form solution and requires
-          iterative optimization
-        - The algorithm may converge before num_iters if tol is reached
-        - Feature scaling (standardization) is recommended before fitting LASSO
+        - Feature scaling (standardization) is recommended before fitting LASSO,
+          since the penalty treats every coefficient alike.
+        - Works under ``jax.jit`` and ``jax.vmap``, for example over penalties in
+          the grid search; the steps run in a ``while_loop``.
 
     See Also:
-        soft_thresholding: The proximal operator used in each iteration.
         fit_ordinary_least_squares: No regularization (from regression.ols).
-        LassoModel: Return type containing fitted weights.
+        LassoModel: Return type containing the weights and convergence.
         LassoParameters: Configuration dataclass for LASSO hyperparameters.
 
     References:
         Tibshirani, R. (1996). Regression Shrinkage and Selection via the Lasso.
-        Journal of the Royal Statistical Society: Series B (Methodological), 58(1), 267-288.
+        Journal of the Royal Statistical Society: Series B (Methodological), 58(1),
+        267-288.
 
-        Beck, A., & Teboulle, M. (2009). A Fast Iterative Shrinkage-Thresholding Algorithm
-        for Linear Inverse Problems. SIAM Journal on Imaging Sciences, 2(1), 183-202.
+        Lee, H., Battle, A., Raina, R., & Ng, A. Y. (2007). Efficient sparse coding
+        algorithms. Advances in Neural Information Processing Systems 19, 801-808.
     """
-    lam = params.lam
-    learning_rate: float = params.learning_rate
-    num_iters: int = params.num_iters
-    tol: float = params.tol
-    momentum: float = params.momentum
+    n, k = X.shape
+    Q, R = jnp.linalg.qr(X)
+    c = Q.T @ y
+    penalized = jnp.ones(k)
+    if intercept:
+        penalized = penalized.at[0].set(0.0)
+    lam = params.lam * penalized
+    kkt_tol = params.tol * jnp.max(jnp.abs(R.T @ c)) / n + jnp.finfo(c.dtype).tiny
 
-    n_samples, n_features = X.shape
-    w = jnp.zeros(n_features)
-    v = jnp.zeros_like(w)  # momentum velocity
+    def converged(w, active, sign):
+        _, worst_active, excess = _kkt_violations(R, c, n, lam, w, active, sign)
+        return (worst_active <= kkt_tol) & (jnp.max(excess) <= kkt_tol)
 
-    def step(carry, _):
-        """Perform one iteration of Nesterov accelerated proximal gradient descent."""
-        w, v = carry
+    def step(state):
+        w, active, sign, steps, _ = state
+        g, worst_active, excess = _kkt_violations(R, c, n, lam, w, active, sign)
+        # Once the active coefficients are optimal, add the worst zero coefficient
+        j = jnp.argmax(excess)
+        enter = (worst_active <= kkt_tol) & (excess[j] > kkt_tol)
+        active = active.at[j].set(active[j] | enter)
+        sign = sign.at[j].set(jnp.where(enter, -jnp.sign(g[j]), sign[j]))
+        w_new = _signed_least_squares(R, c, n, lam, active, sign)
+        w = _line_search(R, c, n, lam, w, w_new)
+        # Coefficients that reached zero leave; unpenalized ones always stay
+        active = (w != 0) | (lam == 0)
+        sign = jnp.where(active, jnp.sign(w), 0.0)
+        return w, active, sign, steps + 1, converged(w, active, sign)
 
-        # Nesterov lookahead: evaluate gradient at predicted future position
-        w_lookahead = w + momentum * v
+    def keep_going(state):
+        w, _, _, steps, done = state
+        return ~done & (steps < params.num_iters) & jnp.all(jnp.isfinite(w))
 
-        # Gradient of MSE loss at lookahead position
-        grad = (1.0 / n_samples) * X.T @ (X @ w_lookahead - y)
-
-        # Update velocity with momentum decay and gradient
-        v_new = momentum * v - learning_rate * grad
-
-        # Apply proximal operator (soft-thresholding) for L1 penalty
-        w_new = soft_thresholding(w + v_new, learning_rate * lam)
-
-        # Check convergence
-        delta = jnp.linalg.norm(w_new - w)
-        done = delta < tol
-
-        return (w_new, v_new), done
-
-    def cond_fun(carry):
-        """Check whether to continue optimization loop."""
-        i, _, done = carry
-        return jnp.logical_and(i < num_iters, jnp.logical_not(done))
-
-    def body_fun(carry):
-        """Execute one iteration of the optimization loop."""
-        i, (w, v), _ = carry
-        (w_new, v_new), done = step((w, v), None)
-        return (i + 1, (w_new, v_new), done)
-
-    # Initialize optimization state
-    carry = (0, (w, v), False)
-
-    # Run optimization loop until convergence or maximum iterations
-    carry = jax.lax.while_loop(cond_fun, body_fun, carry)
-
-    # Extract final weights from optimization state
-    w_final, _ = carry[1]
-
-    return LassoModel(weights=w_final)
+    w0 = jnp.zeros(k, dtype=c.dtype)
+    active0 = lam == 0
+    sign0 = jnp.zeros(k, dtype=c.dtype)
+    start = (w0, active0, sign0, 0, converged(w0, active0, sign0))
+    w, _, _, steps, done = jax.lax.while_loop(keep_going, step, start)
+    return LassoModel(weights=w, converged=done, iterations=steps)

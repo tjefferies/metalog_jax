@@ -1027,10 +1027,8 @@ class GetFitFunctionTest(absltest.TestCase):
 
         params = LassoParameters(
             lam=0.1,
-            learning_rate=1e-3,
             num_iters=1000,
             tol=1e-6,
-            momentum=0.9,
         )
         result = _get_fit_function(MetalogFitMethod.Lasso, params)
         self.assertIsInstance(result, partial)
@@ -1051,10 +1049,8 @@ class GetFitFunctionTest(absltest.TestCase):
 
         params = LassoParameters(
             lam=0.1,
-            learning_rate=1e-3,
             num_iters=1000,
             tol=1e-6,
-            momentum=0.9,
         )
         for method in (MetalogFitMethod.OLS, MetalogFitMethod.Feasible):
             with self.subTest(method=method.name):

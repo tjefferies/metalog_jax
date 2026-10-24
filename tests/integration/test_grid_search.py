@@ -197,10 +197,8 @@ class TestFitGridDatasets(absltest.TestCase):
         )
         lasso_params = LassoParameters(
             lam=1.0,
-            learning_rate=0.01,
             num_iters=500,
             tol=1e-6,
-            momentum=0.9,
         )
 
         results = fit_grid_datasets(

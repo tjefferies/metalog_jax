@@ -44,7 +44,11 @@ from metalog_jax.base.enums import MetalogFitMethod
 from metalog_jax.feasibility import Engine, check_feasibility, get_engine
 from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, _fit_coefficients
 from metalog_jax.regression import LassoParameters, RegularizedParameters
-from metalog_jax.regression.lasso import fit_lasso
+from metalog_jax.regression.lasso import (
+    DEFAULT_LASSO_ITERATIONS,
+    DEFAULT_LASSO_TOLERANCE,
+    fit_lasso,
+)
 from metalog_jax.regression.ols import fit_ordinary_least_squares
 from metalog_jax.utils import ks_distance
 
@@ -350,10 +354,8 @@ def _build_fit_single_config(
     params: MetalogParameters,
     max_terms_output: int,
     use_lasso: bool,
-    learning_rate: float,
     num_iters: int,
     tol: float,
-    momentum: float,
 ):
     """Build a fit function for a single configuration.
 
@@ -377,14 +379,8 @@ def _build_fit_single_config(
         target = _get_target_vmap(y=y_i, num_terms=n_terms)
 
         if use_lasso:
-            lasso_p = LassoParameters(
-                lam=l1_penalty,
-                learning_rate=learning_rate,
-                num_iters=num_iters,
-                tol=tol,
-                momentum=momentum,
-            )
-            model = fit_lasso(target, quantiles, lasso_p)
+            lasso_p = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
+            model = fit_lasso(target, quantiles, lasso_p, intercept=True)
         else:
             model = fit_ordinary_least_squares(target, quantiles)
 
@@ -465,10 +461,8 @@ def fit_grid(
     l1_penalties: jnp.ndarray | None = None,
     precomputed_quantiles: bool = False,
     lasso_params: LassoParameters | None = None,
-    learning_rate: float = 0.01,
-    num_iters: int = 500,
-    tol: float = 1e-6,
-    momentum: float = 0.9,
+    num_iters: int = DEFAULT_LASSO_ITERATIONS,
+    tol: float = DEFAULT_LASSO_TOLERANCE,
 ) -> GridResult:
     """Unified grid search over any combination of axes.
 
@@ -497,10 +491,8 @@ def fit_grid(
         precomputed_quantiles: Whether x values are precomputed quantiles.
         lasso_params: Optional fixed LassoParameters (used when l1_penalties is None
             but params.method is Lasso).
-        learning_rate: Learning rate for Lasso. Default: 0.01.
-        num_iters: Max iterations for Lasso. Default: 500.
-        tol: Convergence tolerance for Lasso. Default: 1e-6.
-        momentum: Momentum for Lasso optimizer. Default: 0.9.
+        num_iters: Maximum active-set steps for Lasso. Default: 500.
+        tol: Optimality tolerance for Lasso. Default: 1e-6.
 
     Returns:
         GridResult with metalog fits, KS distances and ``feasible``, whether each fit
@@ -530,7 +522,7 @@ def fit_grid(
 
     # Build the fit function
     fit_fn = _build_fit_single_config(
-        params, max_terms_output, use_lasso, learning_rate, num_iters, tol, momentum
+        params, max_terms_output, use_lasso, num_iters, tol
     )
 
     # Apply the appropriate vmap structure
@@ -686,11 +678,9 @@ def fit_grid_hyperparams(
     data: MetalogBaseData,
     params: MetalogParameters,
     l1_penalties: jnp.ndarray,
-    learning_rate: float = 0.01,
-    num_iters: int = 500,
-    tol: float = 1e-6,
-    momentum: float = 0.9,
     *,
+    num_iters: int = DEFAULT_LASSO_ITERATIONS,
+    tol: float = DEFAULT_LASSO_TOLERANCE,
     on_infeasible: OnInfeasible = "raise",
 ) -> GridResult:
     """Fit a single dataset with a grid of L1 penalty values (Lasso).
@@ -702,10 +692,8 @@ def fit_grid_hyperparams(
         data: MetalogBaseData instance containing the dataset to fit.
         params: MetalogParameters configuration. The method should be Lasso.
         l1_penalties: Array of L1 penalty values to test, shape (n_penalties,).
-        learning_rate: Learning rate for Lasso gradient descent. Default: 0.01.
-        num_iters: Maximum iterations for Lasso. Default: 500.
-        tol: Convergence tolerance for Lasso. Default: 1e-6.
-        momentum: Momentum for Lasso optimizer. Default: 0.9.
+        num_iters: Maximum active-set steps for Lasso. Default: 500.
+        tol: Optimality tolerance for Lasso. Default: 1e-6.
         on_infeasible: What to do if a fit is infeasible. "raise" raises for the
             grid, naming the infeasible fits; "flag" returns every fit, with
             ``feasible`` False for the infeasible ones.
@@ -724,13 +712,7 @@ def fit_grid_hyperparams(
     _check_on_infeasible(on_infeasible)
 
     def fit_with_penalty(l1_penalty: jnp.ndarray) -> GridResult:
-        lasso_params = LassoParameters(
-            lam=l1_penalty,
-            learning_rate=learning_rate,
-            num_iters=num_iters,
-            tol=tol,
-            momentum=momentum,
-        )
+        lasso_params = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
         metalog = _fit_coefficients(data, params, lasso_params)
         return _score_fit(metalog, data.x, data.y)
 
@@ -744,11 +726,9 @@ def fit_grid_datasets_hyperparams(
     params: MetalogParameters,
     l1_penalties: jnp.ndarray,
     precomputed_quantiles: bool = False,
-    learning_rate: float = 0.01,
-    num_iters: int = 500,
-    tol: float = 1e-6,
-    momentum: float = 0.9,
     *,
+    num_iters: int = DEFAULT_LASSO_ITERATIONS,
+    tol: float = DEFAULT_LASSO_TOLERANCE,
     on_infeasible: OnInfeasible = "raise",
 ) -> GridResult:
     """Fit multiple datasets with a grid of L1 penalty values (Lasso).
@@ -762,10 +742,8 @@ def fit_grid_datasets_hyperparams(
         params: MetalogParameters configuration. The method should be Lasso.
         l1_penalties: Array of L1 penalty values to test, shape (n_penalties,).
         precomputed_quantiles: Whether x values are precomputed quantiles.
-        learning_rate: Learning rate for Lasso gradient descent. Default: 0.01.
-        num_iters: Maximum iterations for Lasso. Default: 500.
-        tol: Convergence tolerance for Lasso. Default: 1e-6.
-        momentum: Momentum for Lasso optimizer. Default: 0.9.
+        num_iters: Maximum active-set steps for Lasso. Default: 500.
+        tol: Optimality tolerance for Lasso. Default: 1e-6.
         on_infeasible: What to do if a fit is infeasible. "raise" raises for the
             grid, naming the infeasible fits; "flag" returns every fit, with
             ``feasible`` False for the infeasible ones.
@@ -787,13 +765,7 @@ def fit_grid_datasets_hyperparams(
     def fit_dataset_with_penalty(
         x: jnp.ndarray, y: jnp.ndarray, l1_penalty: jnp.ndarray
     ) -> GridResult:
-        lasso_params = LassoParameters(
-            lam=l1_penalty,
-            learning_rate=learning_rate,
-            num_iters=num_iters,
-            tol=tol,
-            momentum=momentum,
-        )
+        lasso_params = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
         data = MetalogBaseData(x=x, y=y, precomputed_quantiles=precomputed_quantiles)
         return _score_fit(_fit_coefficients(data, params, lasso_params), x, y)
 
@@ -862,7 +834,9 @@ def _get_fit_function_for_method(
         from metalog_jax.regression.lasso import DEFAULT_LASSO_PARAMETERS
 
         params = regression_params or DEFAULT_LASSO_PARAMETERS
-        return lambda target, quantiles: fit_lasso(target, quantiles, params)
+        return lambda target, quantiles: fit_lasso(
+            target, quantiles, params, intercept=True
+        )
     return fit_ordinary_least_squares
 
 
@@ -1021,10 +995,9 @@ def fit_grid_full(
     l1_penalties: jnp.ndarray,
     num_terms_list: list[int],
     precomputed_quantiles: bool = False,
-    learning_rate: float = 0.01,
-    num_iters: int = 500,
-    tol: float = 1e-6,
-    momentum: float = 0.9,
+    *,
+    num_iters: int = DEFAULT_LASSO_ITERATIONS,
+    tol: float = DEFAULT_LASSO_TOLERANCE,
 ) -> GridResult:
     """Fit multiple datasets with grids of L1 penalties and term counts (Lasso).
 
@@ -1049,10 +1022,8 @@ def fit_grid_full(
         l1_penalties: Array of L1 penalty values to test, shape (n_penalties,).
         num_terms_list: List of term counts to test.
         precomputed_quantiles: Whether x values are precomputed quantiles.
-        learning_rate: Learning rate for Lasso gradient descent. Default: 0.01.
-        num_iters: Maximum iterations for Lasso. Default: 500.
-        tol: Convergence tolerance for Lasso. Default: 1e-6.
-        momentum: Momentum for Lasso optimizer. Default: 0.9.
+        num_iters: Maximum active-set steps for Lasso. Default: 500.
+        tol: Optimality tolerance for Lasso. Default: 1e-6.
 
     Returns:
         GridResult with batched results:
@@ -1087,14 +1058,8 @@ def fit_grid_full(
         target = _get_target_vmap(y=y, num_terms=num_terms)
 
         # Fit using Lasso regression with MAX_TERMS-sized design matrix
-        lasso_params = LassoParameters(
-            lam=l1_penalty,
-            learning_rate=learning_rate,
-            num_iters=num_iters,
-            tol=tol,
-            momentum=momentum,
-        )
-        model = fit_lasso(target, quantiles, lasso_params)
+        lasso_params = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
+        model = fit_lasso(target, quantiles, lasso_params, intercept=True)
 
         return _grid_result(model.weights, x, y, num_terms, params, max_terms_output)
 
@@ -1240,7 +1205,8 @@ def extract_metalog(grid_result: GridResult, *indices: int) -> Metalog:
             ... )
             >>> l1_vals = jnp.array([0.0, 0.01, 0.1])
             >>> result = fit_grid(data.x, data.y, params, l1_penalties=l1_vals)
-            >>> best_idx, best_ks = find_best_config(result.ks_dist)
+            >>> # Pass feasible so that infeasible fits, such as OLS's at 0.0, are skipped
+            >>> best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
             >>> best_metalog = extract_metalog(result, int(best_idx))
             >>> median = best_metalog.ppf(jnp.array([0.5]))
 
@@ -1250,7 +1216,7 @@ def extract_metalog(grid_result: GridResult, *indices: int) -> Metalog:
             ...                   l1_penalties=l1_vals, num_terms=[5, 7, 9])
             >>> result.ks_dist.shape
             (3, 3)
-            >>> best_idx, best_ks = find_best_config(result.ks_dist)
+            >>> best_idx, best_ks = find_best_config(result.ks_dist, result.feasible)
             >>> best_l1_idx, best_terms_idx = int(best_idx[0]), int(best_idx[1])
             >>> best_metalog = extract_metalog(result, best_l1_idx, best_terms_idx)
 
