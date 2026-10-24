@@ -577,7 +577,14 @@ equation.
 
 For unbounded metalogs, ``mean``, ``var``, ``std``, ``skewness`` and ``kurtosis``
 are exact (closed form, Baucells, Chrisman, Keelin and Xu, 2025). For bounded and
-semi-bounded metalogs they are estimated from 20,000 draws.
+semi-bounded metalogs they're integrals of the quantile function, by quadrature on
+the logit scale. A heavy tail can make a semi-bounded metalog's moments infinite: as
+in ``scipy.stats``, a mean or variance that doesn't exist is ``inf`` (``-inf`` for
+an upper-bounded mean), and a skewness or kurtosis ``nan``.
+
+``cdf`` inverts the quantile function exactly, so ``cdf(ppf(y))`` is ``y`` to
+rounding anywhere in (0, 1), and ``rvs`` returns ``ppf(u)`` for continuous uniform
+draws ``u``.
 
 **R Compatibility Aliases:**
 

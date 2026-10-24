@@ -479,7 +479,7 @@ class TestModes:
 
 
 class TestMetalogMomentProperties:
-    """Metalog moment properties: exact when unbounded, Monte Carlo when bounded."""
+    """Metalog moment properties: closed form when unbounded, quadrature when bounded."""
 
     X = jnp.array([2.1, 3.5, 4.2, 5.8, 6.1, 7.3, 8.9, 12.4, 15.2, 18.7])
 
@@ -542,40 +542,36 @@ class TestMetalogMomentProperties:
         m = fit_spt_metalog(self.X, params)
         self._assert_moments(m, self._by_quadrature(m))
 
-    def test_bounded_moments_still_use_monte_carlo(self):
-        """Semi-bounded metalogs keep the seeded 20,000-draw estimate."""
-        from metalog_jax.base.parameters import MetalogRandomVariableParameters
-        from metalog_jax.utils import JaxUniformDistributionParameters
+    @pytest.mark.parametrize(
+        "boundedness,upper,method",
+        [
+            (MetalogBoundedness.STRICTLY_LOWER_BOUND, 0.0, MetalogFitMethod.OLS),
+            (MetalogBoundedness.STRICTLY_UPPER_BOUND, 30.0, MetalogFitMethod.Feasible),
+            (MetalogBoundedness.BOUNDED, 30.0, MetalogFitMethod.Feasible),
+        ],
+    )
+    def test_bounded_moments_match_quadrature(self, boundedness, upper, method):
+        """Regression test for issue #49: bounded moments are integrals, not draws.
 
+        They averaged 20,000 draws from a 9,990-point table, which biased them
+        (0.31% for a lognormal fit). The tails of these fits are light, s = 0.04
+        to 0.12 at their open ends, so the trapezoid reference truncated at
+        |logit(y)| = 30 is accurate to about 1e-10.
+        """
         data = MetalogInputData.from_values(
             self.X, DEFAULT_Y, precomputed_quantiles=False
         )
         m = fit(
             data,
             MetalogParameters(
-                boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
-                method=MetalogFitMethod.OLS,
+                boundedness=boundedness,
+                method=method,
                 lower_bound=0.0,
-                upper_bound=0.0,
+                upper_bound=upper,
                 num_terms=4,
             ),
         )
-        rv = m.rvs(
-            MetalogRandomVariableParameters(
-                prng_params=JaxUniformDistributionParameters(seed=0), size=20_000
-            )
-        )
-        assert float(m.mean) == float(jnp.mean(rv))
-        assert float(m.var) == float(jnp.var(rv))
-        assert float(m.std) == float(jnp.std(rv))
-        c = rv - jnp.mean(rv)
-        m2 = jnp.mean(c**2)
-        np.testing.assert_allclose(
-            float(m.skewness), float(jnp.mean(c**3) / m2**1.5), rtol=1e-12
-        )
-        np.testing.assert_allclose(
-            float(m.kurtosis), float(jnp.mean(c**4) / m2**2), rtol=1e-12
-        )
+        self._assert_moments(m, self._by_quadrature(m))
 
 
 def test_standalone_import_uses_float64():

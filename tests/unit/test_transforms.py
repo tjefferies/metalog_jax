@@ -81,9 +81,6 @@ class TransformTestBase(parameterized.TestCase):
     # Compiled and eager code can round differently, including in the iterative
     # Lasso and feasible solvers, so allow more than float64 epsilon
     RTOL = 1e-9
-    # Bounded and semi-bounded moments average 20,000 fixed-seed draws; compiled
-    # code sums the same draws in a different order
-    MOMENT_RTOL = 1e-7
 
     def _data(self, scale=1.0):
         """Return MetalogInputData for the class samples, optionally scaled."""
@@ -155,9 +152,7 @@ class JitTest(TransformTestBase):
         for name in ("mean", "var", "std"):
             with self.subTest(method=name):
                 jitted = self._checked_jit(lambda mm, name=name: getattr(mm, name))
-                np.testing.assert_allclose(
-                    jitted(m), getattr(m, name), rtol=self.MOMENT_RTOL
-                )
+                np.testing.assert_allclose(jitted(m), getattr(m, name), rtol=self.RTOL)
 
     @parameterized.named_parameters(*TransformTestBase.FIT_CASES)
     def test_jit_fit_with_parameters_argument_matches_eager(
