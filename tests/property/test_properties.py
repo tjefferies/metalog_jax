@@ -105,10 +105,15 @@ class MetalogPropertiesTest(parameterized.TestCase):
 
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_cdf_inverts_ppf(self, m, y):
-        """cdf(ppf(y)) is within one DEFAULT_Y_FULL step of y."""
-        # cdf returns the DEFAULT_Y_FULL probability whose quantile is nearest, and
-        # ppf is increasing, so that is one of the two grid points either side of y
-        np.testing.assert_allclose(m.cdf(m.ppf(y)), y, rtol=0, atol=1e-4 + 1e-12)
+        """Regression test for issue #49: cdf(ppf(y)) is y, to rounding.
+
+        cdf used to return the nearest of 9,990 probabilities 0.0001 apart. The
+        drawn probabilities are multiples of 0.001, which that grid contains, so
+        shift them off it.
+        """
+        y = y + 3.7e-5
+        np.testing.assert_allclose(m.cdf(m.ppf(y)), y, rtol=1e-9)
+        np.testing.assert_allclose(m.sf(m.ppf(y)), 1 - y, rtol=1e-9)
 
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_ppf_is_the_back_transform_of_the_unbounded_ppf(self, m, y):

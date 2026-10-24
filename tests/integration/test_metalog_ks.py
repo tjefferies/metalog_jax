@@ -38,9 +38,10 @@ from metalog_jax.utils import DEFAULT_Y, JaxUniformDistributionParameters
 
 SEED: int = 0
 SIZE: int = 90_000
-# Keelin's tables report KS distances to 4 decimals and several fits reproduce them
-# exactly; floating-point evaluation can then land a few ulps above the tabulated value.
-KS_ROUNDING_TOL = 1e-6
+# The acceptable KS distances were calibrated with a cdf that returned the nearest
+# of 9,990 probabilities 0.0001 apart, which moved each distance by up to half a step.
+# cdf is now exact (issue #49), so a distance can land up to 5e-5 above them.
+KS_ROUNDING_TOL = 5e-5
 
 METALOG_RV_PARAMS = MetalogRandomVariableParameters(
     JaxUniformDistributionParameters(SEED), size=SIZE
