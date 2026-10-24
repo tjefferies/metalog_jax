@@ -428,22 +428,6 @@ def hdrprng(
 
 
 @jax.jit
-def find_nearest_index(array: chex.Numeric, value: chex.Numeric) -> chex.Numeric:
-    """Find the index of the nearest value in an array.
-
-    Args:
-        array: JAX array to search
-        value: Target value to find nearest match for
-
-    Returns:
-        Index of the nearest value
-    """
-    differences = jnp.abs(array - value)
-    nearest_idx = jnp.argmin(differences)
-    return nearest_idx
-
-
-@jax.jit
 def ks_distance(x: chex.Numeric, y: chex.Numeric) -> chex.Scalar:
     """Compute the two-sample Kolmogorov-Smirnov (KS) distance between two samples.
 
