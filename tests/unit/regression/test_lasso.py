@@ -14,7 +14,6 @@ from metalog_jax.regression.lasso import (
     LassoModel,
     LassoParameters,
     fit_lasso,
-    soft_thresholding,
 )
 
 
@@ -98,37 +97,6 @@ class LassoModelTest(unittest.TestCase):
         model = LassoModel(weights=weights)
         with self.assertRaises(AttributeError):
             model.weights = jnp.array([3.0, 4.0])
-
-
-class SoftThresholdingTest(unittest.TestCase):
-    """Tests for soft_thresholding function."""
-
-    def test_positive_scalar(self):
-        """Test soft-thresholding on positive scalar above threshold."""
-        result = soft_thresholding(5.0, 2.0)
-        self.assertTrue(jnp.allclose(result, 3.0))
-
-    def test_negative_scalar(self):
-        """Test soft-thresholding on negative scalar below threshold."""
-        result = soft_thresholding(-3.0, 1.0)
-        self.assertTrue(jnp.allclose(result, -2.0))
-
-    def test_value_below_threshold_is_zero(self):
-        """Test that values below threshold become zero."""
-        result = soft_thresholding(1.5, 2.0)
-        self.assertTrue(jnp.allclose(result, 0.0))
-
-    def test_zero_threshold(self):
-        """Test that zero threshold returns input unchanged."""
-        result = soft_thresholding(5.0, 0.0)
-        self.assertTrue(jnp.allclose(result, 5.0))
-
-    def test_array_input(self):
-        """Test soft-thresholding on array input."""
-        x = jnp.array([-5.0, -1.0, 0.5, 2.0, 4.0])
-        result = soft_thresholding(x, 1.5)
-        expected = jnp.array([-3.5, 0.0, 0.0, 0.5, 2.5])
-        self.assertTrue(jnp.allclose(result, expected))
 
 
 class FitLassoTest(unittest.TestCase):

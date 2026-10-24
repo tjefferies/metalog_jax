@@ -11,7 +11,6 @@ Classes:
 
 Functions:
     fit_lasso: Fit a LASSO regression model by feature-sign search.
-    soft_thresholding: Apply the soft-thresholding operator (proximal for L1).
 
 Constants:
     DEFAULT_LASSO_LAMBDA: Default L1 regularization strength (0).
@@ -84,76 +83,6 @@ class LassoModel(RegressionModel):
 
     converged: chex.Array | None = None
     iterations: chex.Array | None = None
-
-
-@jax.jit
-def soft_thresholding(x: chex.Numeric, lam: float) -> chex.Numeric:
-    """Apply the soft-thresholding operator (proximal operator for L1 norm).
-
-    The soft-thresholding operator is the proximal operator for the L1 norm and is
-    fundamental to LASSO regression and other sparse optimization methods. It shrinks
-    values toward zero and sets values below the threshold to exactly zero, promoting
-    sparsity in the solution.
-
-    The operator is defined element-wise as:
-        ``soft_threshold(x, λ) = sign(x) * max(|x| - λ, 0)``
-
-    Equivalently:
-        - If x > λ: return x - λ
-        - If x < -λ: return x + λ
-        - If ``|x| ≤ λ``: return 0
-
-    This function is the proximal operator for the L1 penalty:
-        prox_{λ||·||₁}(x) = argmin_z { (1/2)||z - x||² + λ||z||₁ }
-
-    Args:
-        x: Input value(s) to threshold. Can be a scalar or array of any shape.
-        lam: Threshold parameter λ ≥ 0. Controls the amount of shrinkage:
-            - λ = 0: No shrinkage (returns x unchanged)
-            - λ > 0: Shrinks values toward zero, setting small values to 0
-            - Larger λ produces sparser solutions with more zeros
-
-    Returns:
-        Thresholded value(s) with the same shape as x. Values are shrunk toward
-        zero by amount λ, with values ``|x| ≤ λ`` set to exactly zero.
-
-    Example:
-        Scalar inputs:
-
-            >>> import jax.numpy as jnp
-            >>> float(soft_thresholding(5.0, 2.0))
-            3.0
-            >>> float(soft_thresholding(-3.0, 1.0))
-            -2.0
-            >>> float(soft_thresholding(1.5, 2.0))  # Below threshold -> zero
-            0.0
-
-        Array inputs:
-
-            >>> x = jnp.array([-5.0, -1.0, 0.5, 2.0, 4.0])
-            >>> soft_thresholding(x, 1.5).tolist()
-            [-3.5, -0.0, 0.0, 0.5, 2.5]
-
-    Note:
-        - This function is JIT-compiled for efficient execution
-        - The operation is element-wise and preserves the input shape
-        - Setting lam=0 returns the input unchanged
-        - This is also known as the "shrinkage operator" or "soft thresholding"
-
-    See Also:
-        fit_lasso: LASSO regression. It solves the problem exactly by an active-set
-            method and doesn't use this operator, the proximal step of iterative
-            methods such as ISTA and FISTA.
-
-    References:
-        Parikh, N., & Boyd, S. (2014). Proximal Algorithms. Foundations and Trends
-        in Optimization, 1(3), 127-239.
-
-        Beck, A., & Teboulle, M. (2009). A Fast Iterative Shrinkage-Thresholding
-        Algorithm for Linear Inverse Problems. SIAM Journal on Imaging Sciences,
-        2(1), 183-202.
-    """
-    return jnp.sign(x) * jnp.maximum(jnp.abs(x) - lam, 0.0)
 
 
 def _lasso_objective(

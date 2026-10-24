@@ -9,7 +9,7 @@ Submodules:
     ols: Ordinary Least Squares regression (no regularization).
         - OLSModel, fit_ordinary_least_squares, predict_ordinary_least_squares
     lasso: LASSO regression (L1 regularization).
-        - LassoModel, LassoParameters, fit_lasso, soft_thresholding
+        - LassoModel, LassoParameters, fit_lasso
 
 All public classes and functions are re-exported at the module level, allowing
 imports like:
@@ -34,7 +34,6 @@ from metalog_jax.regression.lasso import (
     LassoModel,
     LassoParameters,
     fit_lasso,
-    soft_thresholding,
 )
 from metalog_jax.regression.ols import (
     OLSModel,
@@ -58,5 +57,4 @@ __all__ = [
     "fit_lasso",
     "fit_ordinary_least_squares",
     "predict_ordinary_least_squares",
-    "soft_thresholding",
 ]

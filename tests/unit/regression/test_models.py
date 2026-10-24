@@ -23,7 +23,6 @@ from metalog_jax.regression import (
     fit_lasso,
     fit_ordinary_least_squares,
     predict_ordinary_least_squares,
-    soft_thresholding,
 )
 
 
@@ -415,71 +414,6 @@ class LassoModelTest(parameterized.TestCase):
         """Test that LassoModel is a subclass of RegressionModel."""
         model = LassoModel(weights=jnp.array([1.0, 2.0]))
         self.assertIsInstance(model, RegressionModel)
-
-
-class SoftThresholdingTest(absltest.TestCase):
-    """Test suite for the soft-thresholding operator."""
-
-    def test_positive_scalar(self):
-        """Test soft thresholding with positive scalar values."""
-        # Case where x > lambda
-        result = soft_thresholding(jnp.array(3.0), 1.0)
-        self.assertAlmostEqual(float(result), 2.0, places=7)
-
-        # Case where x = lambda
-        result = soft_thresholding(jnp.array(1.0), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-        # Case where 0 < x < lambda
-        result = soft_thresholding(jnp.array(0.5), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-    def test_negative_scalar(self):
-        """Test soft thresholding with negative scalar values."""
-        # Case where x < -lambda
-        result = soft_thresholding(jnp.array(-3.0), 1.0)
-        self.assertAlmostEqual(float(result), -2.0, places=7)
-
-        # Case where x = -lambda
-        result = soft_thresholding(jnp.array(-1.0), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-        # Case where -lambda < x < 0
-        result = soft_thresholding(jnp.array(-0.5), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-    def test_zero(self):
-        """Test soft thresholding with zero."""
-        result = soft_thresholding(jnp.array(0.0), 1.0)
-        self.assertAlmostEqual(float(result), 0.0, places=7)
-
-    def test_array_input(self):
-        """Test soft thresholding with array input."""
-        x = jnp.array([-3.0, -1.0, -0.5, 0.0, 0.5, 1.0, 3.0])
-        lam = 1.0
-        expected = jnp.array([-2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0])
-        result = soft_thresholding(x, lam)
-        np.testing.assert_allclose(result, expected, rtol=1e-7)
-
-    def test_zero_threshold(self):
-        """Test soft thresholding with zero threshold (identity)."""
-        x = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0])
-        result = soft_thresholding(x, 0.0)
-        np.testing.assert_allclose(result, x, rtol=1e-7)
-
-    def test_large_threshold(self):
-        """Test soft thresholding with very large threshold."""
-        x = jnp.array([-10.0, -5.0, 0.0, 5.0, 10.0])
-        result = soft_thresholding(x, 100.0)
-        np.testing.assert_allclose(result, jnp.zeros_like(x), rtol=1e-7)
-
-    def test_jit_compilation(self):
-        """Test that soft thresholding works with JIT compilation."""
-        x = jnp.array([1.0, 2.0, 3.0])
-        jitted_fn = jax.jit(soft_thresholding)
-        result1 = soft_thresholding(x, 1.5)
-        result2 = jitted_fn(x, 1.5)
-        np.testing.assert_allclose(result1, result2, rtol=1e-7)
 
 
 class LassoSolverTest(absltest.TestCase):
