@@ -63,6 +63,7 @@ make test-quick     # about 3 minutes on a laptop CPU
 | `security` | bandit, semgrep |
 | `license` | pip-licenses |
 | `docs` | sphinx, nbsphinx, ipykernel, kaleido and friends |
+| `ci` | uv, pinned to the version CI's `setup-uv` steps install (they read it from `uv.lock`) |
 
 Runtime dependencies are kept to four: `chex`, `flax`, `jax` and `plotly`. The optional `gpu` extra installs `jax[cuda12]`. The test suite and CI run on CPU.
 

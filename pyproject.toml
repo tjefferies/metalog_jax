@@ -57,6 +57,12 @@ package = true
 dev = [
     "marimo>=0.23.0",
 ]
+# The uv that CI runs: every setup-uv step reads this version from uv.lock, so
+# Dependabot's uv updates, with their cooldown, move CI's uv too. 0.13.4 is the first
+# release with the fix for GHSA-hq85-5cpj-mr62.
+ci = [
+    "uv==0.13.4",
+]
 lint = [
     "interrogate>=1.7.0",
     "pydoclint>=0.11.1",

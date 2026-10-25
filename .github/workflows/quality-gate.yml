@@ -4,7 +4,8 @@
 # Runs for every pull request, and as the first stage of the release in publish.yml,
 # which calls it on the commit pushed to main. Start it by hand on any branch with
 # `gh workflow run quality-gate.yml --ref <branch>`. Actions are pinned to commit
-# hashes; Dependabot updates them.
+# hashes; Dependabot updates them. Every setup-uv step installs the uv version that
+# uv.lock records for the ci dependency group, which Dependabot's uv entry updates.
 name: Quality Gate
 
 on:
@@ -70,6 +71,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Check formatting
@@ -86,6 +89,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Maintainability Index
@@ -120,6 +125,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Check complexity thresholds
@@ -133,6 +140,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Check docstring coverage
@@ -146,6 +155,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Check docstrings
@@ -159,6 +170,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Audit workflows
@@ -174,6 +187,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Type check
@@ -206,6 +221,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
+          version-file: uv.lock
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --all-groups
 
@@ -256,6 +272,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Run docstring examples
@@ -270,6 +288,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
 
       - name: Test with the lowest allowed dependency versions
         run: uv run --isolated --resolution lowest-direct --python 3.11 --group test pytest tests/ --durations=30
@@ -290,6 +310,8 @@ jobs:
           sudo apt-get install -y pandoc
 
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Build documentation
@@ -306,6 +328,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Execute notebooks
@@ -327,6 +351,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Check licenses
@@ -356,6 +382,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Run Semgrep scan
@@ -397,6 +425,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       - name: Run Bandit scan
@@ -428,6 +458,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version-file: uv.lock
       - run: uv sync --locked --all-groups
 
       # Each action installs the tool release it pins (Syft v1.54.0 and Grype v0.118.0
