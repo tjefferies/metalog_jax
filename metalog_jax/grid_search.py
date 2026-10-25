@@ -10,10 +10,11 @@ Key functions:
     - fit_grid: Unified grid search over any combination of axes
     - fit_grid_datasets: 1D grid over datasets (shared params)
     - fit_grid_hyperparams: 1D grid over hyperparameters for a single dataset
-    - fit_grid_num_terms: 1D grid over num_terms for a single dataset
+    - fit_grid_num_terms: 1D grid over num_terms for a single dataset (calls fit_grid)
     - fit_grid_datasets_hyperparams: 2D grid over datasets x hyperparameters
-    - fit_grid_datasets_num_terms: 2D grid over datasets x num_terms
-    - fit_grid_full: 3D grid over datasets x hyperparameters x num_terms
+    - fit_grid_datasets_num_terms: 2D grid over datasets x num_terms (calls fit_grid)
+    - fit_grid_full: 3D grid over datasets x hyperparameters x num_terms (calls
+      fit_grid)
     - find_best_config: Find best configuration in a grid
     - extract_best_from_grid: Extract best result from grid for a dataset
 
@@ -25,6 +26,10 @@ distributions, so find_best_config and extract_best_from_grid skip infeasible fi
 The grids that fit with fit() (fit_grid_datasets, fit_grid_hyperparams and
 fit_grid_datasets_hyperparams) raise for an infeasible fit by default; pass
 ``on_infeasible="flag"`` to get every fit with the infeasible ones marked instead.
+
+The grids that take arrays read x as quantiles at y unless
+``precomputed_quantiles=False``, which computes each dataset's quantiles from raw
+samples first, as MetalogInputData.from_values does.
 """
 # Copyright: Travis Jefferies 2026
 
@@ -46,6 +51,7 @@ from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, _fit_coefficien
 from metalog_jax.regression import LassoParameters, RegularizedParameters
 from metalog_jax.regression.lasso import (
     DEFAULT_LASSO_ITERATIONS,
+    DEFAULT_LASSO_PARAMETERS,
     DEFAULT_LASSO_TOLERANCE,
     fit_lasso,
 )
@@ -98,6 +104,29 @@ def _with_feasibility(result: GridResult) -> GridResult:
     rows = jnp.pad(rows, ((0, padded - n), (0, 0)), mode="edge")
     feasible = _check_rows(get_engine(a.shape[-1]), rows)[:n]
     return result.replace(feasible=feasible.reshape(a.shape[:-1]))
+
+
+def _as_quantiles(
+    x: jnp.ndarray, y: jnp.ndarray, precomputed_quantiles: bool
+) -> jnp.ndarray:
+    """Return each dataset's quantiles at y, computing them from samples if needed.
+
+    Args:
+        x: Quantiles at y if ``precomputed_quantiles``, else raw samples. Shape (n,)
+            for one dataset or (n_datasets, n) for a batch.
+        y: Probability levels, shape (m,) or (n_datasets, m).
+        precomputed_quantiles: Whether x already holds the quantiles at y.
+
+    Returns:
+        x unchanged if ``precomputed_quantiles``, else each dataset's quantiles at y,
+        computed with ``jnp.quantile`` as MetalogInputData.from_values does. Shape
+        (m,) or (n_datasets, m).
+    """
+    if precomputed_quantiles:
+        return x
+    if x.ndim == 2:
+        return jax.vmap(jnp.quantile)(x, y)
+    return jnp.quantile(x, y)
 
 
 def _check_on_infeasible(on_infeasible: OnInfeasible) -> None:
@@ -353,14 +382,21 @@ def _grid_result(
 def _build_fit_single_config(
     params: MetalogParameters,
     max_terms_output: int,
-    use_lasso: bool,
-    num_iters: int,
-    tol: float,
+    lasso_params: LassoParameters | None,
 ):
     """Build a fit function for a single configuration.
 
     Returns a function that fits a single (x, y, l1, n_terms) configuration.
     This is extracted to reduce cyclomatic complexity of fit_grid.
+
+    Args:
+        params: Metalog parameters for the grid, with the method the fits use.
+        max_terms_output: Number of coefficients to keep in each result.
+        lasso_params: Lasso settings, whose ``lam`` each fit replaces with its
+            penalty; None to fit by OLS.
+
+    Returns:
+        A function of (x, y, l1_penalty, n_terms) that returns a GridResult.
     """
     lower_bound = params.lower_bound
     upper_bound = params.upper_bound
@@ -378,11 +414,11 @@ def _build_fit_single_config(
         )
         target = _get_target_vmap(y=y_i, num_terms=n_terms)
 
-        if use_lasso:
-            lasso_p = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
-            model = fit_lasso(target, quantiles, lasso_p, intercept=True)
-        else:
+        if lasso_params is None:
             model = fit_ordinary_least_squares(target, quantiles)
+        else:
+            lasso_p = lasso_params.replace(lam=l1_penalty)
+            model = fit_lasso(target, quantiles, lasso_p, intercept=True)
 
         return _grid_result(model.weights, x_i, y_i, n_terms, params, max_terms_output)
 
@@ -459,10 +495,8 @@ def fit_grid(
     *,
     num_terms: Sequence[int] | None = None,
     l1_penalties: jnp.ndarray | None = None,
-    precomputed_quantiles: bool = False,
+    precomputed_quantiles: bool = True,
     lasso_params: LassoParameters | None = None,
-    num_iters: int = DEFAULT_LASSO_ITERATIONS,
-    tol: float = DEFAULT_LASSO_TOLERANCE,
 ) -> GridResult:
     """Unified grid search over any combination of axes.
 
@@ -481,18 +515,25 @@ def fit_grid(
     - (n_penalties, n_terms): l1_penalties x num_terms
     - (n_datasets, n_penalties, n_terms): all three axes
 
+    The grid fits with Lasso when ``params.method`` is Lasso or ``l1_penalties`` is
+    given, and its fits say so: their ``method`` is MetalogFitMethod.Lasso.
+
     Args:
-        x: Quantile values. Shape (n,) for single dataset or (batch, n) for batched.
-        y: Probability levels. Shape (n,) for single dataset or (batch, n) for batched.
+        x: Each dataset's quantiles at y, or raw samples if
+            ``precomputed_quantiles`` is False. Shape (n,) for a single dataset or
+            (batch, n) for batched.
+        y: Probability levels. Shape (m,) for single dataset or (batch, m) for
+            batched.
         params: MetalogParameters configuration. The num_terms field is ignored
             if num_terms argument is provided.
         num_terms: Optional sequence of term counts to search over.
         l1_penalties: Optional array of L1 penalties to search over (implies Lasso).
-        precomputed_quantiles: Whether x values are precomputed quantiles.
-        lasso_params: Optional fixed LassoParameters (used when l1_penalties is None
-            but params.method is Lasso).
-        num_iters: Maximum active-set steps for Lasso. Default: 500.
-        tol: Optimality tolerance for Lasso. Default: 1e-6.
+        precomputed_quantiles: Whether x holds quantiles at y (the default). If
+            False, x holds raw samples, and each dataset's quantiles at y are
+            computed first, as MetalogInputData.from_values does.
+        lasso_params: Settings for the Lasso fits; DEFAULT_LASSO_PARAMETERS if None.
+            Its ``lam`` is the penalty when there's no ``l1_penalties`` axis, and its
+            ``num_iters`` and ``tol`` apply to every Lasso fit.
 
     Returns:
         GridResult with metalog fits, KS distances and ``feasible``, whether each fit
@@ -502,8 +543,19 @@ def fit_grid(
     Raises:
         ValueError: If params.method is MetalogFitMethod.Feasible, which cannot run
             inside the vmapped grid (use fit or fit_grid_datasets instead).
-    """  # noqa: DOC502
+        TypeError: If ``lasso_params`` is given for an OLS grid without
+            ``l1_penalties``, which it would not affect.
+    """  # noqa: DOC503
     _check_grid_method(params.method)
+    use_lasso = l1_penalties is not None or params.method == MetalogFitMethod.Lasso
+    if lasso_params is not None and not use_lasso:
+        raise TypeError(
+            "lasso_params only affects Lasso fits; pass params with "
+            "MetalogFitMethod.Lasso or l1_penalties, or pass lasso_params=None."
+        )
+    if lasso_params is None:
+        lasso_params = DEFAULT_LASSO_PARAMETERS
+    x = _as_quantiles(x, y, precomputed_quantiles)
 
     # Detect which axes are active
     has_datasets = x.ndim == 2
@@ -515,14 +567,16 @@ def fit_grid(
         jnp.array(num_terms) if has_num_terms else jnp.array([params.num_terms])
     )
     max_terms_output = int(num_terms_array.max()) if has_num_terms else params.num_terms
-    l1_array = l1_penalties if has_l1 else jnp.array([0.0])
+    l1_array = (
+        jnp.asarray(l1_penalties) if has_l1 else jnp.asarray(lasso_params.lam)[None]
+    )
 
-    # Determine if we should use Lasso
-    use_lasso = has_l1 or params.method == MetalogFitMethod.Lasso
-
-    # Build the fit function
+    # Build the fit function, labelling the fits with the method that made them
+    method = MetalogFitMethod.Lasso if use_lasso else params.method
     fit_fn = _build_fit_single_config(
-        params, max_terms_output, use_lasso, num_iters, tol
+        params.replace(method=method),
+        max_terms_output,
+        lasso_params if use_lasso else None,
     )
 
     # Apply the appropriate vmap structure
@@ -630,7 +684,7 @@ def fit_grid_datasets(
     batched_y: jnp.ndarray,
     params: MetalogParameters,
     fit_params: RegularizedParameters | None = None,
-    precomputed_quantiles: bool = False,
+    precomputed_quantiles: bool = True,
     *,
     on_infeasible: OnInfeasible = "raise",
 ) -> GridResult:
@@ -641,11 +695,14 @@ def fit_grid_datasets(
     and optional regularization settings.
 
     Args:
-        batched_x: Stacked quantile values, shape (n_datasets, n_samples).
-        batched_y: Stacked probability levels, shape (n_datasets, n_samples).
+        batched_x: Stacked quantile values, shape (n_datasets, n_samples), or raw
+            samples if ``precomputed_quantiles`` is False.
+        batched_y: Stacked probability levels, shape (n_datasets, m).
         params: MetalogParameters shared across all fits.
         fit_params: Optional regularization parameters (e.g., LassoParameters).
-        precomputed_quantiles: Whether x values are precomputed quantiles.
+        precomputed_quantiles: Whether batched_x holds quantiles at batched_y (the
+            default). If False, it holds raw samples, and each dataset's quantiles
+            are computed first, as MetalogInputData.from_values does.
         on_infeasible: What to do if an OLS or Lasso fit is infeasible. "raise"
             raises for the batch, naming the infeasible fits; "flag" returns every
             fit, with ``feasible`` False for the infeasible ones. Feasible fits are
@@ -663,9 +720,10 @@ def fit_grid_datasets(
             infeasible.
     """  # noqa: DOC502
     _check_on_infeasible(on_infeasible)
+    batched_x = _as_quantiles(batched_x, batched_y, precomputed_quantiles)
 
     def fit_single_dataset(x: jnp.ndarray, y: jnp.ndarray) -> GridResult:
-        data = MetalogBaseData(x=x, y=y, precomputed_quantiles=precomputed_quantiles)
+        data = MetalogBaseData(x=x, y=y, precomputed_quantiles=True)
         return _score_fit(_fit_coefficients(data, params, fit_params), x, y)
 
     vmapped_fit = jax.vmap(fit_single_dataset, in_axes=(0, 0))
@@ -689,7 +747,8 @@ def fit_grid_hyperparams(
     for a single dataset using JAX's vmap for efficient parallel computation.
 
     Args:
-        data: MetalogBaseData instance containing the dataset to fit.
+        data: MetalogBaseData instance containing the dataset to fit: its quantiles
+            x at the probability levels y, as fit() takes them.
         params: MetalogParameters configuration. The method should be Lasso.
         l1_penalties: Array of L1 penalty values to test, shape (n_penalties,).
         num_iters: Maximum active-set steps for Lasso. Default: 500.
@@ -725,7 +784,7 @@ def fit_grid_datasets_hyperparams(
     batched_y: jnp.ndarray,
     params: MetalogParameters,
     l1_penalties: jnp.ndarray,
-    precomputed_quantiles: bool = False,
+    precomputed_quantiles: bool = True,
     *,
     num_iters: int = DEFAULT_LASSO_ITERATIONS,
     tol: float = DEFAULT_LASSO_TOLERANCE,
@@ -737,11 +796,14 @@ def fit_grid_datasets_hyperparams(
     penalties using nested vmap for efficient parallel computation.
 
     Args:
-        batched_x: Stacked quantile values, shape (n_datasets, n_samples).
-        batched_y: Stacked probability levels, shape (n_datasets, n_samples).
+        batched_x: Stacked quantile values, shape (n_datasets, n_samples), or raw
+            samples if ``precomputed_quantiles`` is False.
+        batched_y: Stacked probability levels, shape (n_datasets, m).
         params: MetalogParameters configuration. The method should be Lasso.
         l1_penalties: Array of L1 penalty values to test, shape (n_penalties,).
-        precomputed_quantiles: Whether x values are precomputed quantiles.
+        precomputed_quantiles: Whether batched_x holds quantiles at batched_y (the
+            default). If False, it holds raw samples, and each dataset's quantiles
+            are computed first, as MetalogInputData.from_values does.
         num_iters: Maximum active-set steps for Lasso. Default: 500.
         tol: Optimality tolerance for Lasso. Default: 1e-6.
         on_infeasible: What to do if a fit is infeasible. "raise" raises for the
@@ -761,12 +823,13 @@ def fit_grid_datasets_hyperparams(
             infeasible.
     """  # noqa: DOC502
     _check_on_infeasible(on_infeasible)
+    batched_x = _as_quantiles(batched_x, batched_y, precomputed_quantiles)
 
     def fit_dataset_with_penalty(
         x: jnp.ndarray, y: jnp.ndarray, l1_penalty: jnp.ndarray
     ) -> GridResult:
         lasso_params = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
-        data = MetalogBaseData(x=x, y=y, precomputed_quantiles=precomputed_quantiles)
+        data = MetalogBaseData(x=x, y=y, precomputed_quantiles=True)
         return _score_fit(_fit_coefficients(data, params, lasso_params), x, y)
 
     # First vmap over penalties
@@ -783,63 +846,6 @@ def fit_grid_datasets_hyperparams(
     )
 
 
-def _pad_coeffs_for_stacking(
-    metalog: Metalog | SPTMetalog, max_terms: int, ndim: int
-) -> Metalog | SPTMetalog:
-    """Pad metalog coefficients for stacking across term counts.
-
-    Internal helper that handles padding for different batch dimensions.
-
-    Args:
-        metalog: Metalog with batched coefficients.
-        max_terms: Target length for coefficient arrays.
-        ndim: Number of batch dimensions (1 for single dataset, 2 for dataset x penalty).
-
-    Returns:
-        Metalog with padded coefficients.
-
-    Raises:
-        ValueError: If ``ndim`` is not 1 or 2.
-    """
-    current_terms = metalog.a.shape[-1]
-    if current_terms == max_terms:
-        return metalog
-    pad_width = max_terms - current_terms
-    if ndim == 1:
-        padded_a = jnp.pad(metalog.a, ((0, 0), (0, pad_width)), mode="constant")
-    elif ndim == 2:
-        padded_a = jnp.pad(metalog.a, ((0, 0), (0, 0), (0, pad_width)), mode="constant")
-    else:
-        raise ValueError(f"Unsupported ndim: {ndim}")
-    return metalog.replace(a=padded_a)
-
-
-def _get_fit_function_for_method(
-    method: MetalogFitMethod, regression_params: Any = None
-):
-    """Get the appropriate fit function for a regression method.
-
-    Args:
-        method: The MetalogFitMethod enum value.
-        regression_params: Optional regression parameters (for Lasso).
-
-    Returns:
-        A function that takes (target, quantiles) and returns a regression model.
-
-    Raises:
-        ValueError: If method is not OLS or Lasso.
-    """  # noqa: DOC502
-    _check_grid_method(method)
-    if method == MetalogFitMethod.Lasso:
-        from metalog_jax.regression.lasso import DEFAULT_LASSO_PARAMETERS
-
-        params = regression_params or DEFAULT_LASSO_PARAMETERS
-        return lambda target, quantiles: fit_lasso(
-            target, quantiles, params, intercept=True
-        )
-    return fit_ordinary_least_squares
-
-
 def fit_grid_num_terms(
     data: MetalogBaseData,
     params: MetalogParameters,
@@ -850,19 +856,22 @@ def fit_grid_num_terms(
 
     This function performs a 1D grid search over term counts for a single dataset
     using JAX's vmap for efficient parallel computation. Supports OLS and Lasso
-    regression methods based on the params.method setting.
+    regression methods based on the params.method setting. It is
+    ``fit_grid(data.x, data.y, params, num_terms=num_terms_list,
+    lasso_params=regression_params)``.
 
     Vectorization strategy:
         - num_terms dimension: Fully vectorized via vmap
         - Uses MAX_TERMS-sized arrays with masking for uniform shapes
 
     Args:
-        data: MetalogBaseData instance containing the dataset to fit.
+        data: MetalogBaseData instance containing the dataset to fit: its quantiles
+            x at the probability levels y, as fit() takes them.
         params: MetalogParameters configuration. The num_terms field is ignored
             and replaced by values from num_terms_list.
         num_terms_list: List of term counts to test.
-        regression_params: Optional regression hyperparameters (e.g., LassoParameters).
-            If None, uses defaults for the method.
+        regression_params: Optional LassoParameters for a Lasso grid. If None, uses
+            DEFAULT_LASSO_PARAMETERS.
 
     Returns:
         GridResult with batched results:
@@ -875,38 +884,15 @@ def fit_grid_num_terms(
 
     Raises:
         ValueError: If params.method is not OLS or Lasso.
+        TypeError: If ``regression_params`` is given for an OLS grid.
     """  # noqa: DOC502
-    max_terms_output = max(num_terms_list)
-    num_terms_array = jnp.array(num_terms_list)
-
-    # Extract static parameters
-    lower_bound = params.lower_bound
-    upper_bound = params.upper_bound
-    boundedness = params.boundedness
-
-    # Get fit function based on method
-    fit_fn = _get_fit_function_for_method(params.method, regression_params)
-
-    # Transform the quantiles to the metalog's unbounded scale
-    quantiles = Metalog.quantile_transform(
-        data.x, boundedness, lower_bound, upper_bound
+    return fit_grid(
+        data.x,
+        data.y,
+        params,
+        num_terms=num_terms_list,
+        lasso_params=regression_params,
     )
-
-    def fit_single_num_terms(num_terms: jnp.ndarray) -> GridResult:
-        """Fit with a specific num_terms value (traceable)."""
-        # Build design matrix with dynamic num_terms using vmap-compatible function
-        target = _get_target_vmap(y=data.y, num_terms=num_terms)
-
-        # Fit regression
-        model = fit_fn(target, quantiles)
-
-        return _grid_result(
-            model.weights, data.x, data.y, num_terms, params, max_terms_output
-        )
-
-    # vmap over num_terms
-    vmapped_fit = jax.vmap(fit_single_num_terms)
-    return _with_feasibility(vmapped_fit(num_terms_array))
 
 
 def fit_grid_datasets_num_terms(
@@ -914,14 +900,15 @@ def fit_grid_datasets_num_terms(
     batched_y: jnp.ndarray,
     params: MetalogParameters,
     num_terms_list: list[int],
-    precomputed_quantiles: bool = False,
+    precomputed_quantiles: bool = True,
     regression_params: Any = None,
 ) -> GridResult:
     """Fit multiple datasets with different num_terms values.
 
     This function performs a 2D grid search over datasets x term counts
     using nested vmap for efficient parallel computation. Supports OLS and Lasso
-    regression methods based on the params.method setting.
+    regression methods based on the params.method setting. It is ``fit_grid`` with
+    a batch of datasets and ``num_terms=num_terms_list``.
 
     Vectorization strategy:
         - datasets dimension: Fully vectorized via vmap
@@ -929,14 +916,17 @@ def fit_grid_datasets_num_terms(
         - Uses MAX_TERMS-sized arrays with masking for uniform shapes
 
     Args:
-        batched_x: Stacked quantile values, shape (n_datasets, n_samples).
-        batched_y: Stacked probability levels, shape (n_datasets, n_samples).
+        batched_x: Stacked quantile values, shape (n_datasets, n_samples), or raw
+            samples if ``precomputed_quantiles`` is False.
+        batched_y: Stacked probability levels, shape (n_datasets, m).
         params: MetalogParameters configuration. The num_terms field is ignored
             and replaced by values from num_terms_list.
         num_terms_list: List of term counts to test.
-        precomputed_quantiles: Whether x values are precomputed quantiles.
-        regression_params: Optional regression hyperparameters (e.g., LassoParameters).
-            If None, uses defaults for the method.
+        precomputed_quantiles: Whether batched_x holds quantiles at batched_y (the
+            default). If False, it holds raw samples, and each dataset's quantiles
+            are computed first, as MetalogInputData.from_values does.
+        regression_params: Optional LassoParameters for a Lasso grid. If None, uses
+            DEFAULT_LASSO_PARAMETERS.
 
     Returns:
         GridResult with batched results:
@@ -950,42 +940,16 @@ def fit_grid_datasets_num_terms(
 
     Raises:
         ValueError: If params.method is not OLS or Lasso.
+        TypeError: If ``regression_params`` is given for an OLS grid.
     """  # noqa: DOC502
-    max_terms_output = max(num_terms_list)
-    num_terms_array = jnp.array(num_terms_list)
-
-    # Extract static parameters
-    lower_bound = params.lower_bound
-    upper_bound = params.upper_bound
-    boundedness = params.boundedness
-
-    # Get fit function based on method
-    fit_fn = _get_fit_function_for_method(params.method, regression_params)
-
-    def fit_single_config(
-        x: jnp.ndarray, y: jnp.ndarray, num_terms: jnp.ndarray
-    ) -> GridResult:
-        """Fit a single dataset with a specific num_terms (traceable)."""
-        # Transform the quantiles to the metalog's unbounded scale
-        quantiles = Metalog.quantile_transform(x, boundedness, lower_bound, upper_bound)
-
-        # Build design matrix with dynamic num_terms using vmap-compatible function
-        target = _get_target_vmap(y=y, num_terms=num_terms)
-
-        # Fit regression
-        model = fit_fn(target, quantiles)
-
-        return _grid_result(model.weights, x, y, num_terms, params, max_terms_output)
-
-    # Build nested vmap: datasets x num_terms
-    # vmap over num_terms (innermost)
-    vmapped_over_terms = jax.vmap(fit_single_config, in_axes=(None, None, 0))
-    # vmap over datasets (outermost)
-    vmapped_over_all = jax.vmap(
-        lambda x, y: vmapped_over_terms(x, y, num_terms_array), in_axes=(0, 0)
+    return fit_grid(
+        batched_x,
+        batched_y,
+        params,
+        num_terms=num_terms_list,
+        precomputed_quantiles=precomputed_quantiles,
+        lasso_params=regression_params,
     )
-
-    return _with_feasibility(vmapped_over_all(batched_x, batched_y))
 
 
 def fit_grid_full(
@@ -994,7 +958,7 @@ def fit_grid_full(
     params: MetalogParameters,
     l1_penalties: jnp.ndarray,
     num_terms_list: list[int],
-    precomputed_quantiles: bool = False,
+    precomputed_quantiles: bool = True,
     *,
     num_iters: int = DEFAULT_LASSO_ITERATIONS,
     tol: float = DEFAULT_LASSO_TOLERANCE,
@@ -1002,6 +966,8 @@ def fit_grid_full(
     """Fit multiple datasets with grids of L1 penalties and term counts (Lasso).
 
     This function performs a 3D grid search over datasets x L1 penalties x num_terms.
+    It is ``fit_grid`` with a batch of datasets, ``l1_penalties`` and
+    ``num_terms=num_terms_list``, so every fit is a Lasso fit.
 
     Vectorization strategy:
         - All three dimensions (datasets, penalties, num_terms) are fully vectorized
@@ -1015,13 +981,16 @@ def fit_grid_full(
         - PPF computation uses active_mask to only use valid terms
 
     Args:
-        batched_x: Stacked quantile values, shape (n_datasets, n_samples).
-        batched_y: Stacked probability levels, shape (n_datasets, n_samples).
+        batched_x: Stacked quantile values, shape (n_datasets, n_samples), or raw
+            samples if ``precomputed_quantiles`` is False.
+        batched_y: Stacked probability levels, shape (n_datasets, m).
         params: Base MetalogParameters configuration. The num_terms field is ignored
             and replaced by values from num_terms_list.
         l1_penalties: Array of L1 penalty values to test, shape (n_penalties,).
         num_terms_list: List of term counts to test.
-        precomputed_quantiles: Whether x values are precomputed quantiles.
+        precomputed_quantiles: Whether batched_x holds quantiles at batched_y (the
+            default). If False, it holds raw samples, and each dataset's quantiles
+            are computed first, as MetalogInputData.from_values does.
         num_iters: Maximum active-set steps for Lasso. Default: 500.
         tol: Optimality tolerance for Lasso. Default: 1e-6.
 
@@ -1034,51 +1003,19 @@ def fit_grid_full(
 
         Where max_terms = max(num_terms_list) and coefficients for smaller term
         counts are zero-padded.
-    """
-    max_terms_output = max(num_terms_list)
-    num_terms_array = jnp.array(num_terms_list)
 
-    # Extract static parameters from params for use in the vmapped function
-    lower_bound = params.lower_bound
-    upper_bound = params.upper_bound
-    boundedness = params.boundedness
-
-    def fit_single_config(
-        x: jnp.ndarray, y: jnp.ndarray, l1_penalty: jnp.ndarray, num_terms: jnp.ndarray
-    ) -> GridResult:
-        """Fit a single configuration with traced num_terms.
-
-        This function is designed to be vmapped over all dimensions.
-        Uses MAX_TERMS-sized arrays with masking for uniform shape.
-        """
-        # Transform the quantiles to the metalog's unbounded scale
-        quantiles = Metalog.quantile_transform(x, boundedness, lower_bound, upper_bound)
-
-        # Build design matrix with dynamic num_terms using vmap-compatible function
-        target = _get_target_vmap(y=y, num_terms=num_terms)
-
-        # Fit using Lasso regression with MAX_TERMS-sized design matrix
-        lasso_params = LassoParameters(lam=l1_penalty, num_iters=num_iters, tol=tol)
-        model = fit_lasso(target, quantiles, lasso_params, intercept=True)
-
-        return _grid_result(model.weights, x, y, num_terms, params, max_terms_output)
-
-    # Build nested vmap: datasets x penalties x num_terms
-    # vmap over num_terms (innermost)
-    vmapped_over_terms = jax.vmap(fit_single_config, in_axes=(None, None, None, 0))
-    # vmap over penalties
-    vmapped_over_penalties = jax.vmap(
-        lambda x, y, l1: vmapped_over_terms(x, y, l1, num_terms_array),
-        in_axes=(None, None, 0),
+    Raises:
+        ValueError: If params.method is MetalogFitMethod.Feasible.
+    """  # noqa: DOC502
+    return fit_grid(
+        batched_x,
+        batched_y,
+        params,
+        num_terms=num_terms_list,
+        l1_penalties=l1_penalties,
+        precomputed_quantiles=precomputed_quantiles,
+        lasso_params=DEFAULT_LASSO_PARAMETERS.replace(num_iters=num_iters, tol=tol),
     )
-    # vmap over datasets (outermost)
-    vmapped_over_all = jax.vmap(
-        lambda x, y: vmapped_over_penalties(x, y, l1_penalties), in_axes=(0, 0)
-    )
-
-    # Execute the fully vmapped function
-    # Result shape: (n_datasets, n_penalties, n_terms, ...)
-    return _with_feasibility(vmapped_over_all(batched_x, batched_y))
 
 
 def find_best_config(

@@ -431,6 +431,12 @@ The grids that call ``fit`` (``fit_grid_datasets``, ``fit_grid_hyperparams`` and
 the message shows which. Pass ``on_infeasible="flag"`` to get every fit, with the
 infeasible ones marked in ``feasible``.
 
+The grids that take arrays read ``x`` as quantiles at ``y`` by default; pass
+``precomputed_quantiles=False`` to fit raw samples by their quantiles at ``y``.
+``fit_grid`` takes its Lasso settings from ``lasso_params``
+(``DEFAULT_LASSO_PARAMETERS`` if omitted), and a grid over ``l1_penalties`` labels its
+fits ``MetalogFitMethod.Lasso``.
+
 Fitting Many Datasets with Feasible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

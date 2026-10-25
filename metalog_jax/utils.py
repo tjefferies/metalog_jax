@@ -453,7 +453,8 @@ def ks_distance(x: chex.Numeric, y: chex.Numeric) -> chex.Scalar:
             Does not need to have the same length as x.
 
     Returns:
-        Scalar KS distance in the range [0, 1]. The KS statistic represents the
+        Scalar KS distance in the range [0, 1], in the inputs' floating-point type
+        (float64 for float64 or integer inputs). The KS statistic represents the
         maximum vertical distance between the two empirical CDFs:
         - 0: The two samples have identical empirical distributions
         - 1: The two samples are completely non-overlapping
@@ -545,10 +546,13 @@ def ks_distance(x: chex.Numeric, y: chex.Numeric) -> chex.Scalar:
     # Combine and sort all unique sample points
     all_values = jnp.sort(jnp.concatenate([x, y]))
 
-    # Compute empirical CDFs efficiently using searchsorted
-    cdf_x = jnp.searchsorted(x, all_values, side="right") / n
-    cdf_y = jnp.searchsorted(y, all_values, side="right") / m
+    # Count each sample's values at or below every point, in the inputs' float
+    # precision (searchsorted counts are int32, and int32 / int is float32)
+    dtype = jnp.result_type(x, y, float)
+    count_x = jnp.searchsorted(x, all_values, side="right").astype(dtype)
+    count_y = jnp.searchsorted(y, all_values, side="right").astype(dtype)
 
-    # Compute KS statistic (supremum of absolute difference)
-    d_stat = jnp.max(jnp.abs(cdf_x - cdf_y))
-    return d_stat
+    # sup |count_x / n - count_y / m|, over the common denominator n * m: the
+    # numerators are exact integers, so equal distances are equal to the last bit
+    # and grid searches break ties by position rather than by rounding
+    return jnp.max(jnp.abs(count_x * m - count_y * n)) / (n * m)

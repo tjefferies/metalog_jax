@@ -7,6 +7,7 @@ distributions across multiple datasets, hyperparameters, and term counts.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from absl.testing import absltest
 from scipy.stats import beta, lognorm
 
@@ -20,6 +21,7 @@ from metalog_jax.base import (
 from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine
 from metalog_jax.grid_search import (
     extract_best_from_grid,
+    extract_metalog,
     find_best_config,
     fit_grid,
     fit_grid_datasets,
@@ -31,8 +33,8 @@ from metalog_jax.grid_search import (
     make_batch,
     unvmap,
 )
-from metalog_jax.metalog import GridResult, Metalog
-from metalog_jax.regression import LassoParameters
+from metalog_jax.metalog import GridResult, Metalog, fit
+from metalog_jax.regression import DEFAULT_LASSO_PARAMETERS, LassoParameters
 from metalog_jax.utils import DEFAULT_Y, ks_distance
 
 
@@ -1649,6 +1651,257 @@ class TestGridScoresAtDataProbabilities(absltest.TestCase):
         for name, result in results.items():
             with self.subTest(function=name):
                 self._assert_scored_at_y(result, x, y)
+
+
+def _unbounded(method: MetalogFitMethod, num_terms: int = 7) -> MetalogParameters:
+    """Return unbounded parameters for the given fit method and term count."""
+    return MetalogParameters(
+        boundedness=MetalogBoundedness.UNBOUNDED,
+        method=method,
+        lower_bound=0.0,
+        upper_bound=0.0,
+        num_terms=num_terms,
+    )
+
+
+def _assert_coefficients_close(actual, expected):
+    """Assert two coefficient arrays agree to rounding, relative to their size."""
+    expected = np.asarray(expected)
+    atol = 1e-9 * np.max(np.abs(expected))
+    np.testing.assert_allclose(np.asarray(actual), expected, rtol=0, atol=atol)
+
+
+class TestFitGridLassoParams(absltest.TestCase):
+    """fit_grid fits with lasso_params (#50)."""
+
+    DATA = MetalogInputData.from_values(
+        jnp.asarray(np.random.default_rng(0).gamma(2.0, size=300)), DEFAULT_Y, False
+    )
+    LASSO = _unbounded(MetalogFitMethod.Lasso)
+    LAM = 0.1
+
+    def test_lasso_params_set_the_penalty(self):
+        """Without l1_penalties, a Lasso grid fits with lasso_params.lam."""
+        expected = fit(self.DATA, self.LASSO, LassoParameters(lam=self.LAM)).a
+        result = fit_grid(
+            self.DATA.x,
+            self.DATA.y,
+            self.LASSO,
+            lasso_params=LassoParameters(lam=self.LAM),
+        )
+        unpenalized = fit_grid(self.DATA.x, self.DATA.y, self.LASSO)
+
+        _assert_coefficients_close(result.metalog.a, expected)
+        self.assertFalse(np.allclose(unpenalized.metalog.a, expected))
+
+    def test_default_is_default_lasso_parameters(self):
+        """With lasso_params=None, a Lasso grid fits with DEFAULT_LASSO_PARAMETERS."""
+        expected = fit(self.DATA, self.LASSO, DEFAULT_LASSO_PARAMETERS).a
+        result = fit_grid(self.DATA.x, self.DATA.y, self.LASSO)
+        _assert_coefficients_close(result.metalog.a, expected)
+
+    def test_penalty_grids_use_its_num_iters(self):
+        """With l1_penalties, every fit uses lasso_params' num_iters."""
+        l1 = jnp.array([self.LAM])
+        expected = fit(self.DATA, self.LASSO, LassoParameters(lam=self.LAM)).a
+        solved = fit_grid(self.DATA.x, self.DATA.y, self.LASSO, l1_penalties=l1)
+        one_step = fit_grid(
+            self.DATA.x,
+            self.DATA.y,
+            self.LASSO,
+            l1_penalties=l1,
+            lasso_params=LassoParameters(lam=0.0, num_iters=1),
+        )
+
+        _assert_coefficients_close(solved.metalog.a[0], expected)
+        self.assertFalse(np.allclose(one_step.metalog.a[0], expected))
+
+    def test_num_terms_grids_pass_regression_params(self):
+        """The term-count grids fit with regression_params, as fit_grid does."""
+        lasso_params = LassoParameters(lam=self.LAM)
+        terms = [5, 7]
+        expected = fit_grid(
+            self.DATA.x,
+            self.DATA.y,
+            self.LASSO,
+            num_terms=terms,
+            lasso_params=lasso_params,
+        ).metalog.a
+        single = fit_grid_num_terms(self.DATA, self.LASSO, terms, lasso_params)
+        batched = fit_grid_datasets_num_terms(
+            self.DATA.x[None],
+            self.DATA.y[None],
+            self.LASSO,
+            terms,
+            regression_params=lasso_params,
+        )
+
+        _assert_coefficients_close(single.metalog.a, expected)
+        _assert_coefficients_close(batched.metalog.a[0], expected)
+        _assert_coefficients_close(
+            expected[1], fit(self.DATA, self.LASSO, lasso_params).a
+        )
+
+    def test_lasso_params_for_an_ols_grid_raise(self):
+        """Lasso settings for an OLS grid without l1_penalties raise, as in fit()."""
+        ols = self.LASSO.replace(method=MetalogFitMethod.OLS)
+        lasso_params = LassoParameters(lam=self.LAM)
+        with self.assertRaisesRegex(TypeError, "lasso_params only affects Lasso fits"):
+            fit_grid(self.DATA.x, self.DATA.y, ols, lasso_params=lasso_params)
+        with self.assertRaises(TypeError):
+            fit_grid_num_terms(self.DATA, ols, [5, 7], lasso_params)
+
+    def test_lasso_params_for_an_ols_penalty_grid(self):
+        """With l1_penalties, OLS parameters take lasso_params too."""
+        ols = self.LASSO.replace(method=MetalogFitMethod.OLS)
+        result = fit_grid(
+            self.DATA.x,
+            self.DATA.y,
+            ols,
+            l1_penalties=jnp.array([self.LAM]),
+            lasso_params=LassoParameters(lam=0.0),
+        )
+        expected = fit(self.DATA, self.LASSO, LassoParameters(lam=self.LAM)).a
+        _assert_coefficients_close(result.metalog.a[0], expected)
+
+
+class TestGridFitMethodLabel(absltest.TestCase):
+    """Grids label each fit with the method that made it (#50)."""
+
+    DATA = MetalogInputData.from_values(
+        jnp.asarray(np.random.default_rng(0).gamma(2.0, size=300)), DEFAULT_Y, False
+    )
+    OLS = _unbounded(MetalogFitMethod.OLS)
+    L1 = jnp.array([0.0, 0.1])
+    TERMS = (3, 5)
+
+    def test_penalty_grids_label_fits_lasso(self):
+        """Grids over L1 penalties fit with Lasso, so their fits say Lasso."""
+        x, y = self.DATA.x, self.DATA.y
+        results = {
+            "fit_grid": fit_grid(x, y, self.OLS, l1_penalties=self.L1),
+            "fit_grid with num_terms": fit_grid(
+                x, y, self.OLS, l1_penalties=self.L1, num_terms=self.TERMS
+            ),
+            "fit_grid_full": fit_grid_full(
+                x[None], y[None], self.OLS, self.L1, self.TERMS
+            ),
+        }
+        for name, result in results.items():
+            with self.subTest(function=name):
+                index = (0,) * result.ks_dist.ndim
+                metalog = extract_metalog(result, *index)
+                self.assertEqual(metalog.method, MetalogFitMethod.Lasso)
+                self.assertEqual(
+                    Metalog.loads(metalog.dumps()).method, MetalogFitMethod.Lasso
+                )
+
+    def test_ols_grids_label_fits_ols(self):
+        """Without penalties, an OLS grid's fits say OLS."""
+        result = fit_grid(self.DATA.x, self.DATA.y, self.OLS, num_terms=self.TERMS)
+        self.assertEqual(extract_metalog(result, 0).method, MetalogFitMethod.OLS)
+
+    def test_fit_grid_full_rejects_feasible(self):
+        """fit_grid_full raises for Feasible rather than labelling Lasso fits so."""
+        feasible = self.OLS.replace(method=MetalogFitMethod.Feasible)
+        with self.assertRaisesRegex(ValueError, "fit_grid_datasets"):
+            fit_grid_full(
+                self.DATA.x[None], self.DATA.y[None], feasible, self.L1, self.TERMS
+            )
+
+
+class TestGridPrecomputedQuantiles(absltest.TestCase):
+    """precomputed_quantiles=False fits raw samples by their quantiles (#50)."""
+
+    # 400 samples per dataset, quantiles at the 105 DEFAULT_Y levels
+    SAMPLES = jnp.asarray(np.random.default_rng(1).gamma(2.0, size=(2, 400)))
+    Y = jnp.broadcast_to(DEFAULT_Y, (2, DEFAULT_Y.shape[0]))
+    QUANTILES = jnp.stack(
+        [MetalogInputData.from_values(s, DEFAULT_Y, False).x for s in SAMPLES]
+    )
+    OLS = _unbounded(MetalogFitMethod.OLS)
+    LASSO = _unbounded(MetalogFitMethod.Lasso)
+    L1 = jnp.array([0.0, 0.01])
+    TERMS = (5, 7)
+
+    def _grids(self, x, **flag):
+        """Fit x with each grid function that takes arrays, passing flag through."""
+        y, ols, lasso = self.Y, self.OLS, self.LASSO
+        on_infeasible = {"on_infeasible": "flag"}
+        return {
+            "fit_grid": fit_grid(x[0], y[0], ols, **flag),
+            "fit_grid batched": fit_grid(
+                x, y, lasso, l1_penalties=self.L1, num_terms=self.TERMS, **flag
+            ),
+            "fit_grid_datasets_num_terms": fit_grid_datasets_num_terms(
+                x, y, ols, self.TERMS, **flag
+            ),
+            "fit_grid_full": fit_grid_full(x, y, lasso, self.L1, self.TERMS, **flag),
+            "fit_grid_datasets": fit_grid_datasets(x, y, ols, **flag, **on_infeasible),
+            "fit_grid_datasets_hyperparams": fit_grid_datasets_hyperparams(
+                x, y, lasso, self.L1, **flag, **on_infeasible
+            ),
+        }
+
+    def _assert_same_grids(self, actual, expected):
+        """Assert each grid's coefficients and KS distances agree."""
+        for name, result in expected.items():
+            with self.subTest(function=name):
+                _assert_coefficients_close(actual[name].metalog.a, result.metalog.a)
+                np.testing.assert_array_equal(actual[name].ks_dist, result.ks_dist)
+
+    def test_raw_samples_are_fitted_by_their_quantiles(self):
+        """False computes each dataset's quantiles at y, as from_values does."""
+        self._assert_same_grids(
+            self._grids(self.SAMPLES, precomputed_quantiles=False),
+            self._grids(self.QUANTILES, precomputed_quantiles=True),
+        )
+
+    def test_quantiles_are_the_default(self):
+        """Without the flag, x is taken as quantiles at y."""
+        self._assert_same_grids(
+            self._grids(self.QUANTILES),
+            self._grids(self.QUANTILES, precomputed_quantiles=True),
+        )
+
+    def test_ks_dist_is_float64(self):
+        """Every grid's KS distances are float64, the inputs' precision."""
+        data = MetalogInputData.from_values(self.QUANTILES[0], DEFAULT_Y, True)
+        results = self._grids(self.QUANTILES) | {
+            "fit_grid_num_terms": fit_grid_num_terms(data, self.OLS, self.TERMS),
+            "fit_grid_hyperparams": fit_grid_hyperparams(
+                data, self.LASSO, self.L1, on_infeasible="flag"
+            ),
+        }
+        for name, result in results.items():
+            with self.subTest(function=name):
+                self.assertEqual(result.ks_dist.dtype, jnp.float64)
+
+
+class TestKsDistanceDtype(absltest.TestCase):
+    """ks_distance returns the inputs' floating-point type (#50)."""
+
+    X = (0.0, 1.0, 2.0)
+    Y = (0.5, 1.5, 2.5)
+
+    def test_float64_inputs(self):
+        """float64 samples give a float64 distance, to float64 rounding."""
+        d = ks_distance(jnp.asarray(self.X), jnp.asarray(self.Y))
+        self.assertEqual(d.dtype, jnp.float64)
+        # float32 would be about 1e-8 off
+        self.assertAlmostEqual(float(d), 1 / 3, delta=1e-15)
+
+    def test_float32_inputs(self):
+        """float32 samples give a float32 distance."""
+        d = ks_distance(
+            jnp.asarray(self.X, dtype=jnp.float32), jnp.asarray(self.Y, jnp.float32)
+        )
+        self.assertEqual(d.dtype, jnp.float32)
+
+    def test_integer_inputs(self):
+        """Integer samples give a float64 distance."""
+        d = ks_distance(jnp.arange(3), jnp.arange(1, 4))
+        self.assertEqual(d.dtype, jnp.float64)
 
 
 if __name__ == "__main__":
