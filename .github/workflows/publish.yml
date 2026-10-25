@@ -1,9 +1,8 @@
-# The release. Runs when a push to main changes Dockerfile, pyproject.toml or uv.lock
-# (a release bumps the version), or by hand with workflow_dispatch on main:
+# The release. Runs when a push to main changes pyproject.toml or uv.lock (a release
+# bumps the version), or by hand with workflow_dispatch on main:
 #
 #   Quality Gate → Build → Publish (PyPI)
 #                        → Documentation (GitHub Pages)
-#                → Docker (GHCR, one image per Python version)
 #
 # Every stage is a job in this one run, so all of them use the commit pushed to main
 # (github.sha). The stages used to be separate workflows chained by workflow_run. A
@@ -20,7 +19,6 @@ on:
   push:
     branches: [main]
     paths:
-      - Dockerfile
       - pyproject.toml
       - uv.lock
   # Re-run a release from main, for example after a stage failed
@@ -80,13 +78,3 @@ jobs:
       contents: read
       pages: write
       id-token: write
-
-  docker:
-    needs: quality-gate
-    uses: $/.github/workflows/docker.yml
-    permissions:
-      contents: read
-      packages: write
-    with:
-      # The versions the Quality Gate tested, read from the pyproject.toml classifiers
-      python-versions: ${{ needs.quality-gate.outputs.python-versions }}
