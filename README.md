@@ -809,6 +809,18 @@ The function handles all 8 combinations of axes automatically:
 - With/without L1 penalty grid
 - With/without num_terms grid
 
+Its inputs and settings:
+- **Quantiles or samples:** `x` holds quantiles at `y` by default. Pass
+  `precomputed_quantiles=False` to fit raw samples: each dataset's quantiles at `y` are
+  computed first, as `MetalogInputData.from_values` does.
+- **Lasso settings:** `lasso_params` (a `LassoParameters`, `DEFAULT_LASSO_PARAMETERS` if
+  omitted) sets the penalty when there's no `l1_penalties` axis, and `num_iters` and
+  `tol` for every Lasso fit.
+- **The fit method:** a grid over `l1_penalties` fits with Lasso, so its fits are
+  labelled `MetalogFitMethod.Lasso`, even with OLS parameters.
+- **Ties:** equal KS distances are exactly equal, so `find_best_config` picks the first,
+  such as the fewest terms when `num_terms` is ascending.
+
 ### JAX Transformations
 
 Models, parameters and data can all be passed through `jax.jit`, `jax.vmap` and `jax.grad`:

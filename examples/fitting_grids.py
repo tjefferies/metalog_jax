@@ -612,17 +612,28 @@ def _(mo):
     mo.md(
         r"""
     ---
-    ## Using Precomputed Quantiles
+    ## Quantiles or Raw Samples
 
-    If you already have precomputed quantiles (e.g., from expert elicitation),
-    set `precomputed_quantiles=True`.
+    `fit_grid` takes quantiles at `y` by default (`precomputed_quantiles=True`), such
+    as the `x` of `MetalogInputData.from_values` or an expert's assessments. To fit
+    raw samples, pass `precomputed_quantiles=False`: each dataset's quantiles at `y`
+    are computed first, as `MetalogInputData.from_values` does.
     """
     )
     return
 
 
 @app.cell
-def _(MetalogBoundedness, MetalogFitMethod, MetalogParameters, fit_grid, jnp):
+def _(
+    DEFAULT_Y,
+    MetalogBoundedness,
+    MetalogFitMethod,
+    MetalogParameters,
+    fit_grid,
+    jnp,
+    normal_samples,
+    params_unbounded,
+):
     # Expert-elicited quantiles for a 0-100 bounded variable
     quantiles = jnp.array([10.0, 25.0, 40.0, 50.0, 60.0, 75.0, 90.0])
     probabilities = jnp.array([0.05, 0.20, 0.40, 0.50, 0.60, 0.80, 0.95])
@@ -635,15 +646,19 @@ def _(MetalogBoundedness, MetalogFitMethod, MetalogParameters, fit_grid, jnp):
         num_terms=5,
     )
 
-    result_quantiles = fit_grid(
-        quantiles, probabilities, params_quantiles, precomputed_quantiles=True
-    )
+    result_quantiles = fit_grid(quantiles, probabilities, params_quantiles)
 
     print(
         f"Precomputed quantiles fit KS distance: {float(result_quantiles.ks_dist):.4f}"
     )
     print(f"Coefficients: {result_quantiles.metalog.a}")
-    return params_quantiles, probabilities, quantiles, result_quantiles
+
+    # The 200 raw normal samples from above, fitted by their quantiles at DEFAULT_Y
+    result_raw = fit_grid(
+        normal_samples, DEFAULT_Y, params_unbounded, precomputed_quantiles=False
+    )
+    print(f"Raw samples fit KS distance: {float(result_raw.ks_dist):.4f}")
+    return params_quantiles, probabilities, quantiles, result_quantiles, result_raw
 
 
 @app.cell(hide_code=True)
