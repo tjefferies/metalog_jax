@@ -22,6 +22,11 @@ import numpy as np
 from flax import struct
 
 from metalog_jax.base.enums import MetalogBoundedness, MetalogFitMethod
+from metalog_jax.feasibility.engine import DEFAULT_TERM_ORDER, TermOrder
+
+# The order of a saved Metalog whose JSON has no term_order: every file saved before
+# term_order existed is in the 2016 order, whatever the default is now
+_UNSAVED_TERM_ORDER = TermOrder.KEELIN_2016
 from metalog_jax.utils import (
     DEFAULT_MAX_NUMBER_RV_DRAWS,
     HDRPRNGParameters,
@@ -147,24 +152,31 @@ class MetalogParametersBase:
             )
 
 
-def _check_serialized_keys(cls: type, params: dict, keys: tuple[str, ...]) -> None:
-    """Raise unless a serialized parameter dict has exactly the given keys.
+def _check_serialized_keys(
+    cls: type,
+    params: dict,
+    keys: tuple[str, ...],
+    optional: tuple[str, ...] = (),
+) -> None:
+    """Raise unless a serialized parameter dict has the keys ``to_dict`` writes.
 
     Args:
         cls: The parameter class being rebuilt.
         params: The ``metalog_params`` dict read from JSON.
-        keys: The keys that ``cls.to_dict()`` writes.
+        keys: The keys that ``cls.to_dict()`` always writes.
+        optional: Keys that ``cls.to_dict()`` writes only for some values.
 
     Raises:
-        ValueError: If the keys differ, for example SPT metalog JSON loaded as a
-            Metalog. The message names the loader for each kind of JSON.
+        ValueError: If a key is missing or unknown, for example SPT metalog JSON
+            loaded as a Metalog. The message names the loader for each kind of JSON.
     """
-    if set(params) != set(keys):
+    if not set(keys) <= set(params) <= set(keys) | set(optional):
+        optional_keys = f", and optionally {list(optional)}," if optional else ""
         raise ValueError(
-            f"{cls.__name__} expects the keys {list(keys)} in metalog_params, but "
-            f"got {sorted(params)}. Load a Metalog's JSON with Metalog.load or "
-            "Metalog.loads, and an SPTMetalog's with SPTMetalog.load or "
-            "SPTMetalog.loads."
+            f"{cls.__name__} expects the keys {list(keys)}{optional_keys} in "
+            f"metalog_params, but got {sorted(params)}. Load a Metalog's JSON with "
+            "Metalog.load or Metalog.loads, and an SPTMetalog's with SPTMetalog.load "
+            "or SPTMetalog.loads."
         )
 
 
@@ -185,6 +197,17 @@ class MetalogParameters(MetalogParametersBase):
             - MetalogFitMethod.Lasso: metalog_jax.regression.lasso
         num_terms: Number of terms in the metalog series expansion: an integer of
             at least 2. Static.
+        term_order: The order of the basis terms, and so of the coefficients a.
+            Static. TermOrder.METALOG_2, the default, is 1, L, xL, x, x^2, x^2 L,
+            x^3 L, x^3, x^4, ..., with x = y - 0.5 and L = ln(y/(1-y)) (Baucells
+            et al. 2025, Section 2): for probabilities symmetric about 0.5, its
+            basis matrix has full rank for every k <= n (Proposition 2).
+            TermOrder.KEELIN_2016 is 1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
+            (Keelin 2016, Definition 1), the only order in earlier releases, whose
+            basis matrix is rank deficient for n = k in {7, 11, 15, ...}.
+            The orders agree for up to 6 terms. For other k outside
+            {7, 11, 15, ...}, they span the same functions in a different order,
+            and Metalog.with_term_order converts between them.
 
     See Also:
         MetalogParametersBase: Parent class with boundedness and bound attributes.
@@ -195,6 +218,7 @@ class MetalogParameters(MetalogParametersBase):
 
     method: MetalogFitMethod = struct.field(pytree_node=False)
     num_terms: int = struct.field(pytree_node=False)
+    term_order: TermOrder = struct.field(pytree_node=False, default=DEFAULT_TERM_ORDER)
 
     # The keys to_dict writes, in order; Metalog.dumps output must not change
     _SERIALIZED_KEYS: ClassVar[tuple[str, ...]] = (
@@ -204,13 +228,17 @@ class MetalogParameters(MetalogParametersBase):
         "upper_bound",
         "num_terms",
     )
+    # Written unless the order is _UNSAVED_TERM_ORDER, which a missing key means, so
+    # that 2016-order JSON is unchanged and still loads in earlier versions
+    _OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("term_order",)
 
     def __post_init__(self) -> None:
         """Check the bounds, as the base class does, and the number of terms.
 
         Raises:
             ValueError: If ``num_terms`` isn't an integer of at least 2 (a 1-term
-                metalog is a constant, not a distribution), or a bound is invalid.
+                metalog is a constant, not a distribution), ``term_order`` isn't a
+                TermOrder, or a bound is invalid.
         """
         super().__post_init__()
         if (
@@ -221,21 +249,28 @@ class MetalogParameters(MetalogParametersBase):
             raise ValueError(
                 f"num_terms must be an integer of at least 2, got {self.num_terms!r}"
             )
+        if not isinstance(self.term_order, TermOrder):
+            raise ValueError(f"term_order must be a TermOrder, got {self.term_order!r}")
 
     def to_dict(self) -> dict:
         """Return the parameters as the JSON-ready dict that Metalog.dumps writes.
 
         Returns:
             dict: ``boundedness`` and ``method`` as integers, the bounds as floats,
-                and ``num_terms`` as an integer.
+                and ``num_terms`` as an integer. ``term_order`` is added, as an
+                integer, unless it's TermOrder.KEELIN_2016, the order of JSON
+                without it, so that 2016-order JSON is the same as before.
         """
-        return {
+        params = {
             "boundedness": int(self.boundedness),
             "method": int(self.method),
             "lower_bound": float(self.lower_bound),
             "upper_bound": float(self.upper_bound),
             "num_terms": int(self.num_terms),
         }
+        if self.term_order != _UNSAVED_TERM_ORDER:
+            params["term_order"] = int(self.term_order)
+        return params
 
     @classmethod
     def from_dict(cls, params: dict) -> Self:
@@ -245,20 +280,25 @@ class MetalogParameters(MetalogParametersBase):
             params: The ``metalog_params`` dict of a saved Metalog.
 
         Returns:
-            MetalogParameters: The parameters, with enum members for ``boundedness``
-                and ``method``.
+            MetalogParameters: The parameters, with enum members for
+                ``boundedness``, ``method`` and ``term_order``. JSON without
+                ``term_order``, including every file saved before it existed, is
+                in the 2016 order, not the default.
 
         Raises:
-            ValueError: If the keys aren't exactly those that to_dict writes (as
-                for an SPTMetalog's parameters), or an enum value is unknown.
+            ValueError: If the keys aren't those that to_dict writes (as for an
+                SPTMetalog's parameters), or an enum value is unknown.
         """  # noqa: DOC502
-        _check_serialized_keys(cls, params, cls._SERIALIZED_KEYS)
+        _check_serialized_keys(
+            cls, params, cls._SERIALIZED_KEYS, optional=cls._OPTIONAL_KEYS
+        )
         return cls(
             boundedness=MetalogBoundedness.from_value(params["boundedness"]),
             method=MetalogFitMethod.from_value(params["method"]),
             lower_bound=params["lower_bound"],
             upper_bound=params["upper_bound"],
             num_terms=params["num_terms"],
+            term_order=TermOrder(params.get("term_order", _UNSAVED_TERM_ORDER)),
         )
 
 

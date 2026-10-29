@@ -23,7 +23,7 @@ from metalog_jax.base import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.feasibility import get_engine
+from metalog_jax.feasibility import TermOrder, get_engine
 from metalog_jax.metalog import Metalog, fit, fit_spt_metalog
 from metalog_jax.utils import (
     DEFAULT_Y,
@@ -460,13 +460,17 @@ class StaticFieldsTest(TransformTestBase):
 
     @parameterized.named_parameters(*SAVED_JSON)
     def test_saved_json_is_unchanged(self, boundedness, lower, upper, saved):
-        """Earlier JSON loads to the same model, and dumps() writes it unchanged."""
+        """Earlier JSON loads to the same model, and dumps() writes it unchanged.
+
+        Earlier versions had only the 2016 term order, so their models have it.
+        """
         params = MetalogParameters(
             boundedness=boundedness,
             method=MetalogFitMethod.OLS,
             lower_bound=lower,
             upper_bound=upper,
             num_terms=3,
+            term_order=TermOrder.KEELIN_2016,
         )
         m = Metalog(params, jnp.array([0.5, 1.0, 0.25]))
         loaded = Metalog.loads(saved)

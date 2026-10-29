@@ -5,9 +5,9 @@ These functions write out a model's quantile function with its coefficients. The
 model methods call them: ``str(m)`` and ``repr(m)`` use format_line, Jupyter's
 ``_repr_latex_`` uses format_latex, and ``m.print()`` uses format_block.
 
-The terms follow the library's Keelin (2016, Definition 1) order, the one
-``MetalogBase._ppf`` evaluates: 1, ln(y/(1-y)), (y - 0.5) ln(y/(1-y)), (y - 0.5),
-then alternating powers of (y - 0.5), with and without the logit. Bounded and
+The terms follow the model's term order, the one ``MetalogBase._ppf`` evaluates:
+1, ln(y/(1-y)), (y - 0.5) ln(y/(1-y)), (y - 0.5), then powers of (y - 0.5), with and
+without the logit, in the Metalog 2.0 or Keelin (2016, Definition 1) order. Bounded and
 semi-bounded models map M(y) back to their support (Keelin 2016, Section 4):
 ``L + exp(M(y))``, ``U - exp(-M(y))`` and ``(L + U exp(M(y))) / (1 + exp(M(y)))``.
 
@@ -33,6 +33,7 @@ import jax
 import numpy as np
 
 from metalog_jax.base.enums import MetalogBoundedness
+from metalog_jax.feasibility.engine import DEFAULT_TERM_ORDER, TermOrder, term_basis
 
 # Significant digits for str(m), _repr_latex_ and print's default
 DEFAULT_PRECISION = 6
@@ -40,10 +41,8 @@ DEFAULT_PRECISION = 6
 # _repr_latex_ keeps up to this many terms on one line, then wraps after every this many
 _LATEX_TERMS_PER_LINE = 4
 
-# The first four basis functions; the later ones alternate powers of _DELTA, with and
-# without the logit (see _basis)
+# The basis functions are powers of _DELTA, with and without the logit (see _basis)
 _DELTA = "(y - 0.5)"
-_FIRST_FOUR_TERMS = ("", "{logit}", "{delta}{times}{logit}", "{delta}")
 
 _NEEDS_LOWER = (MetalogBoundedness.STRICTLY_LOWER_BOUND, MetalogBoundedness.BOUNDED)
 _NEEDS_UPPER = (MetalogBoundedness.STRICTLY_UPPER_BOUND, MetalogBoundedness.BOUNDED)
@@ -118,6 +117,7 @@ class _Snapshot:
         num_terms: The number of terms its parameters declare.
         method: The fit method's name, or None for an SPT metalog.
         boundedness: The boundedness type.
+        term_order: The order of the basis terms.
         detail: Why the equation can't be shown (traced or batched values), or None.
         a: The coefficients, when ``detail`` is None.
         lower: The lower bound, when the boundedness uses it.
@@ -129,6 +129,7 @@ class _Snapshot:
     num_terms: int
     method: str | None
     boundedness: MetalogBoundedness
+    term_order: TermOrder = DEFAULT_TERM_ORDER
     detail: str | None = None
     a: tuple[float, ...] = ()
     lower: float = 0.0
@@ -200,6 +201,7 @@ def _snapshot(model: Any) -> _Snapshot:
         "num_terms": int(model.num_terms),
         "method": None if method is None else getattr(method, "name", str(method)),
         "boundedness": params.boundedness,
+        "term_order": getattr(params, "term_order", DEFAULT_TERM_ORDER),
     }
     a, detail = _coefficients(model.a)
     if detail is not None:
@@ -207,23 +209,22 @@ def _snapshot(model: Any) -> _Snapshot:
     return _Snapshot(**static, a=a, **_parameters(params, params.boundedness))
 
 
-def _basis(j: int, style: _Style) -> str:
-    """The j-th basis function (1-based), in the order MetalogBase._ppf uses."""
-    if j <= 4:
-        template = _FIRST_FOUR_TERMS[j - 1]
-        return template.format(delta=_DELTA, times=style.times, logit=style.logit)
-    if j % 2:  # odd: (y - 0.5)^((j - 1) / 2)
-        return _DELTA + style.power((j - 1) // 2)
-    # even: (y - 0.5)^(j / 2 - 1) ln(y/(1-y))
-    return _DELTA + style.power(j // 2 - 1) + style.times + style.logit
+def _basis(power: int, has_logit: bool, style: _Style) -> str:
+    """A basis function, (y - 0.5)^power times the logit if has_logit, as text."""
+    delta = {0: "", 1: _DELTA}.get(power, _DELTA + style.power(power))
+    if not has_logit:
+        return delta
+    return f"{delta}{style.times}{style.logit}" if delta else style.logit
 
 
-def _terms(a: Sequence[float], style: _Style, precision: int | None) -> list[_Term]:
+def _terms(
+    a: Sequence[float], order: TermOrder, style: _Style, precision: int | None
+) -> list[_Term]:
     """Pair each coefficient's sign with its magnitude times its basis function."""
     terms = []
-    for j, value in enumerate(a, start=1):
+    for value, (power, has_logit) in zip(a, term_basis(len(a), order), strict=True):
         magnitude = style.number(abs(value), precision)
-        basis = _basis(j, style)
+        basis = _basis(power, has_logit, style)
         terms.append(
             (value < 0, f"{magnitude}{style.times}{basis}" if basis else magnitude)
         )
@@ -349,7 +350,7 @@ def _line(model: Any, precision: int | None) -> str:
     snap = _snapshot(model)
     if snap.detail is not None:
         return _summary(snap)
-    terms = _join(_terms(snap.a, _PLAIN, precision))
+    terms = _join(_terms(snap.a, snap.term_order, _PLAIN, precision))
     prefix = (
         f"{snap.name}({_render(_header_parts(snap, _PLAIN, precision), latex=False)}): "
     )
@@ -363,7 +364,7 @@ def _latex(model: Any, precision: int | None) -> str | None:
     snap = _snapshot(model)
     if snap.detail is not None:
         return None
-    terms = _terms(snap.a, _LATEX, precision)
+    terms = _terms(snap.a, snap.term_order, _LATEX, precision)
     parts = _header_parts(snap, _LATEX, precision)
     unbounded = snap.boundedness == MetalogBoundedness.UNBOUNDED
     q = [] if unbounded else [f"Q(y) = {_quantile(snap, _LATEX, precision)}"]
@@ -412,7 +413,7 @@ def _block(
     snap = _snapshot(model)
     if snap.detail is not None:
         return _summary(snap)
-    terms = _terms(snap.a, _PLAIN, precision)
+    terms = _terms(snap.a, snap.term_order, _PLAIN, precision)
     if snap.boundedness == MetalogBoundedness.UNBOUNDED:
         # Q(y) is M(y): its terms print once, under whichever name was asked for
         label = "Q(y)" if q else "M(y)"

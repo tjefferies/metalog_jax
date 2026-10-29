@@ -60,7 +60,14 @@ from metalog_jax.feasibility.analysis import (
     mean_and_variance,
     summary_stats,
 )
-from metalog_jax.feasibility.engine import Engine, TermOrder, _horner, get_engine
+from metalog_jax.feasibility.engine import (
+    DEFAULT_TERM_ORDER,
+    Engine,
+    TermOrder,
+    _horner,
+    get_engine,
+    term_basis,
+)
 from metalog_jax.utils import (
     DEFAULT_Y,
     DEFAULT_Y_FULL,
@@ -436,6 +443,17 @@ class MetalogBase:
         """
         return self.metalog_params.method
 
+    @property
+    def term_order(self) -> TermOrder:
+        """Get the order of the basis terms, and so of the coefficients ``a``.
+
+        Returns:
+            TermOrder: The parameters' ``term_order``. An SPT metalog has 3 terms,
+                where the orders agree, so it reports the default,
+                DEFAULT_TERM_ORDER.
+        """
+        return getattr(self.metalog_params, "term_order", DEFAULT_TERM_ORDER)
+
     def _assert_has_coefficients(self) -> None:
         """Check that the distribution has been fitted with coefficients.
 
@@ -691,59 +709,39 @@ class MetalogBase:
         )
 
     @staticmethod
-    @partial(jax.jit, static_argnames=["num_terms"])
-    def _get_target(y: chex.Numeric, num_terms: int) -> chex.Numeric:
+    @partial(jax.jit, static_argnames=["num_terms", "term_order"])
+    def _get_target(
+        y: chex.Numeric,
+        num_terms: int,
+        term_order: TermOrder = DEFAULT_TERM_ORDER,
+    ) -> chex.Numeric:
         """Construct the design matrix of metalog basis functions from input data.
 
         Builds the matrix Y where each column corresponds to a metalog basis function
-        evaluated at the probability levels y. The basis functions are:
-        - Term 1: 1 (intercept)
-        - Term 2: log(y / (1-y))
-        - Term 3: (y - 0.5) * log(y / (1-y))
-        - Term 4: (y - 0.5)
-        - Term 5+: Alternating powers of (y - 0.5) and products with log term.
+        evaluated at the probability levels y, in the order ``term_basis`` gives.
+        Both orders start 1, L, xL, x, x^2, x^2 L, with x = y - 0.5 and
+        L = log(y / (1-y)); later terms are powers of x, with and without L.
 
         Args:
             y: Probability levels in (0, 1), shape (m,).
             num_terms: Number of metalog terms (basis functions) to include.
+            term_order: The order of the basis terms.
 
         Returns:
             chex.Numeric: Design matrix of shape (m, num_terms).
         """
-
-        @jax.jit
-        def _delta_term(y: chex.Numeric) -> chex.Numeric:
-            return y - 0.5
-
-        @jax.jit
-        def _log_term(y: chex.Numeric) -> chex.Numeric:
-            return jnp.log(y / (1 - y))
-
-        @partial(jax.jit, static_argnames=["term", "m"])
-        def odd_term_transformation(y: chex.Numeric, term: int, m: int) -> chex.Numeric:
-            return (jnp.power(_delta_term(y), term // 2)).reshape((m, 1))
-
-        @partial(jax.jit, static_argnames=["m"])
-        def even_term_transformation(
-            y: chex.Numeric, previous_term: chex.Numeric, m: int
-        ) -> chex.Numeric:
-            return (_log_term(y) * jnp.squeeze(previous_term)).reshape((m, 1))
-
-        m = y.shape[0]
-        intercepts = jnp.ones(m).reshape((m, 1))
-        y_terms = [intercepts, _log_term(y).reshape((m, 1))]
-        if num_terms > 2:
-            y_terms.append((_delta_term(y) * _log_term(y)).reshape((m, 1)))
-        if num_terms > 3:
-            y_terms.append(_delta_term(y).reshape((m, 1)))
-            if num_terms > 4:
-                for term in range(5, num_terms + 1):
-                    if term % 2 == 1:
-                        odd_term = odd_term_transformation(y, term, m)
-                        y_terms.append(odd_term)
-                    else:
-                        y_terms.append(even_term_transformation(y, odd_term, m))
-        return jnp.hstack(y_terms)
+        delta = y - 0.5
+        log = jnp.log(y / (1 - y))
+        columns = []
+        for power, has_logit in term_basis(num_terms, term_order):
+            if power == 0:
+                column = log if has_logit else jnp.ones(y.shape[0])
+            else:
+                column = delta if power == 1 else jnp.power(delta, power)
+                if has_logit:
+                    column = log * column
+            columns.append(column)
+        return jnp.stack(columns, axis=1)
 
     @staticmethod
     def get_target(
@@ -752,18 +750,21 @@ class MetalogBase:
         """Construct the design matrix from input data and parameters.
 
         Convenience wrapper around _get_target that extracts the probability
-        levels and num_terms from the input objects.
+        levels, num_terms and term_order from the input objects.
 
         Args:
             data: Validated input data containing probability levels (y).
-            metalog_params: Configuration parameters specifying num_terms.
+            metalog_params: Configuration parameters specifying num_terms and
+                term_order.
 
         Returns:
             chex.Numeric: Design matrix of shape (m, num_terms).
         """
-        y = data.y
-        num_terms = metalog_params.num_terms
-        return MetalogBase._get_target(y=y, num_terms=num_terms)
+        return MetalogBase._get_target(
+            y=data.y,
+            num_terms=metalog_params.num_terms,
+            term_order=metalog_params.term_order,
+        )
 
     @partial(jax.jit, static_argnames=["num_terms"])
     def _ppf(self, x: chex.Numeric, num_terms: int) -> chex.Numeric:
@@ -782,23 +783,15 @@ class MetalogBase:
         """
         delta_term = self.delta_term(x)
         log_term = self.log_term(x)
+        # Every order starts with 1 and L, so a[0] + a[1] L, then a_j x^p (times L)
         ppf = self.a[0] + (self.a[1] * log_term)
-        if num_terms > 2:
-            ppf += self.a[2] * delta_term * log_term
-        if num_terms > 3:
-            ppf += self.a[3] * delta_term
-        if num_terms > 4:
-            odd_term = 2
-            even_term = 2
-            for term in range(5, num_terms + 1):
-                if term % 2 == 1:  # odd term
-                    ppf += self.a[term - 1] * jnp.power(delta_term, odd_term)
-                    odd_term += 1
-                if term % 2 == 0:  # even term
-                    ppf += (
-                        self.a[term - 1] * jnp.power(delta_term, even_term) * log_term
-                    )
-                    even_term += 1
+        for j, (power, has_logit) in enumerate(
+            term_basis(num_terms, self.term_order)[2:], start=2
+        ):
+            term = self.a[j] * (
+                delta_term if power == 1 else jnp.power(delta_term, power)
+            )
+            ppf += term * log_term if has_logit else term
         return ppf
 
     def ppf(self, x: chex.Numeric) -> chex.Numeric:
@@ -853,28 +846,23 @@ class MetalogBase:
         if num_terms == 2:
             return product_term / self.a[1]
 
+        # M'(y): d/dy L = 1 / (y(1-y)), d/dy x^p = p x^(p-1), and
+        # d/dy x^p L = x^p / (y(1-y)) + p x^(p-1) L
         m_inv = self.a[1] / product_term
-        if num_terms >= 3:
-            m_inv += self.a[2] * ((delta_term / product_term) + log_term)
-        if num_terms >= 4:
-            m_inv += self.a[3]
-        if num_terms >= 5:
-            odd_term = 1
-            even_term = 1
-            for term in range(5, num_terms + 1):
-                if term % 2 == 1:  # Odd term
-                    m_inv += (
-                        (odd_term + 1)
-                        * self.a[term - 1]
-                        * jnp.power(delta_term, odd_term)
-                    )
-                    odd_term += 1
-                else:  # Even term
-                    m_inv += self.a[term - 1] * (
-                        (jnp.power(delta_term, even_term + 1) / product_term)
-                        + (even_term + 1) * jnp.power(delta_term, even_term) * log_term
-                    )
-                    even_term += 1
+        for j, (power, has_logit) in enumerate(
+            term_basis(num_terms, self.term_order)[2:], start=2
+        ):
+            if has_logit and power == 1:
+                m_inv += self.a[j] * ((delta_term / product_term) + log_term)
+            elif has_logit:
+                m_inv += self.a[j] * (
+                    (jnp.power(delta_term, power) / product_term)
+                    + power * jnp.power(delta_term, power - 1) * log_term
+                )
+            elif power == 1:
+                m_inv += self.a[j]
+            else:
+                m_inv += power * self.a[j] * jnp.power(delta_term, power - 1)
         return 1.0 / m_inv
 
     def pdf(self, x: chex.Numeric) -> chex.Numeric:
@@ -925,7 +913,7 @@ class MetalogBase:
             tuple[Engine, chex.Array, chex.Array]: ``(engine, mu, s)``, so that
             M(y) = mu(y - 0.5) + s(y - 0.5) logit(y).
         """
-        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        engine = get_engine(int(self.num_terms), self.term_order)
         mu, s = engine.split(jnp.asarray(self.a, jnp.float64))
         return engine, mu, s
 
@@ -1148,12 +1136,12 @@ class MetalogBase:
 
     def _exact_mean_and_variance(self) -> tuple[chex.Scalar, chex.Scalar]:
         """Exact mean and variance of an unbounded metalog."""
-        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        engine = get_engine(int(self.num_terms), self.term_order)
         return mean_and_variance(engine, jnp.asarray(self.a, jnp.float64))
 
     def _exact_shape(self) -> tuple[chex.Scalar, chex.Scalar]:
         """Exact skewness and (Pearson) kurtosis of an unbounded metalog."""
-        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        engine = get_engine(int(self.num_terms), self.term_order)
         stats = summary_stats(engine, jnp.asarray(self.a, jnp.float64))
         return stats["skewness"], stats["kurtosis"]
 
@@ -1376,7 +1364,7 @@ class MetalogBase:
         self.assert_fitted()
         if not self._has_exact_moments():
             return self._density_mode()
-        engine = get_engine(int(self.num_terms), TermOrder.KEELIN_2016)
+        engine = get_engine(int(self.num_terms), self.term_order)
         value, _, found = highest_mode(engine, jnp.asarray(self.a, jnp.float64))
         return jnp.where(found, value, self._density_mode())
 

@@ -143,7 +143,8 @@ class GridFeasibilityTest(parameterized.TestCase):
             self.BAD, DEFAULT_Y, p, num_terms=terms, precomputed_quantiles=True
         )
         self.assert_feasible_is_certified(result, np.array(terms))
-        self.assertEqual(result.feasible.tolist(), [True, True, False, False])
+        # The 7-term fit is feasible in the default Metalog 2.0 order (not in 2016's)
+        self.assertEqual(result.feasible.tolist(), [True, True, True, False])
 
 
 class OnInfeasibleTest(parameterized.TestCase):

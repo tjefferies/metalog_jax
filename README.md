@@ -295,14 +295,11 @@ Chrisman, Keelin and Xu (2025),
 ["On the Properties of the Metalog Distribution"](https://doi.org/10.2139/ssrn.5279416),
 solved as a semi-infinite QP by the exchange method. It works with every boundedness option.
 
-metalog-jax keeps the term assignment of Keelin (2016). The paper's Metalog 2.0
-assignment differs from the 7th term on: for 7, 11, 15, ... terms the two span
-different functions, and for other term counts the same functions with the
-coefficients in a different order. The feasibility algorithms apply to both, and
-`best_feasible_fit(x, y, k, order=TermOrder.METALOG_2)` fits the paper's
-parameterization. For bounded and semi-bounded metalogs the fit, like OLS, is least
-squares on the log- or logit-transformed quantiles (the paper's Section 4.10); the
-back-transform keeps it valid.
+`Feasible` works in either term order: the paper's Metalog 2.0 order, the default, or
+Keelin's (2016) (see [Metalog 2.0 Term Order](#metalog-20-term-order)). For bounded
+and semi-bounded metalogs the fit, like OLS, is least squares on the log- or
+logit-transformed quantiles (the paper's Section 4.10); the back-transform keeps it
+valid.
 
 Plain least squares (`OLS`) can return coefficients whose "density" goes negative
 somewhere, which is more likely as you add terms. `fit` checks OLS results on a grid of
@@ -508,6 +505,76 @@ If you already have the three quantiles, for example an expert's 10th, 50th and 
 assessed = jnp.array([60.0, 110.0, 450.0])  # 10th, 50th and 90th percentiles
 spt_metalog = fit_spt_metalog(assessed, spt_params, precomputed_quantiles=True)
 ```
+
+### Metalog 2.0 Term Order
+
+metalog-jax writes a metalog's terms in the Metalog 2.0 order of Baucells, Chrisman,
+Keelin and Xu (2025): 1, L, xL, x, x², x²L, x³L, x³, x⁴, ..., with x = y − 0.5 and
+L = ln(y/(1−y)). Earlier releases used Keelin's (2016) order, which differs from the 7th
+term on: 1, L, xL, x, x², x²L, x³, x³L, ... Set `term_order=TermOrder.KEELIN_2016` in
+`MetalogParameters` to use it, for example to reproduce earlier results or Keelin's
+published tables.
+
+The difference matters when you fit exactly as many quantiles as terms, at
+probabilities symmetric about 0.5, as with an expert's percentiles. The Metalog 2.0
+order always has a unique fit there (the paper's Proposition 2); for 7, 11, 15, ...
+terms, the 2016 order has none, so `fit` raises:
+
+```python
+import jax.numpy as jnp
+from metalog_jax.base import (
+    MetalogBoundedness,
+    MetalogFitMethod,
+    MetalogInputData,
+    MetalogParameters,
+)
+from metalog_jax.metalog import fit
+
+# An expert's 5th, 10th, 25th, 50th, 75th, 90th and 95th percentiles
+probabilities = jnp.array([0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
+percentiles = jnp.array([1.0, 1.6, 2.4, 3.2, 4.3, 6.0, 7.5])
+data = MetalogInputData.from_values(percentiles, probabilities, precomputed_quantiles=True)
+
+params = MetalogParameters(
+    boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
+    method=MetalogFitMethod.Feasible,
+    lower_bound=0.0,
+    upper_bound=0.0,
+    num_terms=7,  # with term_order=TermOrder.KEELIN_2016, fit raises here
+)
+metalog = fit(data, params)
+print(metalog.ppf(probabilities))  # [1.  1.6 2.4 3.2 4.3 6.  7.5]
+```
+
+```pycon
+>>> metalog.print()
+Metalog: 7 terms, Feasible, lower bound 0
+  Q(y) = 0 + exp(M(y))
+  M(y) = 1.16315
+         + 0.953201 ln(y/(1-y))
+         - 1.55769 (y - 0.5) ln(y/(1-y))
+         - 2.76737 (y - 0.5)
+         + 6.24954 (y - 0.5)^2
+         - 0.928934 (y - 0.5)^2 ln(y/(1-y))
+         + 2.39534 (y - 0.5)^3 ln(y/(1-y))
+```
+
+- **Everything follows the order:** every fit method, the distribution methods, the
+  grid functions, `print` and `save` read the coefficients in the model's order. So do
+  the feasibility tools in `metalog_jax.feasibility`, such as `get_engine` and
+  `best_feasible_fit`, which default to the same order (`DEFAULT_TERM_ORDER`).
+- **Saved files:** `save` and `dumps` write `term_order`, except for the 2016 order. JSON
+  without it, including every file saved by an earlier release, loads in the 2016 order,
+  as before. An earlier release refuses a file in the Metalog 2.0 order rather than
+  misreading it.
+- **Converting:** for any term count outside 7, 11, 15, ..., the two orders hold the
+  same terms in a different order. `metalog.with_term_order(TermOrder.KEELIN_2016)`
+  rewrites a model in the other order without changing its distribution, and
+  `convert_term_order(a, source, target)` does the same for a coefficient vector.
+- **Upgrading:** fits now come out in the Metalog 2.0 order. With 7 or more terms, a
+  model you build from coefficients in the 2016 order, such as ones saved as plain
+  arrays by an earlier release, needs `term_order=TermOrder.KEELIN_2016`, or
+  `convert_term_order(a, TermOrder.KEELIN_2016, TermOrder.METALOG_2)` first.
 
 ## Features
 
@@ -864,9 +931,10 @@ makes it the safer choice as you add terms.
 
 **As many quantiles as terms:** with symmetric probabilities (for example the 1st, 10th,
 25th, 50th, 75th, 90th and 99th percentiles) and exactly as many terms as quantiles,
-metalog-jax's term assignment (Keelin 2016) has no unique fit for 7, 11, 15, ... terms
-(Baucells, Chrisman, Keelin and Xu 2025, Proposition 2), so `fit` raises for OLS and
-Feasible. Use a different number of terms, or more quantiles than terms.
+the default [Metalog 2.0 term order](#metalog-20-term-order) always has a unique fit.
+The 2016 order (`term_order=TermOrder.KEELIN_2016`) has none for 7, 11, 15, ... terms
+(Baucells, Chrisman, Keelin and Xu 2025, Proposition 2), so `fit` raises there for OLS
+and Feasible.
 
 ## Architecture
 

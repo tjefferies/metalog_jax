@@ -33,6 +33,7 @@ from metalog_jax.base import (
     MetalogParameters,
     MetalogRandomVariableParameters,
 )
+from metalog_jax.feasibility import TermOrder
 from metalog_jax.metalog import fit
 from metalog_jax.utils import DEFAULT_Y, JaxUniformDistributionParameters
 
@@ -124,7 +125,9 @@ def calculate_ks_distance(
         precomputed_quantiles=True,
     )
 
-    # Fit metalog distribution
+    # Fit metalog distribution, in the term order Keelin (2016) used for his tables;
+    # at 7 terms the Metalog 2.0 order is a different function space
+    metalog_params = metalog_params.replace(term_order=TermOrder.KEELIN_2016)
     metalog = fit(data=data, metalog_params=metalog_params)
 
     # Compute KS distance

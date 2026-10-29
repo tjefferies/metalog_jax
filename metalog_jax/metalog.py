@@ -43,6 +43,11 @@ from metalog_jax.base import (
     SPTMetalogParameters,
 )
 from metalog_jax.feasibility.a_star import fit_feasible
+from metalog_jax.feasibility.engine import (
+    DEFAULT_TERM_ORDER,
+    TermOrder,
+    convert_term_order,
+)
 from metalog_jax.regression import (
     LassoModel,
     RegressionModel,
@@ -77,6 +82,7 @@ _METHODS_WITH_HYPERPARAMS = frozenset({MetalogFitMethod.Lasso})
 def _get_fit_function(
     method: MetalogFitMethod,
     hyperparams: RegularizedParameters = None,
+    term_order: TermOrder = DEFAULT_TERM_ORDER,
 ) -> Callable:
     """Get the appropriate fit function for the given method.
 
@@ -95,6 +101,8 @@ def _get_fit_function(
             hyperparameters are bound to the fit function using functools.partial.
             Should be an instance of metalog_jax.regression.lasso.LassoParameters
             for Lasso method. Must be None for OLS and Feasible, which take none.
+        term_order: The design matrix's term order, which Feasible's solver needs
+            to read the coefficients as location and scale polynomials.
 
     Returns:
         Callable fit function, optionally with hyperparams bound via partial.
@@ -110,6 +118,8 @@ def _get_fit_function(
             f"method type {type(method)} not type MetalogFitMethod!"
         ) from None
 
+    if method == MetalogFitMethod.Feasible:
+        fit_func = partial(fit_func, order=term_order)
     if hyperparams is None:
         return fit_func
     if method not in _METHODS_WITH_HYPERPARAMS:
@@ -452,6 +462,39 @@ class Metalog(MetalogBase):
         """
         return self.metalog_params.method
 
+    def with_term_order(self, term_order: TermOrder) -> "Metalog":
+        """Return the same distribution with its coefficients in another term order.
+
+        The orders agree for up to 6 terms. For other k outside {7, 11, 15, ...},
+        they hold the same basis functions in a different order, so reordering the
+        coefficients gives the same quantile function, density and moments. For k
+        in {7, 11, 15, ...}, the k-th term differs (x^p in one order and x^p L in
+        the other, with x = y - 0.5 and L = ln(y/(1-y))), so no reordering gives the
+        same distribution: refit with the other order instead.
+
+        Args:
+            term_order: The order to write the coefficients in.
+
+        Returns:
+            Metalog: A model with ``term_order`` and reordered coefficients, or this
+                one if it already has that order. A batch of models (``a`` of shape
+                (..., k)) is reordered along its last axis.
+
+        Raises:
+            ValueError: If ``term_order`` isn't a TermOrder, or the two orders span
+                different functions at this number of terms.
+
+        See Also:
+            metalog_jax.feasibility.convert_term_order: The same for a raw
+                coefficient vector, such as one from another metalog tool.
+        """  # noqa: DOC502
+        if term_order == self.term_order and isinstance(term_order, TermOrder):
+            return self
+        return self.replace(
+            metalog_params=self.metalog_params.replace(term_order=term_order),
+            a=convert_term_order(self.a, self.term_order, term_order),
+        )
+
 
 def fit(
     data: MetalogInputData,
@@ -504,8 +547,10 @@ def fit(
             by ``assert_fitted()`` before returning.
         checkify.JaxRuntimeError: For OLS and Feasible, if the basis matrix is rank
             deficient so the fit is not unique (e.g. n = k symmetric probabilities
-            with 7, 11, 15, ... terms; Baucells et al. 2025, Proposition 2), or if
-            Feasible cannot certify its result.
+            with 7, 11, 15, ... terms in the 2016 order,
+            ``term_order=TermOrder.KEELIN_2016``; the default Metalog 2.0 order has
+            full rank there, Baucells et al. 2025, Proposition 2), or if Feasible
+            cannot certify its result.
         checkify.JaxRuntimeError: For Lasso, if the coefficients aren't finite, or
             the solver stopped at LassoParameters.num_iters steps without
             converging. Both are checked before the density.
@@ -642,7 +687,9 @@ def _fit_regression(
     quantiles = Metalog.get_quantiles(data=data, metalog_params=metalog_params)
     target = Metalog.get_target(data=data, metalog_params=metalog_params)
 
-    fit_method = _get_fit_function(metalog_params.method, regression_hyperparams)
+    fit_method = _get_fit_function(
+        metalog_params.method, regression_hyperparams, metalog_params.term_order
+    )
     if metalog_params.method != MetalogFitMethod.Lasso:  # Lasso is regularized
         assert_full_column_rank(target)
     model = fit_method(target, quantiles)

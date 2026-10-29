@@ -273,7 +273,9 @@ class TestAStar:
 
     def test_full_rank_flag_proposition_2(self):
         """With n = k = 7 symmetric probabilities the Keelin basis is singular."""
-        keelin = best_feasible_fit(SYMMETRIC_7_X, SYMMETRIC_7_Y, 7)
+        keelin = best_feasible_fit(
+            SYMMETRIC_7_X, SYMMETRIC_7_Y, 7, order=TermOrder.KEELIN_2016
+        )
         metalog2 = best_feasible_fit(SYMMETRIC_7_X, SYMMETRIC_7_Y, 7, order=M2)
         assert not bool(keelin.full_rank)
         assert bool(metalog2.full_rank)
@@ -315,7 +317,10 @@ class TestFitIntegration:
         "method", [MetalogFitMethod.OLS, MetalogFitMethod.Feasible]
     )
     def test_rank_deficient_basis_raises(self, method):
-        """Proposition 2: 7 symmetric percentiles and 7 terms have no unique fit."""
+        """Proposition 2: 7 symmetric percentiles and 7 terms in the 2016 order.
+
+        The basis has no unique fit there; the default Metalog 2.0 order's does.
+        """
         data = MetalogInputData.from_values(
             SYMMETRIC_7_X, SYMMETRIC_7_Y, precomputed_quantiles=True
         )
@@ -325,6 +330,7 @@ class TestFitIntegration:
             lower_bound=0.0,
             upper_bound=0.0,
             num_terms=7,
+            term_order=TermOrder.KEELIN_2016,
         )
         with pytest.raises(Exception, match="rank deficient"):
             fit(data, params)

@@ -170,10 +170,53 @@ If you already have quantile values (e.g., from expert elicitation), use
 .. note::
 
    With symmetric probabilities (for example the 1st, 10th, 25th, 50th, 75th, 90th
-   and 99th percentiles) and exactly as many terms as quantiles, metalog-jax's term
-   assignment (Keelin 2016) has no unique fit for 7, 11, 15, ... terms (Baucells,
-   Chrisman, Keelin and Xu 2025, Proposition 2), so ``fit`` raises for OLS and
-   Feasible. Use a different number of terms, or more quantiles than terms.
+   and 99th percentiles) and exactly as many terms as quantiles, the default Metalog
+   2.0 term order (below) always has a unique fit. The 2016 order
+   (``term_order=TermOrder.KEELIN_2016``) has none for 7, 11, 15, ... terms
+   (Baucells, Chrisman, Keelin and Xu 2025, Proposition 2), so ``fit`` raises there
+   for OLS and Feasible.
+
+Metalog 2.0 Term Order
+~~~~~~~~~~~~~~~~~~~~~~
+
+metalog-jax writes a metalog's terms in the Metalog 2.0 order of Baucells,
+Chrisman, Keelin and Xu (2025): 1, L, xL, x, x², x²L, x³L, x³, x⁴, ..., with
+x = y - 0.5 and L = ln(y/(1-y)). Earlier releases used Keelin's (2016) order, which
+differs from the 7th term on: 1, L, xL, x, x², x²L, x³, x³L, ... Set
+``term_order=TermOrder.KEELIN_2016`` to use it, for example to reproduce earlier
+results or Keelin's published tables. For 7, 11, 15, ... terms, the default fits
+as many symmetric percentiles as terms, where the 2016 order can't:
+
+.. code-block:: python
+
+   # An expert's 5th, 10th, 25th, 50th, 75th, 90th and 95th percentiles
+   probabilities = jnp.array([0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
+   percentiles = jnp.array([1.0, 1.6, 2.4, 3.2, 4.3, 6.0, 7.5])
+   data = MetalogInputData.from_values(
+       percentiles, probabilities, precomputed_quantiles=True
+   )
+
+   params = MetalogParameters(
+       boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
+       method=MetalogFitMethod.Feasible,
+       lower_bound=0.0,
+       upper_bound=0.0,
+       num_terms=7,  # with term_order=TermOrder.KEELIN_2016, fit raises here
+   )
+   m = fit(data, params)
+   m.print()  # the 7th term is (y - 0.5)^3 ln(y/(1-y))
+
+Every fit method, the distribution methods, the grid functions, ``print`` and
+``save`` read the coefficients in the model's order, and the tools in
+``metalog_jax.feasibility`` default to the same order (``DEFAULT_TERM_ORDER``).
+``save`` writes ``term_order``, except for the 2016 order; JSON without it, including
+every file saved by an earlier release, loads in the 2016 order. For any term count
+outside 7, 11, 15, ..., the two orders hold the same terms in a different order:
+``m.with_term_order(TermOrder.KEELIN_2016)`` rewrites a model in the other order
+without changing its distribution, and ``convert_term_order(a, source, target)`` does
+the same for a coefficient vector. With 7 or more terms, a model built from
+coefficients in the 2016 order, such as plain arrays saved by an earlier release,
+needs ``term_order=TermOrder.KEELIN_2016``.
 
 Bounded Distributions
 ---------------------
@@ -251,14 +294,10 @@ least-squares fit among valid metalogs: the coefficient vector a* from Baucells,
 Chrisman, Keelin and Xu (2025), `On the Properties of the Metalog Distribution
 <https://doi.org/10.2139/ssrn.5279416>`_. It works with every boundedness option.
 
-metalog-jax keeps the term assignment of Keelin (2016). The paper's Metalog 2.0
-assignment differs from the 7th term on: for 7, 11, 15, ... terms the two span
-different functions, and for other term counts the same functions with the
-coefficients in a different order. The feasibility algorithms apply to both, and
-``best_feasible_fit(x, y, k, order=TermOrder.METALOG_2)`` fits the paper's
-parameterization. For bounded and semi-bounded metalogs the fit, like OLS, is least
-squares on the log- or logit-transformed quantiles (the paper's Section 4.10); the
-back-transform keeps it valid.
+It works in either term order: the paper's Metalog 2.0 order, the default, or
+Keelin's (2016) (see `Metalog 2.0 Term Order`_). For bounded and semi-bounded metalogs the
+fit, like OLS, is least squares on the log- or logit-transformed quantiles (the
+paper's Section 4.10); the back-transform keeps it valid.
 
 Plain least squares (OLS) can return coefficients whose density goes negative
 somewhere, which makes the fit an invalid distribution, and this is more likely as

@@ -22,7 +22,13 @@ from metalog_jax.base import (
     MetalogParameters,
     SPTMetalogParameters,
 )
-from metalog_jax.feasibility import check_feasibility, get_engine, highest_mode
+from metalog_jax.feasibility import (
+    DEFAULT_TERM_ORDER,
+    TermOrder,
+    check_feasibility,
+    get_engine,
+    highest_mode,
+)
 from metalog_jax.metalog import THETA_3, Metalog, fit
 from metalog_jax.utils import DEFAULT_Y
 
@@ -81,41 +87,44 @@ def from_unbounded_scale(z, boundedness, lower, upper):
     return z
 
 
-def term_power(j):
+def term_power(j, order=DEFAULT_TERM_ORDER):
     """(power of y - 0.5, whether it multiplies logit(y)) for term j (1-based).
 
-    Keelin (2016), Definition 1: terms 1 and 4 are 1 and (y - 0.5); terms 2 and 3
-    are logit(y) and (y - 0.5) logit(y); then odd terms are (y - 0.5)^((j - 1) / 2)
-    and even terms (y - 0.5)^(j / 2 - 1) logit(y).
+    Both orders start 1, logit(y), (y - 0.5) logit(y), (y - 0.5). Then term j has
+    power (j - 1) // 2. Keelin (2016), Definition 1, puts the logit on even terms:
+    x^2, x^2 L, x^3, x^3 L, ... The Metalog 2.0 order (Baucells et al. 2025,
+    Section 2) puts it on terms 2 and 3 mod 4: x^2, x^2 L, x^3 L, x^3, x^4, ...
     """
     if j <= 4:
         return ((0, False), (0, True), (1, True), (1, False))[j - 1]
+    if order == TermOrder.METALOG_2:
+        return (j - 1) // 2, j % 4 in (2, 3)
     return ((j - 1) // 2, False) if j % 2 else (j // 2 - 1, True)
 
 
-def basis(y, num_terms):
+def basis(y, num_terms, order=DEFAULT_TERM_ORDER):
     """The metalog basis at y, shape (len(y), num_terms), built in NumPy."""
     y = np.asarray(y, dtype=np.float64)
     logit = np.log(y / (1 - y))
     columns = []
     for j in range(1, num_terms + 1):
-        power, with_logit = term_power(j)
+        power, with_logit = term_power(j, order)
         columns.append((y - 0.5) ** power * (logit if with_logit else 1.0))
     return np.stack(columns, axis=1)
 
 
-def s_at_ends(a):
+def s_at_ends(a, order=DEFAULT_TERM_ORDER):
     """s(0) and s(1), the logit polynomial at each end of (0, 1)."""
     ends = [0.0, 0.0]
     for j, coefficient in enumerate(np.asarray(a), start=1):
-        power, with_logit = term_power(j)
+        power, with_logit = term_power(j, order)
         if with_logit:
             ends[0] += coefficient * (-0.5) ** power
             ends[1] += coefficient * 0.5**power
     return ends
 
 
-def mirror_coefficients(a):
+def mirror_coefficients(a, order=DEFAULT_TERM_ORDER):
     """Coefficients of the metalog of -X, whose quantile function is -M(1 - y).
 
     y -> 1 - y negates y - 0.5 and logit(y), so term j changes sign by
@@ -123,7 +132,7 @@ def mirror_coefficients(a):
     """
     signs = []
     for j in range(1, len(a) + 1):
-        power, with_logit = term_power(j)
+        power, with_logit = term_power(j, order)
         signs.append((-1.0) ** (power + 1 + with_logit))
     return jnp.asarray(signs) * jnp.asarray(a)
 
@@ -145,7 +154,7 @@ def mirror(m):
         lower_bound=lower,
         upper_bound=upper,
     )
-    return Metalog(params, mirror_coefficients(m.a))
+    return Metalog(params, mirror_coefficients(m.a, m.term_order))
 
 
 def feasibility_report(a):

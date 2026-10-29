@@ -30,6 +30,7 @@ from metalog_jax.base import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
+from metalog_jax.feasibility import TermOrder
 from metalog_jax.grid_search import (
     find_best_config,
     fit_grid,
@@ -215,6 +216,29 @@ class MetalogPropertiesTest(parameterized.TestCase):
         y64 = y32.astype(jnp.float64)
         np.testing.assert_array_equal(m.ppf(y32), m.ppf(y64))
         np.testing.assert_array_equal(m.pdf(y32), m.pdf(y64))
+
+
+class TermOrderPropertiesTest(parameterized.TestCase):
+    """Rewriting a metalog in the other term order keeps its distribution (#58)."""
+
+    @FEW
+    @given(m=strategies.metalogs(term_counts=(3, 5, 9)), y=strategies.probabilities())
+    def test_conversion_keeps_the_distribution(self, m, y):
+        """The quantiles and density don't change, and converting back is exact."""
+        other = (
+            TermOrder.KEELIN_2016
+            if m.term_order == TermOrder.METALOG_2
+            else TermOrder.METALOG_2
+        )
+        converted = m.with_term_order(other)
+        x = np.asarray(m.ppf(y))
+        # Reordering the sum changes only its rounding
+        np.testing.assert_allclose(
+            converted.ppf(y), x, rtol=1e-12, atol=1e-12 * np.max(np.abs(x))
+        )
+        np.testing.assert_allclose(converted.pdf(y), m.pdf(y), rtol=1e-10)
+        back = converted.with_term_order(m.term_order)
+        np.testing.assert_array_equal(back.a, m.a)
 
 
 class UnboundedMetalogPropertiesTest(parameterized.TestCase):
