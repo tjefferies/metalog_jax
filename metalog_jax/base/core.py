@@ -61,6 +61,7 @@ from metalog_jax.feasibility.analysis import (
     summary_stats,
 )
 from metalog_jax.feasibility.engine import (
+    DEFAULT_TERM_ORDER,
     Engine,
     TermOrder,
     _horner,
@@ -448,9 +449,10 @@ class MetalogBase:
 
         Returns:
             TermOrder: The parameters' ``term_order``. An SPT metalog has 3 terms,
-                where the orders agree, so it reports TermOrder.KEELIN_2016.
+                where the orders agree, so it reports the default,
+                DEFAULT_TERM_ORDER.
         """
-        return getattr(self.metalog_params, "term_order", TermOrder.KEELIN_2016)
+        return getattr(self.metalog_params, "term_order", DEFAULT_TERM_ORDER)
 
     def _assert_has_coefficients(self) -> None:
         """Check that the distribution has been fitted with coefficients.
@@ -711,7 +713,7 @@ class MetalogBase:
     def _get_target(
         y: chex.Numeric,
         num_terms: int,
-        term_order: TermOrder = TermOrder.KEELIN_2016,
+        term_order: TermOrder = DEFAULT_TERM_ORDER,
     ) -> chex.Numeric:
         """Construct the design matrix of metalog basis functions from input data.
 

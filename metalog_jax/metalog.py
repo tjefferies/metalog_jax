@@ -43,7 +43,11 @@ from metalog_jax.base import (
     SPTMetalogParameters,
 )
 from metalog_jax.feasibility.a_star import fit_feasible
-from metalog_jax.feasibility.engine import TermOrder, term_basis
+from metalog_jax.feasibility.engine import (
+    DEFAULT_TERM_ORDER,
+    TermOrder,
+    convert_term_order,
+)
 from metalog_jax.regression import (
     LassoModel,
     RegressionModel,
@@ -78,7 +82,7 @@ _METHODS_WITH_HYPERPARAMS = frozenset({MetalogFitMethod.Lasso})
 def _get_fit_function(
     method: MetalogFitMethod,
     hyperparams: RegularizedParameters = None,
-    term_order: TermOrder = TermOrder.KEELIN_2016,
+    term_order: TermOrder = DEFAULT_TERM_ORDER,
 ) -> Callable:
     """Get the appropriate fit function for the given method.
 
@@ -479,25 +483,16 @@ class Metalog(MetalogBase):
         Raises:
             ValueError: If ``term_order`` isn't a TermOrder, or the two orders span
                 different functions at this number of terms.
-        """
-        if not isinstance(term_order, TermOrder):
-            raise ValueError(f"term_order must be a TermOrder, got {term_order!r}")
-        if term_order == self.term_order:
+
+        See Also:
+            metalog_jax.feasibility.convert_term_order: The same for a raw
+                coefficient vector, such as one from another metalog tool.
+        """  # noqa: DOC502
+        if term_order == self.term_order and isinstance(term_order, TermOrder):
             return self
-        source = term_basis(self.num_terms, self.term_order)
-        target = term_basis(self.num_terms, term_order)
-        if set(source) != set(target):
-            raise ValueError(
-                f"A {self.num_terms}-term metalog can't be converted from "
-                f"{self.term_order.name} to {term_order.name}: at "
-                f"{self.num_terms} terms (7, 11, 15, ...), the two orders' last terms "
-                "are different functions. Refit the data with "
-                f"term_order=TermOrder.{term_order.name} instead."
-            )
-        permutation = jnp.asarray([source.index(basis) for basis in target])
         return self.replace(
             metalog_params=self.metalog_params.replace(term_order=term_order),
-            a=jnp.asarray(self.a)[..., permutation],
+            a=convert_term_order(self.a, self.term_order, term_order),
         )
 
 
@@ -552,9 +547,10 @@ def fit(
             by ``assert_fitted()`` before returning.
         checkify.JaxRuntimeError: For OLS and Feasible, if the basis matrix is rank
             deficient so the fit is not unique (e.g. n = k symmetric probabilities
-            with 7, 11, 15, ... terms in the 2016 order; the Metalog 2.0 order,
-            ``term_order=TermOrder.METALOG_2``, has full rank there, Baucells et al.
-            2025, Proposition 2), or if Feasible cannot certify its result.
+            with 7, 11, 15, ... terms in the 2016 order,
+            ``term_order=TermOrder.KEELIN_2016``; the default Metalog 2.0 order has
+            full rank there, Baucells et al. 2025, Proposition 2), or if Feasible
+            cannot certify its result.
         checkify.JaxRuntimeError: For Lasso, if the coefficients aren't finite, or
             the solver stopped at LassoParameters.num_iters steps without
             converging. Both are checked before the density.

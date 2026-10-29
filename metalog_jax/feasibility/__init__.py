@@ -16,9 +16,10 @@ Every function is jit-compatible and can be vmapped over batches.
 a static argument, so even a call outside ``jax.jit`` compiles once per engine and
 coefficient shape, then runs in about a millisecond.
 
-The functions use the Keelin (2016) term assignment, ``metalog_jax``'s default, unless
-given ``TermOrder.METALOG_2``, the paper's Metalog 2.0 assignment, which differs from
-the 7th term on. A model's order is ``MetalogParameters.term_order``.
+The functions use the paper's Metalog 2.0 term assignment, ``metalog_jax``'s default
+(``DEFAULT_TERM_ORDER``), unless given ``TermOrder.KEELIN_2016``, the assignment of
+Keelin (2016), which differs from the 7th term on. A model's order is
+``MetalogParameters.term_order``.
 
 References:
     Baucells, M., Chrisman, L., Keelin, T. W., & Xu, Z. S. (2025). On the
@@ -49,8 +50,10 @@ from metalog_jax.feasibility.analysis import (
     tail_feasibility,
 )
 from metalog_jax.feasibility.engine import (
+    DEFAULT_TERM_ORDER,
     Engine,
     TermOrder,
+    convert_term_order,
     get_engine,
     inflection_points,
     term_basis,
@@ -58,6 +61,7 @@ from metalog_jax.feasibility.engine import (
 )
 
 __all__ = [
+    "DEFAULT_TERM_ORDER",
     "Engine",
     "FeasibilityReport",
     "FeasibleFitResult",
@@ -65,6 +69,7 @@ __all__ = [
     "TermOrder",
     "best_feasible_fit",
     "check_feasibility",
+    "convert_term_order",
     "design_matrix",
     "feasibility_function",
     "fit_feasible",

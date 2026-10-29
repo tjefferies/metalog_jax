@@ -9,10 +9,11 @@ well conditioned.
 
 Two term orderings are supported:
 
-* ``TermOrder.KEELIN_2016`` - ``metalog_jax``'s default ordering (Keelin 2016):
-  1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
-* ``TermOrder.METALOG_2`` - the Metalog 2.0 ordering of the paper:
+* ``TermOrder.METALOG_2`` - the Metalog 2.0 ordering of the paper, and
+  ``metalog_jax``'s default (``DEFAULT_TERM_ORDER``):
   1, L, xL, x, x^2, x^2 L, x^3 L, x^3, x^4, ...
+* ``TermOrder.KEELIN_2016`` - the ordering of Keelin (2016), Definition 1:
+  1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
 
 They coincide for k <= 6 and differ from the 7th term on (paper, footnote 2).
 
@@ -44,14 +45,21 @@ class TermOrder(IntEnum):
     """Ordering of the metalog basis terms.
 
     Attributes:
-        KEELIN_2016: ``metalog_jax``'s default ordering (Keelin 2016):
+        KEELIN_2016: Ordering of Keelin (2016), Definition 1:
             1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
-        METALOG_2: Metalog 2.0 ordering of the paper:
+        METALOG_2: Metalog 2.0 ordering of the paper, ``metalog_jax``'s default:
             1, L, xL, x, x^2, x^2 L, x^3 L, x^3, x^4, ...
     """
 
     KEELIN_2016 = auto()
     METALOG_2 = auto()
+
+
+# The order every function and MetalogParameters use unless given another. For
+# probabilities symmetric about 0.5, its basis matrix has full rank for every k <= n
+# (Baucells et al. 2025, Proposition 2); the 2016 order's doesn't, for n = k in
+# {7, 11, 15, ...}.
+DEFAULT_TERM_ORDER = TermOrder.METALOG_2
 
 
 def term_layout(num_terms: int, order: TermOrder) -> tuple[list[int], list[int]]:
@@ -101,6 +109,55 @@ def term_basis(num_terms: int, order: TermOrder) -> tuple[tuple[int, bool], ...]
     return tuple(basis)
 
 
+def convert_term_order(
+    a: chex.Array, source: TermOrder, target: TermOrder
+) -> chex.Array:
+    """Rewrite metalog coefficients from one term order in another.
+
+    The orders agree for up to 6 terms. For other k outside {7, 11, 15, ...}, they
+    hold the same basis functions in a different order, so the reordered
+    coefficients give the same quantile function. For k in {7, 11, 15, ...}, the
+    k-th term differs (x^p in one order and x^p L in the other, with x = y - 1/2 and
+    L = logit(y)), so no reordering gives the same function.
+
+    Args:
+        a: Coefficients in the ``source`` order, shape (..., k). A batch is
+            reordered along its last axis.
+        source: The order of ``a``.
+        target: The order to write the coefficients in.
+
+    Returns:
+        The coefficients in the ``target`` order, the same shape as ``a``.
+
+    Raises:
+        ValueError: If ``source`` or ``target`` isn't a TermOrder, or the two
+            orders hold different functions at k terms.
+
+    Example:
+        >>> import jax.numpy as jnp
+        >>> from metalog_jax.feasibility import TermOrder, convert_term_order
+        >>> a = jnp.arange(1.0, 9.0)  # 8 terms in the 2016 order: ..., x^3, x^3 L
+        >>> convert_term_order(a, TermOrder.KEELIN_2016, TermOrder.METALOG_2)
+        Array([1., 2., 3., 4., 5., 6., 8., 7.], dtype=float64)
+    """
+    for name, order in (("source", source), ("target", target)):
+        if not isinstance(order, TermOrder):
+            raise ValueError(f"{name} must be a TermOrder, got {order!r}")
+    a = jnp.asarray(a)
+    num_terms = a.shape[-1]
+    source_basis = term_basis(num_terms, source)
+    target_basis = term_basis(num_terms, target)
+    if set(source_basis) != set(target_basis):
+        raise ValueError(
+            f"{num_terms}-term coefficients can't be converted from {source.name} "
+            f"to {target.name}: at {num_terms} terms (7, 11, 15, ...), the two "
+            "orders' last terms are different functions. Refit the data with "
+            f"term_order=TermOrder.{target.name} instead."
+        )
+    permutation = [source_basis.index(basis) for basis in target_basis]
+    return a[..., jnp.asarray(permutation, dtype=int)]
+
+
 def _poly_der(c: chex.Array, j: int) -> chex.Array:
     """j-th derivative of ascending coefficients, keeping the length (zero padded)."""
     n = c.shape[0]
@@ -137,7 +194,7 @@ class Engine:
     passed as static arguments to ``jax.jit``.
     """
 
-    def __init__(self, num_terms: int, order: TermOrder = TermOrder.KEELIN_2016):
+    def __init__(self, num_terms: int, order: TermOrder = DEFAULT_TERM_ORDER):
         """Build the exact tables for a k-term metalog.
 
         Args:
@@ -252,12 +309,32 @@ class Engine:
 
 
 @cache
-def get_engine(num_terms: int, order: TermOrder = TermOrder.KEELIN_2016) -> Engine:
-    """Cached :class:`Engine` (stable identity keeps ``jit`` caches warm)."""
+def _cached_engine(num_terms: int, order: TermOrder) -> Engine:
+    """Build and cache the engine for a resolved ``(num_terms, order)`` pair."""
     # Build the tables eagerly even when first called inside jit, so the cache
     # never holds tracers
     with jax.ensure_compile_time_eval():
         return Engine(num_terms, order)
+
+
+def get_engine(num_terms: int, order: TermOrder = DEFAULT_TERM_ORDER) -> Engine:
+    """Cached :class:`Engine` (stable identity keeps ``jit`` caches warm).
+
+    The arguments are resolved before the lookup, so ``get_engine(k)`` and
+    ``get_engine(k, DEFAULT_TERM_ORDER)`` return the same engine.
+
+    Args:
+        num_terms: Number of metalog terms (>= 2).
+        order: Basis ordering.
+
+    Returns:
+        Engine: The one engine for ``(num_terms, order)``.
+    """
+    return _cached_engine(int(num_terms), TermOrder(order))
+
+
+# get_engine was a functools.cache function, so keep its cache_clear
+get_engine.cache_clear = _cached_engine.cache_clear
 
 
 # ----------------------------------------------------------------------------------

@@ -214,7 +214,8 @@ class TermLayoutTest(parameterized.TestCase):
     """Every boundedness type at 3, 4, 5, 6 and 9 terms, against literal terms."""
 
     A = (1.5, -0.25, 0.125, 2.0, -0.5, 0.75, -1.0, 0.0625, 3.0)
-    # The coefficients of A on their basis functions, Keelin (2016) Definition 1
+    # The coefficients of A on their basis functions, in the default Metalog 2.0
+    # order (Baucells et al. 2025, Section 2), where x^3 L comes before x^3
     TERMS = (
         "1.5",
         "- 0.25 ln(y/(1-y))",
@@ -222,8 +223,8 @@ class TermLayoutTest(parameterized.TestCase):
         "+ 2 (y - 0.5)",
         "- 0.5 (y - 0.5)^2",
         "+ 0.75 (y - 0.5)^2 ln(y/(1-y))",
-        "- 1 (y - 0.5)^3",
-        "+ 0.0625 (y - 0.5)^3 ln(y/(1-y))",
+        "- 1 (y - 0.5)^3 ln(y/(1-y))",
+        "+ 0.0625 (y - 0.5)^3",
         "+ 3 (y - 0.5)^4",
     )
     BOUNDS: ClassVar[dict] = {
@@ -416,9 +417,9 @@ class LatexTest(parameterized.TestCase):
         self.assertEqual(latex.count("{"), latex.count("}"))
 
     def test_sixteen_term_powers(self):
-        r"""The 16th term is (y - 0.5)^7 \ell(y)."""
+        r"""The 15th and 16th terms are (y - 0.5)^7 \ell(y) and (y - 0.5)^7."""
         latex = metalog([1.0] * 16)._repr_latex_()
-        self.assertIn(r"+ 1\,(y - 0.5)^{7}\,\ell(y) \\", latex)
+        self.assertIn(r"+ 1\,(y - 0.5)^{7}\,\ell(y) + 1\,(y - 0.5)^{7} \\", latex)
 
 
 class NumberFormatTest(absltest.TestCase):

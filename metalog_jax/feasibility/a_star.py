@@ -50,6 +50,7 @@ from metalog_jax.feasibility.analysis import (
     zero_test_width,
 )
 from metalog_jax.feasibility.engine import (
+    DEFAULT_TERM_ORDER,
     Engine,
     TermOrder,
     get_engine,
@@ -358,7 +359,7 @@ def best_feasible_fit(
     x: chex.Array,
     y: chex.Array,
     num_terms: int,
-    order: TermOrder = TermOrder.KEELIN_2016,
+    order: TermOrder = DEFAULT_TERM_ORDER,
     epsilon: float = 1e-6,
     tol: float = 0.0,
     max_cuts: int = 64,
@@ -372,8 +373,8 @@ def best_feasible_fit(
         x: Quantile values, shape (n,).
         y: Cumulative probabilities in (0, 1), shape (n,).
         num_terms: Number of metalog terms k (2 <= k <= n).
-        order: Basis ordering (``KEELIN_2016`` is ``metalog_jax``'s default; use
-            ``METALOG_2`` to reproduce the paper and the reference code).
+        order: Basis ordering. The default, ``METALOG_2``, is the paper's and the
+            reference code's; ``KEELIN_2016`` is the ordering of Keelin (2016).
         epsilon: Margin in ``G(y) >= epsilon``, relative to ``max|x - median(x)|``.
         tol: Extra slack for the violation and certificate sign tests, relative to
             the magnitude of G's terms. With 0 (the default) a violation is any
@@ -387,7 +388,7 @@ def best_feasible_fit(
     Returns:
         FeasibleFitResult. Check ``feasible`` (the certificate), ``converged`` and
         ``full_rank`` (with n = k symmetric probabilities the Keelin 2016 basis is
-        singular for 7, 11, 15, ... terms; use ``METALOG_2`` or more quantiles).
+        singular for 7, 11, 15, ... terms; the default ``METALOG_2`` isn't).
 
     Example:
         >>> import jax.numpy as jnp
@@ -419,7 +420,7 @@ def best_feasible_fit(
 
 
 def fit_feasible(
-    X: chex.Array, y: chex.Array, order: TermOrder = TermOrder.KEELIN_2016
+    X: chex.Array, y: chex.Array, order: TermOrder = DEFAULT_TERM_ORDER
 ) -> FeasibleModel:
     """Regression-dispatch entry point: best feasible fit from a metalog design matrix.
 

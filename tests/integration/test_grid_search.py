@@ -18,7 +18,12 @@ from metalog_jax.base import (
     MetalogInputData,
     MetalogParameters,
 )
-from metalog_jax.feasibility import best_feasible_fit, check_feasibility, get_engine
+from metalog_jax.feasibility import (
+    TermOrder,
+    best_feasible_fit,
+    check_feasibility,
+    get_engine,
+)
 from metalog_jax.grid_search import (
     extract_best_from_grid,
     extract_metalog,
@@ -172,6 +177,8 @@ class TestFitGridDatasets(absltest.TestCase):
             upper_bound=1,
             method=MetalogFitMethod.OLS,
             num_terms=7,
+            # One beta dataset's 7-term fit is feasible only in the 2016 order
+            term_order=TermOrder.KEELIN_2016,
         )
 
         results = fit_grid_datasets(
@@ -222,6 +229,8 @@ class TestFitGridDatasets(absltest.TestCase):
             upper_bound=1,
             method=MetalogFitMethod.OLS,
             num_terms=7,
+            # One beta dataset's 7-term fit is feasible only in the 2016 order
+            term_order=TermOrder.KEELIN_2016,
         )
 
         results = fit_grid_datasets(
@@ -263,6 +272,8 @@ class TestFitGridDatasetsHyperparams(absltest.TestCase):
             upper_bound=1,
             method=MetalogFitMethod.Lasso,
             num_terms=7,
+            # One beta dataset's 7-term fit is feasible only in the 2016 order
+            term_order=TermOrder.KEELIN_2016,
         )
         l1_penalties = jnp.array([0.0, 1.0, 10.0])
 
@@ -286,6 +297,8 @@ class TestFitGridDatasetsHyperparams(absltest.TestCase):
             upper_bound=1,
             method=MetalogFitMethod.Lasso,
             num_terms=7,
+            # One beta dataset's 7-term fit is feasible only in the 2016 order
+            term_order=TermOrder.KEELIN_2016,
         )
         l1_penalties = jnp.array([0.0, 1.0])
 

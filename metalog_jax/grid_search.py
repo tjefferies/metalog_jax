@@ -47,7 +47,7 @@ from metalog_jax.base import (
 )
 from metalog_jax.base.enums import MetalogFitMethod
 from metalog_jax.feasibility import Engine, check_feasibility, get_engine
-from metalog_jax.feasibility.engine import TermOrder, term_basis
+from metalog_jax.feasibility.engine import DEFAULT_TERM_ORDER, TermOrder, term_basis
 from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, _fit_coefficients
 from metalog_jax.regression import LassoParameters, RegularizedParameters
 from metalog_jax.regression.lasso import (
@@ -268,7 +268,7 @@ def _later_terms(term_order: TermOrder) -> tuple[jnp.ndarray, jnp.ndarray]:
 def _get_target_vmap(
     y: jnp.ndarray,
     num_terms: jnp.ndarray,
-    term_order: TermOrder = TermOrder.KEELIN_2016,
+    term_order: TermOrder = DEFAULT_TERM_ORDER,
 ) -> jnp.ndarray:
     """Construct the design matrix with dynamic num_terms for vmap compatibility.
 
@@ -316,7 +316,7 @@ def _masked_ppf(
     a: jnp.ndarray,
     y: jnp.ndarray,
     num_terms: jnp.ndarray,
-    term_order: TermOrder = TermOrder.KEELIN_2016,
+    term_order: TermOrder = DEFAULT_TERM_ORDER,
 ) -> jnp.ndarray:
     """Evaluate the unbounded metalog quantile function with a traced term count.
 

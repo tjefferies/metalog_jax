@@ -21,6 +21,7 @@ from metalog_jax.base import (
     MetalogRandomVariableParameters,
     SPTMetalogParameters,
 )
+from metalog_jax.feasibility import TermOrder
 from metalog_jax.metalog import Metalog, SPTMetalog, fit, fit_spt_metalog
 from metalog_jax.utils import (
     DEFAULT_Y,
@@ -1386,12 +1387,14 @@ class SPTMetalogSerializationTest(parameterized.TestCase):
 class MetalogCoefficientCoercionTest(parameterized.TestCase):
     """Regression tests for issue #9: list or tuple ``a`` must behave like an array."""
 
+    # The coefficients below were fitted in the 2016 term order
     BOUNDED_PARAMS = MetalogParameters(
         boundedness=MetalogBoundedness.BOUNDED,
         method=MetalogFitMethod.OLS,
         lower_bound=0.0,
         upper_bound=100.0,
         num_terms=9,
+        term_order=TermOrder.KEELIN_2016,
     )
     BOUNDED_COEFFICIENTS: ClassVar[list[float]] = [
         0.05007640896849727,

@@ -22,7 +22,11 @@ import numpy as np
 from flax import struct
 
 from metalog_jax.base.enums import MetalogBoundedness, MetalogFitMethod
-from metalog_jax.feasibility.engine import TermOrder
+from metalog_jax.feasibility.engine import DEFAULT_TERM_ORDER, TermOrder
+
+# The order of a saved Metalog whose JSON has no term_order: every file saved before
+# term_order existed is in the 2016 order, whatever the default is now
+_UNSAVED_TERM_ORDER = TermOrder.KEELIN_2016
 from metalog_jax.utils import (
     DEFAULT_MAX_NUMBER_RV_DRAWS,
     HDRPRNGParameters,
@@ -194,16 +198,16 @@ class MetalogParameters(MetalogParametersBase):
         num_terms: Number of terms in the metalog series expansion: an integer of
             at least 2. Static.
         term_order: The order of the basis terms, and so of the coefficients a.
-            Static. TermOrder.KEELIN_2016, the default, is 1, L, xL, x, x^2,
-            x^2 L, x^3, x^3 L, ..., with x = y - 0.5 and L = ln(y/(1-y)) (Keelin
-            2016, Definition 1). TermOrder.METALOG_2 is 1, L, xL, x, x^2, x^2 L,
-            x^3 L, x^3, x^4, ... (Baucells et al. 2025, Section 2): for
-            probabilities symmetric about 0.5, its basis matrix has full rank for
-            every k <= n (Proposition 2), whereas the 2016 order's is rank
-            deficient for n = k in {7, 11, 15, ...}. The orders agree for up to 6
-            terms. For other k outside {7, 11, 15, ...}, they span the same
-            functions in a different order, and Metalog.with_term_order converts
-            between them.
+            Static. TermOrder.METALOG_2, the default, is 1, L, xL, x, x^2, x^2 L,
+            x^3 L, x^3, x^4, ..., with x = y - 0.5 and L = ln(y/(1-y)) (Baucells
+            et al. 2025, Section 2): for probabilities symmetric about 0.5, its
+            basis matrix has full rank for every k <= n (Proposition 2).
+            TermOrder.KEELIN_2016 is 1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
+            (Keelin 2016, Definition 1), the only order in earlier releases, whose
+            basis matrix is rank deficient for n = k in {7, 11, 15, ...}.
+            The orders agree for up to 6 terms. For other k outside
+            {7, 11, 15, ...}, they span the same functions in a different order,
+            and Metalog.with_term_order converts between them.
 
     See Also:
         MetalogParametersBase: Parent class with boundedness and bound attributes.
@@ -214,9 +218,7 @@ class MetalogParameters(MetalogParametersBase):
 
     method: MetalogFitMethod = struct.field(pytree_node=False)
     num_terms: int = struct.field(pytree_node=False)
-    term_order: TermOrder = struct.field(
-        pytree_node=False, default=TermOrder.KEELIN_2016
-    )
+    term_order: TermOrder = struct.field(pytree_node=False, default=DEFAULT_TERM_ORDER)
 
     # The keys to_dict writes, in order; Metalog.dumps output must not change
     _SERIALIZED_KEYS: ClassVar[tuple[str, ...]] = (
@@ -226,8 +228,8 @@ class MetalogParameters(MetalogParametersBase):
         "upper_bound",
         "num_terms",
     )
-    # Written only for the Metalog 2.0 order, so that 2016-order JSON is unchanged
-    # and still loads in earlier versions
+    # Written unless the order is _UNSAVED_TERM_ORDER, which a missing key means, so
+    # that 2016-order JSON is unchanged and still loads in earlier versions
     _OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("term_order",)
 
     def __post_init__(self) -> None:
@@ -256,8 +258,8 @@ class MetalogParameters(MetalogParametersBase):
         Returns:
             dict: ``boundedness`` and ``method`` as integers, the bounds as floats,
                 and ``num_terms`` as an integer. ``term_order`` is added, as an
-                integer, only when it isn't TermOrder.KEELIN_2016, so that 2016-order
-                JSON is the same as before.
+                integer, unless it's TermOrder.KEELIN_2016, the order of JSON
+                without it, so that 2016-order JSON is the same as before.
         """
         params = {
             "boundedness": int(self.boundedness),
@@ -266,7 +268,7 @@ class MetalogParameters(MetalogParametersBase):
             "upper_bound": float(self.upper_bound),
             "num_terms": int(self.num_terms),
         }
-        if self.term_order != TermOrder.KEELIN_2016:
+        if self.term_order != _UNSAVED_TERM_ORDER:
             params["term_order"] = int(self.term_order)
         return params
 
@@ -281,7 +283,7 @@ class MetalogParameters(MetalogParametersBase):
             MetalogParameters: The parameters, with enum members for
                 ``boundedness``, ``method`` and ``term_order``. JSON without
                 ``term_order``, including every file saved before it existed, is
-                in the 2016 order.
+                in the 2016 order, not the default.
 
         Raises:
             ValueError: If the keys aren't those that to_dict writes (as for an
@@ -296,7 +298,7 @@ class MetalogParameters(MetalogParametersBase):
             lower_bound=params["lower_bound"],
             upper_bound=params["upper_bound"],
             num_terms=params["num_terms"],
-            term_order=TermOrder(params.get("term_order", TermOrder.KEELIN_2016)),
+            term_order=TermOrder(params.get("term_order", _UNSAVED_TERM_ORDER)),
         )
 
 

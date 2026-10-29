@@ -26,9 +26,11 @@ from metalog_jax.base import (
     MetalogParameters,
 )
 from metalog_jax.feasibility import (
+    DEFAULT_TERM_ORDER,
     TermOrder,
     best_feasible_fit,
     check_feasibility,
+    convert_term_order,
     design_matrix,
     get_engine,
     term_basis,
@@ -129,6 +131,53 @@ def unchecked_quantile(m: Metalog, y: jnp.ndarray) -> jnp.ndarray:
     return Metalog.inverse_quantile_transform(
         m._ppf(y, m.num_terms), m.boundedness, m.lower_bound, m.upper_bound
     )
+
+
+class DefaultTermOrderTest(absltest.TestCase):
+    """The Metalog 2.0 order is the default everywhere (#58)."""
+
+    def test_the_default_is_metalog_2(self):
+        """DEFAULT_TERM_ORDER is METALOG_2, and MetalogParameters uses it."""
+        self.assertEqual(DEFAULT_TERM_ORDER, METALOG_2)
+        default = MetalogParameters(
+            boundedness=MetalogBoundedness.UNBOUNDED,
+            method=MetalogFitMethod.OLS,
+            lower_bound=0.0,
+            upper_bound=0.0,
+            num_terms=8,
+        )
+        self.assertEqual(default.term_order, METALOG_2)
+
+    def test_the_feasibility_functions_share_it(self):
+        """get_engine and best_feasible_fit default to the same order as models."""
+        self.assertIs(get_engine(8), get_engine(8, METALOG_2))
+        x, y = (
+            np.asarray(SymmetricPercentilesTest.PERCENTILES),
+            np.asarray(SymmetricPercentilesTest.PROBABILITIES),
+        )
+        np.testing.assert_array_equal(
+            best_feasible_fit(x, y, 7).a_star,
+            best_feasible_fit(x, y, 7, order=METALOG_2).a_star,
+        )
+
+    def test_a_default_fit_of_symmetric_percentiles_succeeds(self):
+        """With the default order, 7 symmetric percentiles fit with 7 terms."""
+        data = MetalogInputData.from_values(
+            jnp.asarray(SymmetricPercentilesTest.PERCENTILES),
+            jnp.asarray(SymmetricPercentilesTest.PROBABILITIES),
+            True,
+        )
+        m = fit(
+            data,
+            MetalogParameters(
+                boundedness=MetalogBoundedness.UNBOUNDED,
+                method=MetalogFitMethod.Feasible,
+                lower_bound=0.0,
+                upper_bound=0.0,
+                num_terms=7,
+            ),
+        )
+        self.assertEqual(m.term_order, METALOG_2)
 
 
 class TermBasisTest(parameterized.TestCase):
@@ -322,6 +371,51 @@ class TermOrderConversionTest(parameterized.TestCase):
             m.with_term_order(2)
 
 
+class ConvertTermOrderTest(absltest.TestCase):
+    """convert_term_order reorders raw coefficient vectors (#58)."""
+
+    def test_matches_with_term_order(self):
+        """A raw vector converts as the model holding it does."""
+        m = fitted(MetalogBoundedness.UNBOUNDED, 12, KEELIN_2016)
+        np.testing.assert_array_equal(
+            convert_term_order(m.a, KEELIN_2016, METALOG_2),
+            m.with_term_order(METALOG_2).a,
+        )
+
+    def test_a_vector_gives_the_same_quantiles(self):
+        """Coefficients from another tool evaluate the same in either order."""
+        a = np.random.default_rng(2).normal(size=10)
+        converted = convert_term_order(a, METALOG_2, KEELIN_2016)
+        np.testing.assert_allclose(
+            paper_basis(Y, 10, KEELIN_2016) @ np.asarray(converted),
+            paper_basis(Y, 10, METALOG_2) @ a,
+            rtol=1e-12,
+        )
+
+    def test_lists_and_batches(self):
+        """A list converts, and a batch converts along its last axis."""
+        batch = np.arange(16.0).reshape(2, 8)
+        converted = convert_term_order(batch, KEELIN_2016, METALOG_2)
+        for i in range(2):
+            np.testing.assert_array_equal(
+                converted[i],
+                convert_term_order(list(batch[i]), KEELIN_2016, METALOG_2),
+            )
+        np.testing.assert_array_equal(converted[0], [0, 1, 2, 3, 4, 5, 7, 6])
+
+    def test_7_terms_raise(self):
+        """At 7 terms the orders hold different functions, so conversion raises."""
+        with self.assertRaisesRegex(ValueError, "Refit the data"):
+            convert_term_order(np.ones(7), METALOG_2, KEELIN_2016)
+
+    def test_a_non_enum_order_raises(self):
+        """Both orders must be TermOrder members."""
+        with self.assertRaisesRegex(ValueError, "source must be a TermOrder"):
+            convert_term_order(np.ones(8), 1, METALOG_2)
+        with self.assertRaisesRegex(ValueError, "target must be a TermOrder"):
+            convert_term_order(np.ones(8), METALOG_2, 1)
+
+
 class SymmetricPercentilesTest(absltest.TestCase):
     """k symmetric percentiles fit with k terms in the 2.0 order (#58).
 
@@ -438,6 +532,22 @@ class TermOrderSerializationTest(absltest.TestCase):
         loaded = Metalog.loads(m.dumps())
         self.assertEqual(loaded, m)
         self.assertEqual(loaded.term_order, METALOG_2)
+
+    def test_default_json_has_its_term_order(self):
+        """A default model saves term_order, so its JSON loads in the 2.0 order."""
+        m = Metalog(
+            MetalogParameters(
+                boundedness=MetalogBoundedness.UNBOUNDED,
+                method=MetalogFitMethod.OLS,
+                lower_bound=0.0,
+                upper_bound=0.0,
+                num_terms=3,
+            ),
+            jnp.array([1.0, 2.0, 0.5]),
+        )
+        saved = json.loads(m.dumps())
+        self.assertEqual(saved["metalog_params"]["term_order"], int(METALOG_2))
+        self.assertEqual(Metalog.loads(m.dumps()), m)
 
     def test_2016_json_has_no_term_order(self):
         """A 2016 model writes the same keys as before, so older versions load it."""

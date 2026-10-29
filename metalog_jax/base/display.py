@@ -7,7 +7,7 @@ model methods call them: ``str(m)`` and ``repr(m)`` use format_line, Jupyter's
 
 The terms follow the model's term order, the one ``MetalogBase._ppf`` evaluates:
 1, ln(y/(1-y)), (y - 0.5) ln(y/(1-y)), (y - 0.5), then powers of (y - 0.5), with and
-without the logit, in the Keelin (2016, Definition 1) or Metalog 2.0 order. Bounded and
+without the logit, in the Metalog 2.0 or Keelin (2016, Definition 1) order. Bounded and
 semi-bounded models map M(y) back to their support (Keelin 2016, Section 4):
 ``L + exp(M(y))``, ``U - exp(-M(y))`` and ``(L + U exp(M(y))) / (1 + exp(M(y)))``.
 
@@ -33,7 +33,7 @@ import jax
 import numpy as np
 
 from metalog_jax.base.enums import MetalogBoundedness
-from metalog_jax.feasibility.engine import TermOrder, term_basis
+from metalog_jax.feasibility.engine import DEFAULT_TERM_ORDER, TermOrder, term_basis
 
 # Significant digits for str(m), _repr_latex_ and print's default
 DEFAULT_PRECISION = 6
@@ -129,7 +129,7 @@ class _Snapshot:
     num_terms: int
     method: str | None
     boundedness: MetalogBoundedness
-    term_order: TermOrder = TermOrder.KEELIN_2016
+    term_order: TermOrder = DEFAULT_TERM_ORDER
     detail: str | None = None
     a: tuple[float, ...] = ()
     lower: float = 0.0
@@ -201,7 +201,7 @@ def _snapshot(model: Any) -> _Snapshot:
         "num_terms": int(model.num_terms),
         "method": None if method is None else getattr(method, "name", str(method)),
         "boundedness": params.boundedness,
-        "term_order": getattr(params, "term_order", TermOrder.KEELIN_2016),
+        "term_order": getattr(params, "term_order", DEFAULT_TERM_ORDER),
     }
     a, detail = _coefficients(model.a)
     if detail is not None:

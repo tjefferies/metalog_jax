@@ -28,9 +28,9 @@ RANK_DEFICIENT_MESSAGE = (
     "The metalog basis matrix is rank deficient (numerically singular), so the "
     "least-squares fit is not unique. Use fewer terms or more quantiles. A common "
     "cause: with as many probabilities as terms, symmetric probabilities make the "
-    "Keelin (2016) term order singular for 7, 11, 15, ... terms; the Metalog 2.0 "
-    "order, MetalogParameters(..., term_order=TermOrder.METALOG_2), isn't "
-    "(Baucells et al. 2025, Proposition 2)."
+    "Keelin (2016) term order, term_order=TermOrder.KEELIN_2016, singular for 7, "
+    "11, 15, ... terms; the default Metalog 2.0 order isn't (Baucells et al. 2025, "
+    "Proposition 2)."
 )
 
 

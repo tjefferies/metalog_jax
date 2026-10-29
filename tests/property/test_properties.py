@@ -219,20 +219,25 @@ class MetalogPropertiesTest(parameterized.TestCase):
 
 
 class TermOrderPropertiesTest(parameterized.TestCase):
-    """Rewriting a metalog in the Metalog 2.0 order keeps its distribution (#58)."""
+    """Rewriting a metalog in the other term order keeps its distribution (#58)."""
 
     @FEW
     @given(m=strategies.metalogs(term_counts=(3, 5, 9)), y=strategies.probabilities())
     def test_conversion_keeps_the_distribution(self, m, y):
         """The quantiles and density don't change, and converting back is exact."""
-        converted = m.with_term_order(TermOrder.METALOG_2)
+        other = (
+            TermOrder.KEELIN_2016
+            if m.term_order == TermOrder.METALOG_2
+            else TermOrder.METALOG_2
+        )
+        converted = m.with_term_order(other)
         x = np.asarray(m.ppf(y))
         # Reordering the sum changes only its rounding
         np.testing.assert_allclose(
             converted.ppf(y), x, rtol=1e-12, atol=1e-12 * np.max(np.abs(x))
         )
         np.testing.assert_allclose(converted.pdf(y), m.pdf(y), rtol=1e-10)
-        back = converted.with_term_order(TermOrder.KEELIN_2016)
+        back = converted.with_term_order(m.term_order)
         np.testing.assert_array_equal(back.a, m.a)
 
 
