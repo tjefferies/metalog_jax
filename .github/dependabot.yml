@@ -62,19 +62,3 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
-
-  # The uv, Syft and Grype images the Dockerfile copies its tools from. The python base
-  # image's tag comes from the PYTHON_VERSION build argument, so it isn't pinned here.
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    cooldown:
-      default-days: 7
-    groups:
-      docker:
-        patterns:
-          - "*"
-    commit-message:
-      prefix: "ci"
