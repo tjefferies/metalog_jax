@@ -61,7 +61,7 @@ dev = [
 # Dependabot's uv updates, with their cooldown, move CI's uv too. 0.13.4 is the first
 # release with the fix for GHSA-hq85-5cpj-mr62.
 ci = [
-    "uv==0.13.4",
+    "uv==0.13.5",
 ]
 lint = [
     "interrogate>=1.7.0",
@@ -81,7 +81,7 @@ test = [
     "absl-py>=2.3.1",
     "anybadge>=1.16.0",
     "coverage>=7.11.0",
-    "hypothesis==6.169.2",
+    "hypothesis==6.170.5",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
     "pytest-sugar>=1.1.1",
