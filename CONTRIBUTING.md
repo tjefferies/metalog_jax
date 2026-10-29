@@ -125,7 +125,7 @@ your branch ──PR──▶ development ──release PR──▶ main ──�
   - Decorate with `@jax.jit`, and pass arguments that determine shapes through `partial(jax.jit, static_argnames=...)`.
   - Don't branch in Python on traced values or call `float()`, `bool()` or `.item()` on them.
   - Keep shapes static so code stays `vmap`-able. Grid search vmaps over datasets, L1 penalties and term counts, and every function in `metalog_jax.feasibility` must work under `jit` and `vmap`.
-- **Term ordering:** the feasibility routines support `TermOrder.KEELIN_2016` (the library's ordering) and `TermOrder.METALOG_2`. Changes there must handle both.
+- **Term ordering:** a model's coefficients are in its `MetalogParameters.term_order`: `TermOrder.KEELIN_2016` (the default) or `TermOrder.METALOG_2`. Code that builds or reads the basis must handle both: build it from `term_basis(num_terms, order)`, the one definition, rather than writing an order out.
 - **Public API:** export new public names through the subpackage `__init__.py` and its `__all__`. A new module needs an `automodule` entry in `docs/source/api/modules.rst`.
 - **Correctness:** check new numerical results against an independent reference: the papers above and the reference implementation credited in `NOTICE`, a closed form, or scipy.
 

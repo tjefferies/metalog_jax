@@ -9,7 +9,7 @@ well conditioned.
 
 Two term orderings are supported:
 
-* ``TermOrder.KEELIN_2016`` - the ordering used by ``metalog_jax`` (Keelin 2016):
+* ``TermOrder.KEELIN_2016`` - ``metalog_jax``'s default ordering (Keelin 2016):
   1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
 * ``TermOrder.METALOG_2`` - the Metalog 2.0 ordering of the paper:
   1, L, xL, x, x^2, x^2 L, x^3 L, x^3, x^4, ...
@@ -44,7 +44,7 @@ class TermOrder(IntEnum):
     """Ordering of the metalog basis terms.
 
     Attributes:
-        KEELIN_2016: Ordering used by ``metalog_jax`` (Keelin 2016):
+        KEELIN_2016: ``metalog_jax``'s default ordering (Keelin 2016):
             1, L, xL, x, x^2, x^2 L, x^3, x^3 L, ...
         METALOG_2: Metalog 2.0 ordering of the paper:
             1, L, xL, x, x^2, x^2 L, x^3 L, x^3, x^4, ...
@@ -76,6 +76,29 @@ def term_layout(num_terms: int, order: TermOrder) -> tuple[list[int], list[int]]
             kind, power = ("mu" if j % 2 == 1 else "s"), (j - 1) // 2
         (mu if kind == "mu" else s).append((power, j - 1))
     return [ix for _, ix in sorted(mu)], [ix for _, ix in sorted(s)]
+
+
+@cache
+def term_basis(num_terms: int, order: TermOrder) -> tuple[tuple[int, bool], ...]:
+    """Each term's basis function, in coefficient order: the one basis definition.
+
+    The design matrix, the quantile function, its derivative and the display all
+    build their terms from this, so a term order is defined only in term_layout.
+
+    Args:
+        num_terms: Number of metalog terms k.
+        order: Basis ordering.
+
+    Returns:
+        A tuple whose j-th entry ``(p, has_logit)`` says that ``a[j]`` multiplies
+        ``(y - 1/2)^p``, times ``logit(y)`` if ``has_logit``.
+    """
+    mu_idx, s_idx = term_layout(num_terms, order)
+    basis = [(0, False)] * num_terms
+    for has_logit, indices in ((False, mu_idx), (True, s_idx)):
+        for p, ix in enumerate(indices):
+            basis[ix] = (p, has_logit)
+    return tuple(basis)
 
 
 def _poly_der(c: chex.Array, j: int) -> chex.Array:

@@ -170,10 +170,49 @@ If you already have quantile values (e.g., from expert elicitation), use
 .. note::
 
    With symmetric probabilities (for example the 1st, 10th, 25th, 50th, 75th, 90th
-   and 99th percentiles) and exactly as many terms as quantiles, metalog-jax's term
-   assignment (Keelin 2016) has no unique fit for 7, 11, 15, ... terms (Baucells,
+   and 99th percentiles) and exactly as many terms as quantiles, the default term
+   order (Keelin 2016) has no unique fit for 7, 11, 15, ... terms (Baucells,
    Chrisman, Keelin and Xu 2025, Proposition 2), so ``fit`` raises for OLS and
-   Feasible. Use a different number of terms, or more quantiles than terms.
+   Feasible. Use the Metalog 2.0 term order (below), which has a unique fit there,
+   a different number of terms, or more quantiles than terms.
+
+Metalog 2.0 Term Order
+~~~~~~~~~~~~~~~~~~~~~~
+
+metalog-jax writes a metalog's terms in Keelin's (2016) order by default: 1, L, xL,
+x, x², x²L, x³, x³L, ..., with x = y - 0.5 and L = ln(y/(1-y)). Baucells, Chrisman,
+Keelin and Xu (2025) define the Metalog 2.0 order, which differs from the 7th term
+on: 1, L, xL, x, x², x²L, x³L, x³, x⁴, ... For 7, 11, 15, ... terms, it fits as many
+symmetric percentiles as terms, where the 2016 order can't:
+
+.. code-block:: python
+
+   from metalog_jax.feasibility import TermOrder
+
+   # An expert's 5th, 10th, 25th, 50th, 75th, 90th and 95th percentiles
+   probabilities = jnp.array([0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
+   percentiles = jnp.array([1.0, 1.6, 2.4, 3.2, 4.3, 6.0, 7.5])
+   data = MetalogInputData.from_values(
+       percentiles, probabilities, precomputed_quantiles=True
+   )
+
+   params = MetalogParameters(
+       boundedness=MetalogBoundedness.STRICTLY_LOWER_BOUND,
+       method=MetalogFitMethod.Feasible,
+       lower_bound=0.0,
+       upper_bound=0.0,
+       num_terms=7,
+       term_order=TermOrder.METALOG_2,  # in the 2016 order, fit raises here
+   )
+   m = fit(data, params)
+   m.print()  # the 7th term is (y - 0.5)^3 ln(y/(1-y))
+
+Every fit method, the distribution methods, the grid functions, ``print`` and
+``save`` read the coefficients in the model's order. ``save`` writes ``term_order``
+only for the Metalog 2.0 order, so files in the 2016 order are unchanged. For any
+term count outside 7, 11, 15, ..., the two orders hold the same terms in a different
+order, and ``m.with_term_order(TermOrder.KEELIN_2016)`` rewrites a model in the other
+order without changing its distribution.
 
 Bounded Distributions
 ---------------------
@@ -251,14 +290,10 @@ least-squares fit among valid metalogs: the coefficient vector a* from Baucells,
 Chrisman, Keelin and Xu (2025), `On the Properties of the Metalog Distribution
 <https://doi.org/10.2139/ssrn.5279416>`_. It works with every boundedness option.
 
-metalog-jax keeps the term assignment of Keelin (2016). The paper's Metalog 2.0
-assignment differs from the 7th term on: for 7, 11, 15, ... terms the two span
-different functions, and for other term counts the same functions with the
-coefficients in a different order. The feasibility algorithms apply to both, and
-``best_feasible_fit(x, y, k, order=TermOrder.METALOG_2)`` fits the paper's
-parameterization. For bounded and semi-bounded metalogs the fit, like OLS, is least
-squares on the log- or logit-transformed quantiles (the paper's Section 4.10); the
-back-transform keeps it valid.
+It works in either term order: Keelin's (2016), the default, or the paper's Metalog
+2.0 order (see `Metalog 2.0 Term Order`_). For bounded and semi-bounded metalogs the
+fit, like OLS, is least squares on the log- or logit-transformed quantiles (the
+paper's Section 4.10); the back-transform keeps it valid.
 
 Plain least squares (OLS) can return coefficients whose density goes negative
 somewhere, which makes the fit an invalid distribution, and this is more likely as

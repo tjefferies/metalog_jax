@@ -372,7 +372,7 @@ def best_feasible_fit(
         x: Quantile values, shape (n,).
         y: Cumulative probabilities in (0, 1), shape (n,).
         num_terms: Number of metalog terms k (2 <= k <= n).
-        order: Basis ordering (``KEELIN_2016`` matches ``metalog_jax``; use
+        order: Basis ordering (``KEELIN_2016`` is ``metalog_jax``'s default; use
             ``METALOG_2`` to reproduce the paper and the reference code).
         epsilon: Margin in ``G(y) >= epsilon``, relative to ``max|x - median(x)|``.
         tol: Extra slack for the violation and certificate sign tests, relative to
@@ -418,16 +418,20 @@ def best_feasible_fit(
     )
 
 
-def fit_feasible(X: chex.Array, y: chex.Array) -> FeasibleModel:
+def fit_feasible(
+    X: chex.Array, y: chex.Array, order: TermOrder = TermOrder.KEELIN_2016
+) -> FeasibleModel:
     """Regression-dispatch entry point: best feasible fit from a metalog design matrix.
 
-    ``X`` must be a ``metalog_jax`` design matrix (Keelin 2016 term ordering), as
+    ``X`` must be a ``metalog_jax`` design matrix in the term order ``order``, as
     built by ``MetalogBase.get_target``; ``y`` holds the (possibly transformed)
-    quantiles. Used by ``fit`` when ``method=MetalogFitMethod.Feasible``.
+    quantiles. Used by ``fit`` when ``method=MetalogFitMethod.Feasible``, which
+    passes the parameters' ``term_order``.
 
     Args:
         X: Design matrix of shape (n_samples, num_terms).
         y: Target quantiles of shape (n_samples,).
+        order: The term order of X's columns.
 
     Returns:
         FeasibleModel whose ``weights`` are the best feasible coefficients.
@@ -441,7 +445,7 @@ def fit_feasible(X: chex.Array, y: chex.Array) -> FeasibleModel:
         Properties of the Metalog Distribution. Darden Business School Working
         Paper No. 5279416. https://doi.org/10.2139/ssrn.5279416
     """  # noqa: DOC502
-    engine = get_engine(int(X.shape[1]), TermOrder.KEELIN_2016)
+    engine = get_engine(int(X.shape[1]), TermOrder(order))
     res = _solve(
         engine,
         jnp.asarray(X, jnp.float64),

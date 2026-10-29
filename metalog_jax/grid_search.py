@@ -47,6 +47,7 @@ from metalog_jax.base import (
 )
 from metalog_jax.base.enums import MetalogFitMethod
 from metalog_jax.feasibility import Engine, check_feasibility, get_engine
+from metalog_jax.feasibility.engine import TermOrder, term_basis
 from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, _fit_coefficients
 from metalog_jax.regression import LassoParameters, RegularizedParameters
 from metalog_jax.regression.lasso import (
@@ -102,7 +103,8 @@ def _with_feasibility(result: GridResult) -> GridResult:
     n = rows.shape[0]
     padded = 1 << max(n - 1, 0).bit_length() if n <= 1024 else -(-n // 1024) * 1024
     rows = jnp.pad(rows, ((0, padded - n), (0, 0)), mode="edge")
-    feasible = _check_rows(get_engine(a.shape[-1]), rows)[:n]
+    engine = get_engine(a.shape[-1], result.metalog.term_order)
+    feasible = _check_rows(engine, rows)[:n]
     return result.replace(feasible=feasible.reshape(a.shape[:-1]))
 
 
@@ -245,8 +247,29 @@ def _check_grid_method(method: MetalogFitMethod) -> None:
         )
 
 
-@jax.jit
-def _get_target_vmap(y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.ndarray:
+def _later_terms(term_order: TermOrder) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """The powers of (y - 0.5) of terms 5 to MAX_TERMS, and which multiply the logit.
+
+    A term's basis function depends only on its position, not on the number of
+    terms, so the first k of these are a k-term metalog's terms 5 to k.
+
+    Args:
+        term_order: The order of the basis terms.
+
+    Returns:
+        tuple[jnp.ndarray, jnp.ndarray]: The powers (int) and the logit mask
+            (bool), each of shape (MAX_TERMS - 4,).
+    """
+    powers, has_logit = zip(*term_basis(MAX_TERMS, term_order)[4:], strict=True)
+    return jnp.asarray(powers), jnp.asarray(has_logit)
+
+
+@partial(jax.jit, static_argnames=("term_order",))
+def _get_target_vmap(
+    y: jnp.ndarray,
+    num_terms: jnp.ndarray,
+    term_order: TermOrder = TermOrder.KEELIN_2016,
+) -> jnp.ndarray:
     """Construct the design matrix with dynamic num_terms for vmap compatibility.
 
     Unlike MetalogBase._get_target which uses static_argnames for efficient
@@ -258,6 +281,7 @@ def _get_target_vmap(y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.ndarray:
     Args:
         y: Probability values, shape (m,).
         num_terms: Number of metalog terms (traced for vmap).
+        term_order: The order of the basis terms (static).
 
     Returns:
         Design matrix of shape (m, MAX_TERMS) with columns beyond num_terms
@@ -267,25 +291,16 @@ def _get_target_vmap(y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.ndarray:
     delta = y - 0.5
     log_t = jnp.log(y / (1 - y))
 
-    # Build all MAX_TERMS columns
+    # The first four terms are the same in every order
     col0 = jnp.ones(m)
     col1 = log_t
     col2 = delta * log_t
     col3 = delta
 
     # Columns 4+ (terms 5 to MAX_TERMS)
-    terms = jnp.arange(5, MAX_TERMS + 1)
-    odd_mask = terms % 2 == 1
-    even_mask = terms % 2 == 0
-    odd_powers = terms // 2
-    even_powers = (terms - 1) // 2
-
-    delta_powers_odd = jnp.power(delta[:, None], odd_powers)
-    delta_powers_even = jnp.power(delta[:, None], even_powers)
-
-    odd_cols = jnp.where(odd_mask, delta_powers_odd, 0.0)
-    even_cols = jnp.where(even_mask, log_t[:, None] * delta_powers_even, 0.0)
-    additional_cols = odd_cols + even_cols
+    powers, has_logit = _later_terms(term_order)
+    delta_powers = jnp.power(delta[:, None], powers)
+    additional_cols = jnp.where(has_logit, log_t[:, None] * delta_powers, delta_powers)
 
     # Stack all columns
     result = jnp.column_stack([col0, col1, col2, col3, additional_cols])
@@ -297,7 +312,12 @@ def _get_target_vmap(y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.ndarray:
     return result * col_mask[None, :]
 
 
-def _masked_ppf(a: jnp.ndarray, y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.ndarray:
+def _masked_ppf(
+    a: jnp.ndarray,
+    y: jnp.ndarray,
+    num_terms: jnp.ndarray,
+    term_order: TermOrder = TermOrder.KEELIN_2016,
+) -> jnp.ndarray:
     """Evaluate the unbounded metalog quantile function with a traced term count.
 
     Same basis as MetalogBase._ppf, but num_terms can be traced, so terms beyond it
@@ -307,6 +327,7 @@ def _masked_ppf(a: jnp.ndarray, y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.n
         a: Coefficients, shape (MAX_TERMS,), zero beyond num_terms.
         y: Probability levels in (0, 1).
         num_terms: Number of active terms (traced for vmap).
+        term_order: The order of the basis terms.
 
     Returns:
         Values of the unbounded quantile function at y.
@@ -323,20 +344,12 @@ def _masked_ppf(a: jnp.ndarray, y: jnp.ndarray, num_terms: jnp.ndarray) -> jnp.n
 
     terms = jnp.arange(5, MAX_TERMS + 1)
     active_mask = terms <= num_terms
-    odd_mask = terms % 2 == 1
-    even_mask = terms % 2 == 0
-    odd_powers = (terms - 1) // 2
-    even_powers = terms // 2 - 1
+    powers, has_logit = _later_terms(term_order)
     coeffs = a_padded[4:MAX_TERMS]
 
-    delta_powers_odd = jnp.power(delta_term[:, None], odd_powers)
-    delta_powers_even = jnp.power(delta_term[:, None], even_powers)
-
-    odd_contrib = jnp.where(active_mask & odd_mask, coeffs * delta_powers_odd, 0.0)
-    even_contrib = jnp.where(
-        active_mask & even_mask, coeffs * delta_powers_even * log_term[:, None], 0.0
-    )
-    return ppf + jnp.sum(odd_contrib + even_contrib, axis=1)
+    contrib = coeffs * jnp.power(delta_term[:, None], powers)
+    contrib = jnp.where(has_logit, contrib * log_term[:, None], contrib)
+    return ppf + jnp.sum(jnp.where(active_mask, contrib, 0.0), axis=1)
 
 
 def _grid_result(
@@ -367,7 +380,7 @@ def _grid_result(
     coeff_mask = (jnp.arange(MAX_TERMS) < num_terms).astype(weights.dtype)
     masked_weights = weights * coeff_mask
     fitted_quantiles = Metalog.inverse_quantile_transform(
-        _masked_ppf(masked_weights, y, num_terms),
+        _masked_ppf(masked_weights, y, num_terms, params.term_order),
         params.boundedness,
         params.lower_bound,
         params.upper_bound,
@@ -412,7 +425,9 @@ def _build_fit_single_config(
         quantiles = Metalog.quantile_transform(
             x_i, boundedness, lower_bound, upper_bound
         )
-        target = _get_target_vmap(y=y_i, num_terms=n_terms)
+        target = _get_target_vmap(
+            y=y_i, num_terms=n_terms, term_order=params.term_order
+        )
 
         if lasso_params is None:
             model = fit_ordinary_least_squares(target, quantiles)
@@ -1173,5 +1188,6 @@ def extract_metalog(grid_result: GridResult, *indices: int) -> Metalog:
         upper_bound=float(extracted.metalog_params.upper_bound),
         method=MetalogFitMethod(int(extracted.metalog_params.method)),
         num_terms=int(extracted.metalog_params.num_terms),
+        term_order=extracted.metalog_params.term_order,
     )
     return Metalog(metalog_params=params, a=extracted.a)
