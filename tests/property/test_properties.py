@@ -31,16 +31,7 @@ from metalog_jax.base import (
     SPTMetalogParameters,
 )
 from metalog_jax.feasibility import TermOrder
-from metalog_jax.grid_search import (
-    find_best_config,
-    fit_grid,
-    fit_grid_datasets,
-    fit_grid_datasets_hyperparams,
-    fit_grid_datasets_num_terms,
-    fit_grid_full,
-    fit_grid_hyperparams,
-    fit_grid_num_terms,
-)
+from metalog_jax.grid_search import find_best_config, fit_grid
 from metalog_jax.metalog import THETA_3, Metalog, SPTMetalog, fit, fit_spt_metalog
 from metalog_jax.regression import fit_ordinary_least_squares
 from metalog_jax.utils import (
@@ -492,9 +483,9 @@ class FitPropertiesTest(parameterized.TestCase):
         refits = {
             "OLS": fit(data, ols).a,
             "Feasible": fit(data, ols.replace(method=MetalogFitMethod.Feasible)).a,
-            "fit_grid": fit_grid(
-                x, DEFAULT_Y, ols, num_terms=[m.num_terms], precomputed_quantiles=True
-            ).metalog.a[0],
+            "fit_grid": fit_grid(x, DEFAULT_Y, ols, num_terms=[m.num_terms]).metalog.a[
+                0
+            ],
         }
         # The quantiles reach y = 0.001 and 0.999, where the log and logit transforms
         # of values near a bound lose up to about 1e-7 of relative precision
@@ -785,7 +776,7 @@ class GridSearchPropertiesTest(parameterized.TestCase):
             self.assertAlmostEqual(float(ks_i), float(ks_distance(x, fitted)))
 
     def _grids(self, dataset, boundedness, data):
-        """Run all seven grid functions on a generated dataset, flagging infeasible fits.
+        """Fit a generated dataset in each grid configuration, flagging infeasible fits.
 
         Returns:
             The OLS parameters, and (result, number of terms of each fit) pairs.
@@ -793,7 +784,7 @@ class GridSearchPropertiesTest(parameterized.TestCase):
         x, y = dataset
         x = jnp.asarray(x)
         lower, upper = data.draw(strategies.bounds_around(boundedness, x))
-        ols, lasso = (
+        ols, lasso, feasible = (
             MetalogParameters(
                 boundedness=boundedness,
                 method=method,
@@ -801,34 +792,23 @@ class GridSearchPropertiesTest(parameterized.TestCase):
                 upper_bound=upper,
                 num_terms=3,
             )
-            for method in (MetalogFitMethod.OLS, MetalogFitMethod.Lasso)
+            for method in (
+                MetalogFitMethod.OLS,
+                MetalogFitMethod.Lasso,
+                MetalogFitMethod.Feasible,
+            )
         )
-        input_data = MetalogInputData.from_values(x, y, precomputed_quantiles=True)
         bx, by = jnp.stack([x, x]), jnp.stack([y, y])
         l1 = jnp.asarray(self.L1)
         terms = list(self.NUM_TERMS)
-        flag = {"on_infeasible": "flag"}
         grids = (
-            (fit_grid(x, y, ols, num_terms=terms, precomputed_quantiles=True), terms),
-            (fit_grid_num_terms(input_data, ols, terms), terms),
-            (
-                fit_grid_datasets_num_terms(
-                    bx, by, ols, terms, precomputed_quantiles=True
-                ),
-                terms,
-            ),
-            (
-                fit_grid_full(bx, by, lasso, l1, terms, precomputed_quantiles=True),
-                terms,
-            ),
-            (fit_grid_datasets(bx, by, ols, precomputed_quantiles=True, **flag), 3),
-            (fit_grid_hyperparams(input_data, lasso, l1, **flag), 3),
-            (
-                fit_grid_datasets_hyperparams(
-                    bx, by, lasso, l1, precomputed_quantiles=True, **flag
-                ),
-                3,
-            ),
+            (fit_grid(x, y, ols, num_terms=terms), terms),
+            (fit_grid(bx, by, ols, num_terms=terms), terms),
+            (fit_grid(bx, by, lasso, l1_penalties=l1, num_terms=terms), terms),
+            (fit_grid(bx, by, ols), 3),
+            (fit_grid(x, y, lasso, l1_penalties=l1), 3),
+            (fit_grid(bx, by, lasso, l1_penalties=l1), 3),
+            (fit_grid(bx, by, feasible, num_terms=terms), terms),
         )
         return x, y, ols, grids
 
@@ -838,10 +818,8 @@ class GridSearchPropertiesTest(parameterized.TestCase):
         boundedness=st.sampled_from(strategies.BOUNDEDNESS),
         data=st.data(),
     )
-    def test_grid_functions_score_at_the_data_probabilities(
-        self, dataset, boundedness, data
-    ):
-        """Every grid function's KS distance uses its fit's quantiles at the data's y."""
+    def test_grids_score_at_the_data_probabilities(self, dataset, boundedness, data):
+        """Every grid's KS distance uses its fit's quantiles at the data's y."""
         x, y, ols, grids = self._grids(dataset, boundedness, data)
         for result, _ in grids:
             self._assert_scored_at_y(result, x, y, ols)

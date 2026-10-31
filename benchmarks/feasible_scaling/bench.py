@@ -1,8 +1,7 @@
 """Benchmark batch fitting as in examples/feasible_fits.py.
 
 Usage: uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
-  MODE: feasible (fit_grid_datasets, Feasible), ols_datasets (fit_grid_datasets, OLS),
-        ols_grid (fit_grid, OLS)
+  MODE: feasible (fit_grid, Feasible), ols_grid (fit_grid, OLS)
 Prints one JSON line.
 """
 
@@ -24,7 +23,7 @@ from metalog_jax.base import (  # noqa: E402
     MetalogFitMethod,
     MetalogParameters,
 )
-from metalog_jax.grid_search import fit_grid, fit_grid_datasets  # noqa: E402
+from metalog_jax.grid_search import fit_grid  # noqa: E402
 from metalog_jax.utils import DEFAULT_Y  # noqa: E402
 
 S = jnp.asarray(np.stack([samples(j) for j in range(N)]))
@@ -46,10 +45,7 @@ params = MetalogParameters(
 
 def run():
     """Fit the whole batch once and block until the results are ready."""
-    if mode == "ols_grid":
-        r = fit_grid(bx, by, params)
-    else:
-        r = fit_grid_datasets(bx, by, params)
+    r = fit_grid(bx, by, params)
     return jax.block_until_ready((r.metalog.a, r.ks_dist))
 
 

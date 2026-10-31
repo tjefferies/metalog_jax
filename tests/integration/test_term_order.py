@@ -41,7 +41,6 @@ from metalog_jax.grid_search import (
     _masked_ppf,
     extract_metalog,
     fit_grid,
-    fit_grid_datasets,
 )
 from metalog_jax.metalog import Metalog, fit
 from metalog_jax.regression.base import has_full_column_rank
@@ -655,13 +654,23 @@ class TermOrderGridTest(absltest.TestCase):
         self.assertEqual(extract_metalog(result, 1).term_order, METALOG_2)
 
     def test_feasible_batch_matches_the_solver(self):
-        """fit_grid_datasets with Feasible fits in the 2.0 order."""
+        """A Feasible grid fits in the 2.0 order."""
         feasible = self.OLS_2.replace(method=MetalogFitMethod.Feasible, num_terms=7)
-        result = fit_grid_datasets(
-            self.X[None], DEFAULT_Y[None], feasible, on_infeasible="flag"
-        )
+        result = fit_grid(self.X[None], DEFAULT_Y[None], feasible)
         expected = best_feasible_fit(self.X, DEFAULT_Y, 7, order=METALOG_2)
         np.testing.assert_allclose(result.metalog.a[0], expected.a_star, rtol=1e-12)
+
+    def test_feasible_term_count_grid_keeps_the_term_order(self):
+        """Each term count of a Feasible grid is the solver's fit in the 2.0 order."""
+        feasible = self.OLS_2.replace(method=MetalogFitMethod.Feasible)
+        result = fit_grid(self.X, DEFAULT_Y, feasible, num_terms=[7, 8])
+        self.assertEqual(extract_metalog(result, 0).term_order, METALOG_2)
+        for i, k in enumerate((7, 8)):
+            with self.subTest(num_terms=k):
+                expected = best_feasible_fit(self.X, DEFAULT_Y, k, order=METALOG_2)
+                np.testing.assert_allclose(
+                    result.metalog.a[i, :k], expected.a_star, rtol=1e-12
+                )
 
 
 class TermOrderTransformsTest(absltest.TestCase):

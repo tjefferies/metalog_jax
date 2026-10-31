@@ -2282,12 +2282,12 @@ z
     </g>
    </g>
    <g id="text_40">
-    <text style="font-size: 9px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #c3c2b7" x="88.956" y="55.510594" transform="rotate(-0 88.956 55.510594)">Feasible (fit_grid_datasets)</text>
+    <text style="font-size: 9px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #c3c2b7" x="88.956" y="55.510594" transform="rotate(-0 88.956 55.510594)">Feasible (fit_grid)</text>
    </g>
    <g id="line2d_196">
-    <path d="M 226.256625 52.360594 
-L 236.156625 52.360594 
-L 246.056625 52.360594 
+    <path d="M 183.041156 52.360594 
+L 192.941156 52.360594 
+L 202.841156 52.360594 
 " style="fill: none; stroke: #d95926; stroke-width: 2; stroke-linecap: square"/>
     <defs>
      <path id="m9440a8971d" d="M 0 3 
@@ -2303,11 +2303,11 @@ z
 " style="stroke: #1a1a19"/>
     </defs>
     <g>
-     <use xlink:href="#m9440a8971d" x="236.156625" y="52.360594" style="fill: #d95926; stroke: #1a1a19"/>
+     <use xlink:href="#m9440a8971d" x="192.941156" y="52.360594" style="fill: #d95926; stroke: #1a1a19"/>
     </g>
    </g>
    <g id="text_41">
-    <text style="font-size: 9px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #c3c2b7" x="253.256625" y="55.510594" transform="rotate(-0 253.256625 55.510594)">OLS (fit_grid; no validity check)</text>
+    <text style="font-size: 9px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #c3c2b7" x="210.041156" y="55.510594" transform="rotate(-0 210.041156 55.510594)">OLS (fit_grid; no validity check)</text>
    </g>
   </g>
  </g>

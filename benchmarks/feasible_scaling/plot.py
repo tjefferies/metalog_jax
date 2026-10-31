@@ -275,7 +275,7 @@ def render(theme: str) -> Path:
             marker="o",
             markersize=6,
             markeredgecolor=c["surface"],
-            label="Feasible (fit_grid_datasets)",
+            label="Feasible (fit_grid)",
         ),
         plt.Line2D(
             [],

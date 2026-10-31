@@ -25,6 +25,23 @@ def _(mo):
     3. **Num Terms**: Number of terms in the metalog distribution
 
     This gives us 8 possible combinations (2³), all handled by a single function.
+
+    ## Fit Methods
+
+    `fit_grid` fits with `params.method`, or with Lasso when `l1_penalties` is given. OLS
+    and Lasso grids fit every configuration in one vmapped call.
+    `MetalogFitMethod.Feasible` fits each term count in its own call, vmapped over the
+    datasets; see the `feasible_fits` notebook.
+
+    ## Feasibility
+
+    OLS and Lasso fits can be infeasible: their quantile function decreases somewhere, so
+    they aren't valid distributions, and their KS distance doesn't compare two
+    distributions. Every result has a `feasible` mask, the same shape as `ks_dist`, from
+    the exact `check_feasibility` test. Pass it to `find_best_config` so that only valid
+    fits can be chosen.
+    `fit_grid` returns every fit with the infeasible ones marked; pass
+    `on_infeasible="raise"` to raise for them instead.
     """
     )
     return
@@ -681,7 +698,8 @@ def _(mo):
     | x.ndim=2, l1_penalties | (n_datasets, n_penalties) | 2D batch + L1 |
     | x.ndim=2, both | (n_datasets, n_penalties, n_terms) | Full 3D search |
 
-    Use `find_best_config(ks_dist)` to find the best configuration in any grid.
+    Use `find_best_config(result.ks_dist, result.feasible)` to find the best valid
+    configuration in any grid.
     """
     )
     return

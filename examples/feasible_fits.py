@@ -16,16 +16,15 @@ def _(mo):
     least-squares fit *among valid metalogs* (the coefficient vector a* of Baucells,
     Chrisman, Keelin and Xu, 2025), so every fit is a proper distribution.
 
-    This notebook fits a batch of datasets with `Feasible`:
+    This notebook fits a batch of datasets with `Feasible`, using `fit_grid`:
 
-    1. **Fixed number of terms**: one call to `fit_grid_datasets`, which vmaps `fit`
-       over the datasets.
-    2. **Different numbers of terms**: one `fit_grid_datasets` call per term count, then
-       pick the best term count for each dataset by KS distance.
+    1. **Fixed number of terms**: one call, which vmaps the feasible solver over the
+       datasets.
+    2. **Different numbers of terms**: one call with `num_terms`, then pick the best
+       term count for each dataset by KS distance.
 
-    `fit_grid` cannot be used here: it varies the number of terms inside `vmap`, while the
-    feasible solver needs it fixed at trace time, so it raises a `ValueError` for
-    `Feasible`. `fit_grid_datasets` compiles once per term count instead.
+    The feasible solver needs the number of terms fixed when it compiles, so `fit_grid`
+    fits each term count in its own vmapped call, which compiles once.
     """)
     return
 
@@ -42,18 +41,19 @@ def _():
         MetalogInputData,
         MetalogParameters,
     )
-    from metalog_jax.grid_search import extract_metalog, fit_grid, fit_grid_datasets
+    from metalog_jax.grid_search import extract_metalog, fit_grid
+    from metalog_jax.metalog import Metalog
     from metalog_jax.utils import DEFAULT_Y
 
     return (
         DEFAULT_Y,
+        Metalog,
         MetalogBoundedness,
         MetalogFitMethod,
         MetalogInputData,
         MetalogParameters,
         extract_metalog,
         fit_grid,
-        fit_grid_datasets,
         gamma,
         jnp,
         lognorm,
@@ -157,9 +157,9 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    Now fit the same batch with `MetalogFitMethod.Feasible`. `fit_grid_datasets` vmaps
-    `fit` over the datasets, so this is one compiled call for all of them. Where the OLS
-    fit is already feasible, `Feasible` returns the same coefficients.
+    Now fit the same batch with `MetalogFitMethod.Feasible`. `fit_grid` vmaps the
+    feasible solver over the datasets, so this is one compiled call for all of them.
+    Where the OLS fit is already feasible, `Feasible` returns the same coefficients.
     """)
     return
 
@@ -173,7 +173,7 @@ def _(
     batched_x,
     batched_y,
     dataset_names,
-    fit_grid_datasets,
+    fit_grid,
     ols_feasible,
     result_ols,
 ):
@@ -185,7 +185,7 @@ def _(
         num_terms=FIXED_TERMS,
     )
 
-    result_feasible = fit_grid_datasets(batched_x, batched_y, params_feasible)
+    result_feasible = fit_grid(batched_x, batched_y, params_feasible)
     feasible_ok = result_feasible.feasible
 
     print(f"Coefficients shape: {result_feasible.metalog.a.shape}")
@@ -213,9 +213,11 @@ def _(mo):
     ---
     ## Case 2: Different Numbers of Terms
 
-    The feasible solver needs the number of terms fixed when it compiles, so loop over
-    the term counts in Python and batch the datasets inside each call. Each term count
-    compiles once. Stacking the KS distances gives a `(n_datasets, n_terms)` grid.
+    Pass `num_terms` to fit every term count in one call. The feasible solver needs the
+    number of terms fixed when it compiles, so `fit_grid` fits each term count in its
+    own call, batching the datasets inside it, and each term count compiles once. The
+    result is a `(n_datasets, n_terms)` grid, with each fit's coefficients zero-padded
+    to the largest term count.
     """)
     return
 
@@ -225,46 +227,45 @@ def _(
     batched_x,
     batched_y,
     dataset_names,
-    fit_grid_datasets,
-    jnp,
+    fit_grid,
     params_feasible,
 ):
     num_terms_list = [4, 6, 8, 10, 12]
 
-    # One compiled call per term count; each batches all datasets
-    results_by_terms = {
-        _k: fit_grid_datasets(
-            batched_x, batched_y, params_feasible.replace(num_terms=_k)
-        )
-        for _k in num_terms_list
-    }
-    ks_grid = jnp.stack([results_by_terms[_k].ks_dist for _k in num_terms_list], axis=1)
+    # One compiled call per term count inside fit_grid; each batches all datasets
+    result_by_terms = fit_grid(
+        batched_x, batched_y, params_feasible, num_terms=num_terms_list
+    )
+    ks_grid = result_by_terms.ks_dist
 
     print(f"KS grid shape (n_datasets, n_terms): {ks_grid.shape}")
     print()
     print(f"{'Dataset':<10}" + "".join(f"{_k:>8} terms" for _k in num_terms_list))
     for _i, _name in enumerate(dataset_names):
         print(f"{_name:<10}" + "".join(f"{float(_v):>14.4f}" for _v in ks_grid[_i]))
-    return ks_grid, num_terms_list, results_by_terms
+    return ks_grid, num_terms_list, result_by_terms
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     Pick the term count with the lowest KS distance for each dataset (ties go to the
-    fewest terms), then use `extract_metalog` to pull out a ready-to-use `Metalog`.
+    fewest terms), then use `extract_metalog` to pull out a ready-to-use `Metalog`. The
+    grid stores every fit with its largest term count, zero-padded, so keep each fit's
+    own terms.
     """)
     return
 
 
 @app.cell
 def _(
+    Metalog,
     dataset_names,
     extract_metalog,
     jnp,
     ks_grid,
     num_terms_list,
-    results_by_terms,
+    result_by_terms,
 ):
     best_term_idx = jnp.argmin(ks_grid, axis=1)
     best_metalogs = {}
@@ -273,13 +274,16 @@ def _(
         f"{'Dataset':<10} {'Terms':>6} {'KS':>8} {'Median':>8} {'P90':>8} {'Valid':>6}"
     )
     for _i, _name in enumerate(dataset_names):
-        _k = num_terms_list[int(best_term_idx[_i])]
-        _m = extract_metalog(results_by_terms[_k], _i)
+        _j = int(best_term_idx[_i])
+        _k = num_terms_list[_j]
+        _m = extract_metalog(result_by_terms, _i, _j)
+        # Drop the zero padding past this fit's own term count
+        _m = Metalog(_m.metalog_params.replace(num_terms=_k), _m.a[:_k])
         best_metalogs[_name] = _m
         _median, _p90 = _m.ppf(jnp.array([0.5, 0.9]))
-        _valid = bool(results_by_terms[_k].feasible[_i])
+        _valid = bool(result_by_terms.feasible[_i, _j])
         print(
-            f"{_name:<10} {_k:>6} {float(ks_grid[_i, int(best_term_idx[_i])]):>8.4f}"
+            f"{_name:<10} {_k:>6} {float(ks_grid[_i, _j]):>8.4f}"
             f" {float(_median):>8.3f} {float(_p90):>8.3f} {str(_valid):>6}"
         )
     return
@@ -293,9 +297,10 @@ def _(mo):
 
     - `MetalogFitMethod.Feasible` guarantees every fit is a valid distribution, and
       returns the OLS coefficients unchanged when OLS is already valid.
-    - Use `fit_grid_datasets` to fit a batch of datasets with `Feasible` in one call.
-    - To compare term counts, loop over them in Python with one `fit_grid_datasets` call
-      each. `fit_grid` raises a `ValueError` for `Feasible`.
+    - `fit_grid` fits a batch of datasets with `Feasible` in one call, vmapped over the
+      datasets.
+    - To compare term counts, pass `num_terms`: `fit_grid` fits each in its own call,
+      compiled once.
     - Every grid result marks its valid fits in `feasible`, from `check_feasibility`,
       an exact validity check that you can also run on any coefficient vector.
     """)

@@ -1409,7 +1409,7 @@ class GridResult:
             (Baucells et al. 2025, Proposition 5 with Algorithm 1). An infeasible
             fit's quantile function isn't increasing, so its ``ks_dist`` isn't a
             distance between two distributions, and ``find_best_config`` and
-            ``extract_best_from_grid`` skip it. Every grid function fills this in;
+            ``extract_best_from_grid`` skip it. fit_grid fills this in;
             it's None for a GridResult built without it.
 
     Note:

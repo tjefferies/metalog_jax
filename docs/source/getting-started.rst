@@ -206,8 +206,8 @@ as many symmetric percentiles as terms, where the 2016 order can't:
    m = fit(data, params)
    m.print()  # the 7th term is (y - 0.5)^3 ln(y/(1-y))
 
-Every fit method, the distribution methods, the grid functions, ``print`` and
-``save`` read the coefficients in the model's order, and the tools in
+Every fit method, the distribution methods, ``fit_grid``, ``print`` and ``save``
+read the coefficients in the model's order, and the tools in
 ``metalog_jax.feasibility`` default to the same order (``DEFAULT_TERM_ORDER``).
 ``save`` writes ``term_order``, except for the 2016 order; JSON without it, including
 every file saved by an earlier release, loads in the 2016 order. For any term count
@@ -283,7 +283,8 @@ with ``MetalogFitMethod.Feasible``:
 - **Feasible** (``metalog_jax.feasibility``, recommended): The best least-squares fit
   among valid metalogs (Baucells et al. 2025). Always returns a valid distribution
 - **OLS** (``metalog_jax.regression.ols``): Closed-form least squares with no
-  regularization; needed for ``fit_grid``, which supports only OLS and LASSO
+  regularization; the fastest method in a large grid, where ``fit_grid`` marks its
+  invalid fits
 - **LASSO** (``metalog_jax.regression.lasso``): L1 regularization for sparse solutions
 
 Always-Feasible Fitting
@@ -343,9 +344,9 @@ the scale of the coefficients.
 Ordinary Least Squares (OLS)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Closed-form least squares with no regularization. Use it with ``fit_grid``, which
-supports only OLS and LASSO; ``fit`` raises if the density is negative at any of the
-probabilities it checks:
+Closed-form least squares with no regularization. It's the fastest fit method in a
+large grid, where ``fit_grid`` marks the invalid fits; ``fit`` raises if the density
+is negative at any of the probabilities it checks:
 
 .. code-block:: python
 
@@ -442,7 +443,7 @@ Use JAX's ``vmap`` for efficient hyperparameter search:
    extract_metalog(lasso_results, 0).print()
 
 ``fit`` checks each fit's density, so under ``vmap`` one infeasible fit raises for
-the whole batch. The grid functions in ``metalog_jax.grid_search`` mark it instead:
+the whole batch. ``metalog_jax.grid_search.fit_grid`` marks it instead:
 ``GridResult.feasible`` says which fits are valid distributions, decided exactly by
 ``check_feasibility``, and has the same shape as ``ks_dist``. An infeasible fit's KS
 distance doesn't compare two distributions, so pass the mask to
@@ -465,29 +466,49 @@ uses it automatically, and both raise a ``ValueError`` if no fit is valid:
    best = extract_metalog(result, int(best_idx))
    best.print()
 
-The grids that call ``fit`` (``fit_grid_datasets``, ``fit_grid_hyperparams`` and
-``fit_grid_datasets_hyperparams``) still raise by default if a fit is infeasible, and
-the message shows which. Pass ``on_infeasible="flag"`` to get every fit, with the
-infeasible ones marked in ``feasible``.
+Pass ``on_infeasible="raise"`` to raise for an infeasible fit instead, with a message
+that shows which. For OLS and Feasible, ``fit_grid`` also raises if a configuration's
+basis matrix is rank deficient, so that its fit isn't unique, as ``fit`` does.
 
-The grids that take arrays read ``x`` as quantiles at ``y`` by default; pass
-``precomputed_quantiles=False`` to fit raw samples by their quantiles at ``y``.
-``fit_grid`` takes its Lasso settings from ``lasso_params``
-(``DEFAULT_LASSO_PARAMETERS`` if omitted), and a grid over ``l1_penalties`` labels its
-fits ``MetalogFitMethod.Lasso``.
+``fit_grid`` is the one grid function: it searches any combination of datasets, L1
+penalties and term counts, with any fit method, and everything after ``params`` is
+keyword-only. It reads ``x`` as quantiles at ``y`` by default; pass
+``precomputed_quantiles=False`` to fit raw samples by their quantiles at ``y``. It
+takes its Lasso settings from ``lasso_params`` (``DEFAULT_LASSO_PARAMETERS`` if
+omitted), and a grid over ``l1_penalties`` labels its fits ``MetalogFitMethod.Lasso``.
+
+3.0 removes the six specialized grid functions. Each is a ``fit_grid`` call, with
+Lasso settings in ``lasso_params``
+(``DEFAULT_LASSO_PARAMETERS.replace(num_iters=..., tol=...)`` for the old ``num_iters``
+and ``tol``):
+
+- ``fit_grid_datasets(bx, by, params, fit_params)``:
+  ``fit_grid(bx, by, params, lasso_params=fit_params)``
+- ``fit_grid_hyperparams(data, params, l1)``:
+  ``fit_grid(data.x, data.y, params, l1_penalties=l1)``
+- ``fit_grid_datasets_hyperparams(bx, by, params, l1)``:
+  ``fit_grid(bx, by, params, l1_penalties=l1)``
+- ``fit_grid_num_terms(data, params, terms, regression_params)``:
+  ``fit_grid(data.x, data.y, params, num_terms=terms, lasso_params=regression_params)``
+- ``fit_grid_datasets_num_terms(bx, by, params, terms)``:
+  ``fit_grid(bx, by, params, num_terms=terms)``
+- ``fit_grid_full(bx, by, params, l1, terms)``:
+  ``fit_grid(bx, by, params, l1_penalties=l1, num_terms=terms)``
+
+``fit_grid_datasets``, ``fit_grid_hyperparams`` and ``fit_grid_datasets_hyperparams``
+raised for an infeasible fit by default; pass ``on_infeasible="raise"`` to keep that.
 
 Fitting Many Datasets with Feasible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``fit_grid`` supports OLS and LASSO only and raises a ``ValueError`` for
-``MetalogFitMethod.Feasible``: it varies the number of terms inside ``vmap``, while
-the feasible solver needs it fixed at compile time. Use ``fit_grid_datasets``
-instead, which fits a whole batch in one call, and loop over term counts in Python:
+``fit_grid`` fits a whole batch with ``MetalogFitMethod.Feasible`` in one vmapped
+call. The feasible solver needs the number of terms fixed when it compiles, so a grid
+over ``num_terms`` fits each term count in its own call, which compiles once:
 
 .. code-block:: python
 
    import jax.numpy as jnp
-   from metalog_jax.grid_search import extract_metalog, fit_grid_datasets
+   from metalog_jax.grid_search import extract_metalog, fit_grid
 
    # batched_x, batched_y: shape (n_datasets, n_quantiles)
    params = MetalogParameters(
@@ -499,21 +520,16 @@ instead, which fits a whole batch in one call, and loop over term counts in Pyth
    )
 
    # Fixed number of terms: one vmapped call over all datasets
-   result = fit_grid_datasets(batched_x, batched_y, params)  # a: (n_datasets, 10)
+   result = fit_grid(batched_x, batched_y, params)  # a: (n_datasets, 10)
 
-   # Different numbers of terms: one call per term count (each compiles once)
+   # Different numbers of terms: one call per term count, each compiled once
    num_terms_list = [4, 6, 8, 10, 12]
-   results = {
-       k: fit_grid_datasets(batched_x, batched_y, params.replace(num_terms=k))
-       for k in num_terms_list
-   }
-   ks = jnp.stack([results[k].ks_dist for k in num_terms_list], axis=1)
+   grid = fit_grid(batched_x, batched_y, params, num_terms=num_terms_list)
+   # ks_dist: (n_datasets, 5); a: (n_datasets, 5, 12), zero-padded to 12 terms
 
-   # Best term count per dataset, as ready-to-use Metalog objects
-   best = jnp.argmin(ks, axis=1)
-   metalogs = [
-       extract_metalog(results[num_terms_list[int(j)]], i) for i, j in enumerate(best)
-   ]
+   # Best term count per dataset, as ready-to-use Metalog objects (12 coefficients)
+   best = jnp.argmin(grid.ks_dist, axis=1)
+   metalogs = [extract_metalog(grid, i, int(j)) for i, j in enumerate(best)]
 
 See the :doc:`feasible_fits` tutorial for a full walkthrough.
 
@@ -672,8 +688,8 @@ The library is organized into the following modules:
 
 - ``metalog_jax.grid_search``: Vectorized grid search
 
-  - ``fit_grid()``: Grid over datasets, L1 penalties and term counts (OLS and LASSO)
-  - ``fit_grid_datasets()``: Fit a batch of datasets with any fit method
+  - ``fit_grid()``: Grid over datasets, L1 penalties and term counts, with any fit
+    method
   - ``find_best_config()``, ``extract_metalog()``: Pick the best valid fit and extract it
 
 Next Steps

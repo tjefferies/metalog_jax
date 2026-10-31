@@ -24,7 +24,7 @@ from metalog_jax.base import (
     MetalogInputData,
     MetalogParameters,
 )
-from metalog_jax.grid_search import fit_grid, fit_grid_full, fit_grid_hyperparams
+from metalog_jax.grid_search import fit_grid
 from metalog_jax.metalog import Metalog, _fit_coefficients, _get_fit_function, fit
 from metalog_jax.regression import LassoParameters, fit_lasso
 from metalog_jax.utils import DEFAULT_Y
@@ -246,30 +246,28 @@ class LassoGridTest(LassoFitTestBase):
             ]
         )
 
-    def test_fit_grid_and_fit_grid_hyperparams(self):
-        """The l1 grids' fits are fit's fits."""
+    def test_penalty_grids(self):
+        """The l1 grids' fits, of one dataset or a batch, are fit's fits."""
         p = _params(MetalogBoundedness.UNBOUNDED, 0.0, 0.0, 5)
         expected = self._expected(5)
 
-        grid = fit_grid(
-            self.DATA.x,
-            self.DATA.y,
-            p,
-            l1_penalties=self.L1,
-            precomputed_quantiles=True,
+        grid = fit_grid(self.DATA.x, self.DATA.y, p, l1_penalties=self.L1)
+        batched = fit_grid(
+            self.DATA.x[None], self.DATA.y[None], p, l1_penalties=self.L1
         )
-        hyper = fit_grid_hyperparams(self.DATA, p, self.L1, on_infeasible="flag")
 
         scale = np.max(np.abs(expected))
         np.testing.assert_allclose(grid.metalog.a, expected, rtol=0, atol=1e-9 * scale)
-        np.testing.assert_allclose(hyper.metalog.a, expected, rtol=0, atol=1e-9 * scale)
+        np.testing.assert_allclose(
+            batched.metalog.a[0], expected, rtol=0, atol=1e-9 * scale
+        )
 
-    def test_fit_grid_full_pads_with_zeros(self):
-        """fit_grid_full's padded design gives fit's fits, with zeros past them."""
+    def test_full_grid_pads_with_zeros(self):
+        """A full grid's padded design gives fit's fits, with zeros past them."""
         p = _params(MetalogBoundedness.UNBOUNDED, 0.0, 0.0, 5)
         x, y = self.DATA.x[None, :], self.DATA.y[None, :]
 
-        result = fit_grid_full(x, y, p, self.L1, [3, 5], precomputed_quantiles=True)
+        result = fit_grid(x, y, p, l1_penalties=self.L1, num_terms=[3, 5])
 
         for j, k in enumerate((3, 5)):
             with self.subTest(num_terms=k):
