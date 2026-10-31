@@ -284,7 +284,7 @@ Start with `MetalogFitMethod.Feasible`. Set `MetalogParameters.method` to one of
 | Method | Use when | Hyperparameters |
 |--------|----------|-----------------|
 | `MetalogFitMethod.Feasible` | **Recommended default.** Always returns a valid distribution: the OLS fit when it is valid, otherwise the closest valid metalog | None |
-| `MetalogFitMethod.OLS` | You need `fit_grid`, which supports only OLS and LASSO. Closed-form least squares; `fit` raises if the density is negative on its check grid | None |
+| `MetalogFitMethod.OLS` | You need speed: in a large grid, about 10 times faster than `Feasible` at 10 terms, with the invalid fits marked. Closed-form least squares; `fit` raises if the density is negative on its check grid | None |
 | `MetalogFitMethod.Lasso` | Noisy data or many terms; L1 regularization shrinks unneeded coefficients | `LassoParameters` |
 
 ### Always-Feasible Fitting
@@ -338,14 +338,13 @@ It takes no `regression_hyperparams` (passing them raises a `TypeError`).
 
 #### Fitting Many Datasets with `Feasible`
 
-`fit_grid` raises a `ValueError` for `Feasible`, because it varies the number of terms
-inside `vmap` and the feasible solver needs it fixed at compile time. Use
-`fit_grid_datasets` instead: it fits a whole batch in one call, and you loop over term
-counts in Python.
+`fit_grid` fits a whole batch with `Feasible` in one vmapped call. The feasible solver
+needs the number of terms fixed when it compiles, so a grid over `num_terms` fits each
+term count in its own call, which compiles once.
 
 ```python
 import jax.numpy as jnp
-from metalog_jax.grid_search import extract_metalog, fit_grid_datasets
+from metalog_jax.grid_search import extract_metalog, fit_grid
 
 # batched_x, batched_y: shape (n_datasets, n_quantiles)
 params = MetalogParameters(
@@ -357,19 +356,16 @@ params = MetalogParameters(
 )
 
 # Fixed number of terms: one vmapped call over all datasets
-result = fit_grid_datasets(batched_x, batched_y, params)  # a: (n_datasets, 10)
+result = fit_grid(batched_x, batched_y, params)  # a: (n_datasets, 10)
 
-# Different numbers of terms: one call per term count (each compiles once)
+# Different numbers of terms: one call per term count, each compiled once
 num_terms_list = [4, 6, 8, 10, 12]
-results = {
-    k: fit_grid_datasets(batched_x, batched_y, params.replace(num_terms=k))
-    for k in num_terms_list
-}
-ks = jnp.stack([results[k].ks_dist for k in num_terms_list], axis=1)  # (n_datasets, n_terms)
+grid = fit_grid(batched_x, batched_y, params, num_terms=num_terms_list)
+# ks_dist: (n_datasets, 5); a: (n_datasets, 5, 12), zero-padded to 12 terms
 
-# Best term count per dataset, as ready-to-use Metalog objects
-best = jnp.argmin(ks, axis=1)
-metalogs = [extract_metalog(results[num_terms_list[int(j)]], i) for i, j in enumerate(best)]
+# Best term count per dataset, as ready-to-use Metalog objects (with 12 coefficients)
+best = jnp.argmin(grid.ks_dist, axis=1)
+metalogs = [extract_metalog(grid, i, int(j)) for i, j in enumerate(best)]
 ```
 
 See [`examples/feasible_fits.py`](examples/feasible_fits.py) for a full walkthrough that
@@ -383,11 +379,12 @@ also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 
   <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid, measured before it checked validity, is about 20 times faster. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
 </picture>
 
-Measured with `fit_grid_datasets` on a **MacBook Pro (Apple M3, 8 cores: 4 performance
-and 4 efficiency, 8 GB unified memory), macOS 26.3.1, Python 3.13.7, JAX 0.8.0 on the
-CPU backend** (no GPU). Each dataset is 200 samples from one of the five distribution
-families in [`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the
-105 `DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
+Measured with `fit_grid_datasets`, which made Feasible fits the way `fit_grid` now does,
+on a **MacBook Pro (Apple M3, 8 cores: 4 performance and 4 efficiency, 8 GB unified
+memory), macOS 26.3.1, Python 3.13.7, JAX 0.8.0 on the CPU backend** (no GPU). Each
+dataset is 200 samples from one of the five distribution families in
+[`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the 105
+`DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
 compilation, which takes 2-6 s per term count and batch shape.
 
 | Datasets (10 terms) | Time | Per dataset | Peak memory |
@@ -423,9 +420,8 @@ per dataset is:
   times faster, and checking each fit's validity for its `feasible` mask brings that to
   about 0.19 ms (at 5,000 datasets, with JAX 0.11.2; the chart's OLS line was measured
   before `fit_grid` checked validity). At 10 terms, 65% of these datasets' OLS fits are
-  invalid distributions. `fit_grid_datasets` with OLS raises if any fit is invalid,
-  showing which; pass `on_infeasible="flag"` to get every fit with the invalid ones
-  marked.
+  invalid distributions. `fit_grid` returns them, marked in `feasible`; pass
+  `on_infeasible="raise"` to raise instead, showing which.
 
 GPU performance was not measured. To reproduce, or to rerun on your own hardware:
 
@@ -559,8 +555,8 @@ Metalog: 7 terms, Feasible, lower bound 0
          + 2.39534 (y - 0.5)^3 ln(y/(1-y))
 ```
 
-- **Everything follows the order:** every fit method, the distribution methods, the
-  grid functions, `print` and `save` read the coefficients in the model's order. So do
+- **Everything follows the order:** every fit method, the distribution methods,
+  `fit_grid`, `print` and `save` read the coefficients in the model's order. So do
   the feasibility tools in `metalog_jax.feasibility`, such as `get_engine` and
   `best_feasible_fit`, which default to the same order (`DEFAULT_TERM_ORDER`).
 - **Saved files:** `save` and `dumps` write `term_order`, except for the 2016 order. JSON
@@ -710,19 +706,43 @@ assert spt_metalog == loaded_spt == SPTMetalog.loads(spt_metalog.dumps())
 
 ### Unified Grid Search with `fit_grid`
 
-The `fit_grid` function provides a unified interface for hyperparameter optimization,
-automatically detecting which axes to search based on inputs. It supports the OLS and
-LASSO fit methods and raises a `ValueError` for `MetalogFitMethod.Feasible`; use `fit`
-for one dataset or `fit_grid_datasets` to fit a batch of datasets with `Feasible`.
+`fit_grid` is the one grid function. It searches any combination of datasets, L1
+penalties and term counts, detecting the axes from its inputs, and fits with any fit
+method. OLS and LASSO grids fit every configuration in one vmapped call, with up to 30
+terms; `Feasible` fits each term count in its own call (see
+[Fitting Many Datasets with `Feasible`](#fitting-many-datasets-with-feasible)).
+Everything after `params` is keyword-only.
 
-OLS and LASSO fits can be infeasible: their quantile function decreases somewhere, so
-they aren't valid distributions, and their KS distance doesn't compare two
-distributions. Every grid result has a `feasible` mask, the same shape as `ks_dist`,
-from the exact `check_feasibility` test. Pass it to `find_best_config` so that only
-valid fits can be chosen; `extract_best_from_grid` uses it automatically. The grids
-that call `fit()` (`fit_grid_datasets`, `fit_grid_hyperparams` and
-`fit_grid_datasets_hyperparams`) raise if any fit is infeasible, showing which;
-`on_infeasible="flag"` returns every fit with the infeasible ones marked instead.
+`fit_grid` checks every fit as `fit` does:
+
+- **Rank:** for OLS and `Feasible`, it raises if a configuration's basis matrix is rank
+  deficient, so that its fit isn't unique, and the message shows which configurations
+  are. LASSO is regularized, so it isn't checked.
+- **Feasibility:** OLS and LASSO fits can be infeasible: their quantile function
+  decreases somewhere, so they aren't valid distributions, and their KS distance doesn't
+  compare two distributions. Every grid result has a `feasible` mask, the same shape as
+  `ks_dist`, from the exact `check_feasibility` test. Pass it to `find_best_config` so
+  that only valid fits can be chosen; `extract_best_from_grid` uses it automatically.
+  `fit_grid` returns every fit with the infeasible ones marked; `on_infeasible="raise"`
+  raises instead, showing which.
+
+**Upgrading:** 3.0 removes the six specialized grid functions. Each is a `fit_grid` call,
+with Lasso settings in `lasso_params` (`num_iters` and `tol` go in
+`DEFAULT_LASSO_PARAMETERS.replace(num_iters=..., tol=...)`):
+
+| Removed | Use |
+|---|---|
+| `fit_grid_datasets(bx, by, params, fit_params)` | `fit_grid(bx, by, params, lasso_params=fit_params)` |
+| `fit_grid_hyperparams(data, params, l1)` | `fit_grid(data.x, data.y, params, l1_penalties=l1)` |
+| `fit_grid_datasets_hyperparams(bx, by, params, l1)` | `fit_grid(bx, by, params, l1_penalties=l1)` |
+| `fit_grid_num_terms(data, params, terms, regression_params)` | `fit_grid(data.x, data.y, params, num_terms=terms, lasso_params=regression_params)` |
+| `fit_grid_datasets_num_terms(bx, by, params, terms)` | `fit_grid(bx, by, params, num_terms=terms)` |
+| `fit_grid_full(bx, by, params, l1, terms)` | `fit_grid(bx, by, params, l1_penalties=l1, num_terms=terms)` |
+
+`fit_grid_datasets`, `fit_grid_hyperparams` and `fit_grid_datasets_hyperparams` raised
+for an infeasible fit by default; pass `on_infeasible="raise"` to keep that. The others
+fitted rank-deficient configurations, such as more terms than quantiles, without
+raising.
 
 #### Grid Search over L1 Penalties
 

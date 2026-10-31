@@ -131,7 +131,7 @@ def has_full_column_rank(X: chex.Array) -> chex.Array:
 def assert_full_column_rank(X: chex.Array) -> None:
     """Raise when ``X`` is rank deficient, so least squares has no unique solution.
 
-    Uses ``checkify`` so it also works under ``vmap`` (e.g. ``fit_grid_datasets``).
+    Uses ``checkify`` so it also works under ``vmap``.
 
     Args:
         X: Design matrix of shape (n_samples, n_features).

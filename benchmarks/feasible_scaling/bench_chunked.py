@@ -23,7 +23,7 @@ from metalog_jax.base import (  # noqa: E402
     MetalogFitMethod,
     MetalogParameters,
 )
-from metalog_jax.grid_search import fit_grid_datasets  # noqa: E402
+from metalog_jax.grid_search import fit_grid  # noqa: E402
 from metalog_jax.utils import DEFAULT_Y  # noqa: E402
 
 params = MetalogParameters(
@@ -43,7 +43,7 @@ for c in range(TOTAL // CHUNK):
     bx = quantiles(S)
     by = jnp.broadcast_to(DEFAULT_Y, bx.shape)
     t = time.perf_counter()
-    r = fit_grid_datasets(bx, by, params)
+    r = fit_grid(bx, by, params)
     jax.block_until_ready((r.metalog.a, r.ks_dist))
     dt = time.perf_counter() - t
     first = dt if first is None else first

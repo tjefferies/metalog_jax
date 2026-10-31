@@ -1,17 +1,23 @@
 """Integration tests for the grid search module.
 
-Tests the generalized vmap-based grid search functions for fitting metalog
-distributions across multiple datasets, hyperparameters, and term counts.
+Tests fit_grid, the one grid search function, which fits metalog distributions
+across datasets, L1 penalties and term counts, and the functions that select from
+its results.
 """
 # Copyright: Travis Jefferies 2026
+
+import inspect
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from absl.testing import absltest
-from scipy.stats import beta, lognorm
+from absl.testing import absltest, parameterized
+from jax.experimental import checkify
+from scipy.stats import beta, gamma, lognorm
 
+from metalog_jax import grid_search
 from metalog_jax.base import (
+    MetalogBase,
     MetalogBaseData,
     MetalogBoundedness,
     MetalogFitMethod,
@@ -25,21 +31,17 @@ from metalog_jax.feasibility import (
     get_engine,
 )
 from metalog_jax.grid_search import (
+    MAX_TERMS,
     extract_best_from_grid,
     extract_metalog,
     find_best_config,
     fit_grid,
-    fit_grid_datasets,
-    fit_grid_datasets_hyperparams,
-    fit_grid_datasets_num_terms,
-    fit_grid_full,
-    fit_grid_hyperparams,
-    fit_grid_num_terms,
     make_batch,
     unvmap,
 )
 from metalog_jax.metalog import GridResult, Metalog, fit
 from metalog_jax.regression import DEFAULT_LASSO_PARAMETERS, LassoParameters
+from metalog_jax.regression.base import has_full_column_rank
 from metalog_jax.utils import DEFAULT_Y, ks_distance
 
 
@@ -85,519 +87,6 @@ class TestUnvmap(absltest.TestCase):
         self.assertAlmostEqual(float(result[0].ks_dist), 0.1, places=5)
         self.assertAlmostEqual(float(result[1].ks_dist), 0.2, places=5)
         self.assertAlmostEqual(float(result[2].ks_dist), 0.3, places=5)
-
-
-class TestFitGridHyperparams(absltest.TestCase):
-    """Tests for fit_grid_hyperparams function - vmap over hyperparameters."""
-
-    def setUp(self):
-        """Set up test data."""
-        dist = beta(a=2, b=5)
-        rvs = dist.rvs(size=100, random_state=42)
-        self.data = MetalogInputData.from_values(rvs, DEFAULT_Y, False)
-        self.base_data = MetalogBaseData(
-            x=self.data.x,
-            y=self.data.y,
-            precomputed_quantiles=self.data.precomputed_quantiles,
-        )
-
-    def test_fit_multiple_l1_penalties(self):
-        """Test fitting with multiple L1 penalties."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=7,
-        )
-        l1_penalties = jnp.array([0.0, 0.1, 1.0, 10.0])
-
-        results = fit_grid_hyperparams(
-            data=self.base_data,
-            params=params,
-            l1_penalties=l1_penalties,
-        )
-
-        # Check output shape
-        self.assertEqual(results.metalog.a.shape, (4, 7))
-        self.assertEqual(results.ks_dist.shape, (4,))
-
-        # Check that all KS distances are reasonable
-        self.assertTrue(jnp.all(results.ks_dist >= 0))
-        self.assertTrue(jnp.all(results.ks_dist < 1))
-
-    def test_regularization_shrinks_coefficients(self):
-        """Test that higher L1 penalty shrinks coefficients."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=7,
-        )
-        l1_penalties = jnp.array([0.0, 10.0, 100.0])
-
-        results = fit_grid_hyperparams(
-            data=self.base_data,
-            params=params,
-            l1_penalties=l1_penalties,
-        )
-
-        # Coefficient norms should generally decrease with higher penalty
-        norms = jnp.linalg.norm(results.metalog.a, axis=1)
-        # Allow some tolerance due to fitting dynamics
-        self.assertGreater(float(norms[0]), float(norms[2]) * 0.5)
-
-
-class TestFitGridDatasets(absltest.TestCase):
-    """Tests for fit_grid_datasets function - vmap over datasets."""
-
-    def setUp(self):
-        """Set up test data with multiple datasets."""
-        dist1 = beta(a=2, b=5)
-        dist2 = beta(a=5, b=2)
-        dist3 = beta(a=3.5, b=3.5)
-
-        rv1 = dist1.rvs(size=100, random_state=42)
-        rv2 = dist2.rvs(size=100, random_state=43)
-        rv3 = dist3.rvs(size=100, random_state=44)
-
-        data1 = MetalogInputData.from_values(rv1, DEFAULT_Y, False)
-        data2 = MetalogInputData.from_values(rv2, DEFAULT_Y, False)
-        data3 = MetalogInputData.from_values(rv3, DEFAULT_Y, False)
-
-        self.batched_x = jnp.stack([data1.x, data2.x, data3.x])
-        self.batched_y = jnp.stack([data1.y, data2.y, data3.y])
-
-    def test_fit_multiple_datasets_ols(self):
-        """Test fitting multiple datasets with OLS."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=7,
-            # One beta dataset's 7-term fit is feasible only in the 2016 order
-            term_order=TermOrder.KEELIN_2016,
-        )
-
-        results = fit_grid_datasets(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-        )
-
-        # Check output shape
-        self.assertEqual(results.metalog.a.shape, (3, 7))
-        self.assertEqual(results.ks_dist.shape, (3,))
-
-        # Check that all KS distances are reasonable
-        self.assertTrue(jnp.all(results.ks_dist >= 0))
-        self.assertTrue(jnp.all(results.ks_dist < 1))
-
-    def test_fit_multiple_datasets_lasso(self):
-        """Test fitting multiple datasets with Lasso regularization."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=7,
-        )
-        lasso_params = LassoParameters(
-            lam=1.0,
-            num_iters=500,
-            tol=1e-6,
-        )
-
-        results = fit_grid_datasets(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            fit_params=lasso_params,
-        )
-
-        # Check output shape
-        self.assertEqual(results.metalog.a.shape, (3, 7))
-        self.assertEqual(results.ks_dist.shape, (3,))
-
-    def test_datasets_produce_different_results(self):
-        """Test that different datasets produce different coefficients."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=7,
-            # One beta dataset's 7-term fit is feasible only in the 2016 order
-            term_order=TermOrder.KEELIN_2016,
-        )
-
-        results = fit_grid_datasets(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-        )
-
-        # Coefficients should differ across datasets
-        self.assertFalse(jnp.allclose(results.metalog.a[0], results.metalog.a[1]))
-        self.assertFalse(jnp.allclose(results.metalog.a[1], results.metalog.a[2]))
-
-
-class TestFitGridDatasetsHyperparams(absltest.TestCase):
-    """Tests for fit_grid_datasets_hyperparams - 2D grid over datasets x hyperparams."""
-
-    def setUp(self):
-        """Set up test data with multiple datasets."""
-        dist1 = beta(a=2, b=5)
-        dist2 = beta(a=5, b=2)
-        dist3 = beta(a=3.5, b=3.5)
-
-        rv1 = dist1.rvs(size=100, random_state=42)
-        rv2 = dist2.rvs(size=100, random_state=43)
-        rv3 = dist3.rvs(size=100, random_state=44)
-
-        data1 = MetalogInputData.from_values(rv1, DEFAULT_Y, False)
-        data2 = MetalogInputData.from_values(rv2, DEFAULT_Y, False)
-        data3 = MetalogInputData.from_values(rv3, DEFAULT_Y, False)
-
-        self.batched_x = jnp.stack([data1.x, data2.x, data3.x])
-        self.batched_y = jnp.stack([data1.y, data2.y, data3.y])
-
-    def test_2d_grid_shape(self):
-        """Test that 2D grid returns correct shape."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=7,
-            # One beta dataset's 7-term fit is feasible only in the 2016 order
-            term_order=TermOrder.KEELIN_2016,
-        )
-        l1_penalties = jnp.array([0.0, 1.0, 10.0])
-
-        results = fit_grid_datasets_hyperparams(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            l1_penalties=l1_penalties,
-        )
-
-        # Shape: (n_datasets, n_penalties, num_terms)
-        self.assertEqual(results.metalog.a.shape, (3, 3, 7))
-        # Shape: (n_datasets, n_penalties)
-        self.assertEqual(results.ks_dist.shape, (3, 3))
-
-    def test_2d_grid_ks_distances_reasonable(self):
-        """Test that all KS distances are reasonable values."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=7,
-            # One beta dataset's 7-term fit is feasible only in the 2016 order
-            term_order=TermOrder.KEELIN_2016,
-        )
-        l1_penalties = jnp.array([0.0, 1.0])
-
-        results = fit_grid_datasets_hyperparams(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            l1_penalties=l1_penalties,
-        )
-
-        self.assertTrue(jnp.all(results.ks_dist >= 0))
-        self.assertTrue(jnp.all(results.ks_dist < 1))
-
-
-class TestFitGridFull(absltest.TestCase):
-    """Tests for fit_grid_full - 3D grid over datasets x hyperparams x num_terms."""
-
-    def setUp(self):
-        """Set up test data with multiple datasets."""
-        dist1 = beta(a=2, b=5)
-        dist2 = beta(a=5, b=2)
-
-        rv1 = dist1.rvs(size=100, random_state=42)
-        rv2 = dist2.rvs(size=100, random_state=43)
-
-        data1 = MetalogInputData.from_values(rv1, DEFAULT_Y, False)
-        data2 = MetalogInputData.from_values(rv2, DEFAULT_Y, False)
-
-        self.batched_x = jnp.stack([data1.x, data2.x])
-        self.batched_y = jnp.stack([data1.y, data2.y])
-
-    def test_3d_grid_shape(self):
-        """Test that 3D grid returns correct shape."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=5,  # Will be overridden
-        )
-        l1_penalties = jnp.array([0.0, 1.0])
-        num_terms_list = [5, 7, 9]
-
-        results = fit_grid_full(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            l1_penalties=l1_penalties,
-            num_terms_list=num_terms_list,
-        )
-
-        # Shape: (n_datasets, n_penalties, n_terms, max_terms)
-        max_terms = max(num_terms_list)
-        self.assertEqual(results.metalog.a.shape, (2, 2, 3, max_terms))
-        # Shape: (n_datasets, n_penalties, n_terms)
-        self.assertEqual(results.ks_dist.shape, (2, 2, 3))
-
-    def test_3d_grid_coefficients_padded(self):
-        """Test that coefficients are properly padded for different num_terms."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.Lasso,
-            num_terms=5,
-        )
-        l1_penalties = jnp.array([0.0])
-        num_terms_list = [5, 7]
-
-        results = fit_grid_full(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            l1_penalties=l1_penalties,
-            num_terms_list=num_terms_list,
-        )
-
-        # For 5 terms, last 2 coefficients should be zero (padded)
-        coeffs_5_terms = results.metalog.a[
-            0, 0, 0
-        ]  # First dataset, first penalty, 5 terms
-        self.assertEqual(coeffs_5_terms.shape, (7,))
-        # Last 2 elements should be zero (padding)
-        self.assertTrue(jnp.allclose(coeffs_5_terms[5:], jnp.zeros(2), atol=1e-5))
-
-
-class TestFitGridNumTerms(absltest.TestCase):
-    """Tests for fit_grid_num_terms function - vmap over num_terms for single dataset."""
-
-    def setUp(self):
-        """Set up test data."""
-        dist = beta(a=2, b=5)
-        rvs = dist.rvs(size=100, random_state=42)
-        self.data = MetalogInputData.from_values(rvs, DEFAULT_Y, False)
-        self.base_data = MetalogBaseData(
-            x=self.data.x,
-            y=self.data.y,
-            precomputed_quantiles=self.data.precomputed_quantiles,
-        )
-
-    def test_fit_multiple_num_terms_shape(self):
-        """Test that fitting with multiple num_terms returns correct shape."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,  # Will be overridden
-        )
-        num_terms_list = [5, 7, 9]
-
-        results = fit_grid_num_terms(
-            data=self.base_data,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        # Shape: (n_terms, max_terms)
-        max_terms = max(num_terms_list)
-        self.assertEqual(results.metalog.a.shape, (3, max_terms))
-        # Shape: (n_terms,)
-        self.assertEqual(results.ks_dist.shape, (3,))
-
-    def test_fit_multiple_num_terms_ks_reasonable(self):
-        """Test that all KS distances are reasonable values."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,
-        )
-        num_terms_list = [5, 7, 9]
-
-        results = fit_grid_num_terms(
-            data=self.base_data,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        self.assertTrue(jnp.all(results.ks_dist >= 0))
-        self.assertTrue(jnp.all(results.ks_dist < 1))
-
-    def test_fit_coefficients_properly_padded(self):
-        """Test that coefficients are properly padded for different num_terms."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,
-        )
-        num_terms_list = [5, 9]
-
-        results = fit_grid_num_terms(
-            data=self.base_data,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        # For 5 terms, last 4 coefficients should be zero (padded to max 9)
-        coeffs_5_terms = results.metalog.a[0]
-        self.assertEqual(coeffs_5_terms.shape, (9,))
-        # Last 4 elements should be zero (padding)
-        self.assertTrue(jnp.allclose(coeffs_5_terms[5:], jnp.zeros(4), atol=1e-5))
-
-    def test_more_terms_generally_better_ks(self):
-        """Test that more terms generally produces better (lower) KS distance."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=3,
-        )
-        num_terms_list = [3, 5, 7, 9]
-
-        results = fit_grid_num_terms(
-            data=self.base_data,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        # Generally more terms should improve fit (lower KS)
-        # Allow some tolerance as this isn't always monotonic
-        self.assertLess(float(results.ks_dist[3]), float(results.ks_dist[0]))
-
-
-class TestFitGridDatasetsNumTerms(absltest.TestCase):
-    """Tests for fit_grid_datasets_num_terms - 2D grid over datasets x num_terms."""
-
-    def setUp(self):
-        """Set up test data with multiple datasets."""
-        dist1 = beta(a=2, b=5)
-        dist2 = beta(a=5, b=2)
-        dist3 = beta(a=3.5, b=3.5)
-
-        rv1 = dist1.rvs(size=100, random_state=42)
-        rv2 = dist2.rvs(size=100, random_state=43)
-        rv3 = dist3.rvs(size=100, random_state=44)
-
-        data1 = MetalogInputData.from_values(rv1, DEFAULT_Y, False)
-        data2 = MetalogInputData.from_values(rv2, DEFAULT_Y, False)
-        data3 = MetalogInputData.from_values(rv3, DEFAULT_Y, False)
-
-        self.batched_x = jnp.stack([data1.x, data2.x, data3.x])
-        self.batched_y = jnp.stack([data1.y, data2.y, data3.y])
-
-    def test_2d_grid_shape(self):
-        """Test that 2D grid returns correct shape."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,  # Will be overridden
-        )
-        num_terms_list = [5, 7, 9]
-
-        results = fit_grid_datasets_num_terms(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        # Shape: (n_datasets, n_terms, max_terms)
-        max_terms = max(num_terms_list)
-        self.assertEqual(results.metalog.a.shape, (3, 3, max_terms))
-        # Shape: (n_datasets, n_terms)
-        self.assertEqual(results.ks_dist.shape, (3, 3))
-
-    def test_2d_grid_ks_distances_reasonable(self):
-        """Test that all KS distances are reasonable values."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,
-        )
-        num_terms_list = [5, 7]
-
-        results = fit_grid_datasets_num_terms(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        self.assertTrue(jnp.all(results.ks_dist >= 0))
-        self.assertTrue(jnp.all(results.ks_dist < 1))
-
-    def test_datasets_produce_different_results(self):
-        """Test that different datasets produce different coefficients."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,
-        )
-        num_terms_list = [5, 7]
-
-        results = fit_grid_datasets_num_terms(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        # Coefficients should differ across datasets
-        self.assertFalse(jnp.allclose(results.metalog.a[0], results.metalog.a[1]))
-        self.assertFalse(jnp.allclose(results.metalog.a[1], results.metalog.a[2]))
-
-    def test_coefficients_properly_padded(self):
-        """Test that coefficients are properly padded for different num_terms."""
-        params = MetalogParameters(
-            boundedness=MetalogBoundedness.BOUNDED,
-            lower_bound=0,
-            upper_bound=1,
-            method=MetalogFitMethod.OLS,
-            num_terms=5,
-        )
-        num_terms_list = [5, 9]
-
-        results = fit_grid_datasets_num_terms(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            num_terms_list=num_terms_list,
-        )
-
-        # For 5 terms (index 0), last 4 coefficients should be zero (padded to max 9)
-        for dataset_idx in range(3):
-            coeffs_5_terms = results.metalog.a[dataset_idx, 0]
-            self.assertEqual(coeffs_5_terms.shape, (9,))
-            # Last 4 elements should be zero (padding)
-            self.assertTrue(jnp.allclose(coeffs_5_terms[5:], jnp.zeros(4), atol=1e-5))
 
 
 class TestFindBestConfig(absltest.TestCase):
@@ -671,11 +160,8 @@ class TestExtractBestFromGrid(absltest.TestCase):
         )
         l1_penalties = jnp.array([0.0, 1.0, 10.0])
 
-        results = fit_grid_datasets_hyperparams(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
-            l1_penalties=l1_penalties,
+        results = fit_grid(
+            self.batched_x, self.batched_y, params, l1_penalties=l1_penalties
         )
 
         # Extract best for first dataset
@@ -701,12 +187,12 @@ class TestExtractBestFromGrid(absltest.TestCase):
         l1_penalties = jnp.array([0.0, 1.0])
         num_terms_list = [5, 7]
 
-        results = fit_grid_full(
-            batched_x=self.batched_x,
-            batched_y=self.batched_y,
-            params=params,
+        results = fit_grid(
+            self.batched_x,
+            self.batched_y,
+            params,
             l1_penalties=l1_penalties,
-            num_terms_list=num_terms_list,
+            num_terms=num_terms_list,
         )
 
         # Extract best for first dataset
@@ -731,8 +217,8 @@ class TestVmapCompatibility(absltest.TestCase):
         rv = dist.rvs(size=100, random_state=42)
         self.data = MetalogInputData.from_values(rv, DEFAULT_Y, False)
 
-    def test_fit_grid_hyperparams_produces_valid_results(self):
-        """Test that fit_grid_hyperparams produces valid, different results per penalty."""
+    def test_penalty_grid_produces_valid_results(self):
+        """Test that a penalty grid produces valid, different results per penalty."""
         params = MetalogParameters(
             boundedness=MetalogBoundedness.BOUNDED,
             lower_bound=0,
@@ -742,13 +228,7 @@ class TestVmapCompatibility(absltest.TestCase):
         )
         l1_penalties = jnp.array([0.0, 1.0, 10.0])
 
-        base_data = MetalogBaseData(
-            x=self.data.x,
-            y=self.data.y,
-            precomputed_quantiles=self.data.precomputed_quantiles,
-        )
-
-        results = fit_grid_hyperparams(base_data, params, l1_penalties)
+        results = fit_grid(self.data.x, self.data.y, params, l1_penalties=l1_penalties)
 
         # Verify output shape
         self.assertEqual(results.metalog.a.shape, (3, 5))
@@ -781,12 +261,7 @@ class TestVmapCompatibility(absltest.TestCase):
         )
         l1_penalties = jnp.array([0.0, 1.0])
 
-        results = fit_grid_datasets_hyperparams(
-            batched_x=batched_x,
-            batched_y=batched_y,
-            params=params,
-            l1_penalties=l1_penalties,
-        )
+        results = fit_grid(batched_x, batched_y, params, l1_penalties=l1_penalties)
 
         # Vmap extract_best_from_grid over all datasets
         vmapped_extract = jax.vmap(
@@ -1552,13 +1027,12 @@ class TestFitGridEdgeCases(absltest.TestCase):
 
 
 class TestGridFeasibleMethod(absltest.TestCase):
-    """Grid search with MetalogFitMethod.Feasible: rejected by vmapped grids."""
+    """fit_grid fits MetalogFitMethod.Feasible over datasets and term counts."""
 
     def setUp(self):
         """Paper data, whose 5-term OLS fit is infeasible."""
         x = jnp.array([1.0, 2.0, 4.0, 8.0, 12.0])
         y = jnp.array([0.1, 0.3, 0.5, 0.7, 0.9])
-        self.data = MetalogBaseData(x=x, y=y, precomputed_quantiles=True)
         self.batched_x = jnp.stack([x, x + 1.0])
         self.batched_y = jnp.stack([y, y])
         self.params = MetalogParameters(
@@ -1569,29 +1043,11 @@ class TestGridFeasibleMethod(absltest.TestCase):
             num_terms=5,
         )
 
-    def test_fit_grid_rejects_feasible(self):
-        """fit_grid raises instead of silently fitting OLS."""
-        with self.assertRaises(ValueError) as ctx:
-            fit_grid(
-                self.batched_x, self.batched_y, self.params, precomputed_quantiles=True
-            )
-        self.assertIn("fit_grid_datasets()", str(ctx.exception))
-
-    def test_num_terms_grids_reject_feasible(self):
-        """fit_grid_num_terms and fit_grid_datasets_num_terms raise ValueError."""
-        with self.assertRaises(ValueError):
-            fit_grid_num_terms(self.data, self.params, [3, 4, 5])
-        with self.assertRaises(ValueError):
-            fit_grid_datasets_num_terms(
-                self.batched_x, self.batched_y, self.params, [3, 4, 5], True
-            )
-
-    def test_fit_grid_datasets_supports_feasible(self):
-        """fit_grid_datasets, the suggested alternative, returns feasible fits."""
-        result = fit_grid_datasets(
-            self.batched_x, self.batched_y, self.params, precomputed_quantiles=True
-        )
+    def test_datasets_are_best_feasible_fits(self):
+        """A batch of Feasible fits is each dataset's best feasible fit."""
+        result = fit_grid(self.batched_x, self.batched_y, self.params)
         self.assertEqual(result.metalog.a.shape, (2, 5))
+        self.assertEqual(result.feasible.tolist(), [True, True])
         for i in range(2):
             expected = best_feasible_fit(
                 self.batched_x[i], self.batched_y[i], num_terms=5
@@ -1601,9 +1057,62 @@ class TestGridFeasibleMethod(absltest.TestCase):
                 check_feasibility(get_engine(5), result.metalog.a[i]).feasible
             )
 
+    def test_term_counts_are_padded_fits(self):
+        """Each term count's fits are its own grid's, zero-padded to the largest."""
+        terms = [3, 5, 4]
+        result = fit_grid(self.batched_x, self.batched_y, self.params, num_terms=terms)
+        self.assertEqual(result.metalog.a.shape, (2, 3, 5))
+        self.assertEqual(result.ks_dist.shape, (2, 3))
+        self.assertTrue(bool(jnp.all(result.feasible)))
+        for j, k in enumerate(terms):
+            single = fit_grid(
+                self.batched_x, self.batched_y, self.params.replace(num_terms=k)
+            )
+            np.testing.assert_array_equal(result.metalog.a[:, j, :k], single.metalog.a)
+            np.testing.assert_array_equal(result.metalog.a[:, j, k:], 0.0)
+            np.testing.assert_array_equal(result.ks_dist[:, j], single.ks_dist)
+
+    def test_one_dataset(self):
+        """One dataset's term-count grid has the term axis only."""
+        result = fit_grid(
+            self.batched_x[0], self.batched_y[0], self.params, num_terms=[3, 5]
+        )
+        self.assertEqual(result.metalog.a.shape, (2, 5))
+        self.assertEqual(result.feasible.tolist(), [True, True])
+        best = extract_metalog(result, 1)
+        self.assertEqual(best.method, MetalogFitMethod.Feasible)
+        self.assertTrue(bool(jnp.isfinite(best.ppf(jnp.array([0.5]))[0])))
+
+    def test_repeated_term_counts(self):
+        """A repeated term count gives the same fits in each of its entries."""
+        result = fit_grid(
+            self.batched_x, self.batched_y, self.params, num_terms=[5, 3, 5]
+        )
+        np.testing.assert_array_equal(result.metalog.a[:, 0], result.metalog.a[:, 2])
+
+    def test_l1_penalties_raise(self):
+        """Feasible takes no penalty, so an L1 axis raises TypeError."""
+        with self.assertRaisesRegex(TypeError, "takes no penalty"):
+            fit_grid(
+                self.batched_x,
+                self.batched_y,
+                self.params,
+                l1_penalties=jnp.array([0.0, 0.1]),
+            )
+
+    def test_lasso_params_raise(self):
+        """Feasible takes no Lasso settings, as in fit()."""
+        with self.assertRaisesRegex(TypeError, "lasso_params only affects Lasso"):
+            fit_grid(
+                self.batched_x,
+                self.batched_y,
+                self.params,
+                lasso_params=LassoParameters(lam=0.1),
+            )
+
 
 class TestGridScoresAtDataProbabilities(absltest.TestCase):
-    """Every grid function scores its fits at the dataset's own probability levels."""
+    """Every grid scores its fits at the dataset's own probability levels."""
 
     # A probability grid other than DEFAULT_Y
     Y = tuple(round(0.05 * i, 2) for i in range(1, 20))
@@ -1630,50 +1139,47 @@ class TestGridScoresAtDataProbabilities(absltest.TestCase):
             fitted = Metalog(params, a_i)._ppf(y, a_i.shape[0])
             self.assertAlmostEqual(float(ks_i), float(ks_distance(x, fitted)))
 
-    def test_all_grid_functions_score_at_y(self):
-        """Each grid function's KS distances use y, not DEFAULT_Y."""
+    def test_every_grid_scores_at_y(self):
+        """Every configuration's KS distances use y, not DEFAULT_Y."""
         y = jnp.asarray(self.Y)
         # Lognormal quantiles aren't an exact metalog, so no fitted value ties with
         # the data and rounding can't change a KS distance
         x = jnp.asarray(lognorm(s=0.5).ppf(self.Y))
         bx, by = jnp.stack([x, x]), jnp.stack([y, y])
-        data = MetalogInputData.from_values(x, y, precomputed_quantiles=True)
         ols = self._params(MetalogFitMethod.OLS)
         lasso = self._params(MetalogFitMethod.Lasso)
         l1 = jnp.asarray(self.L1)
         terms = list(self.NUM_TERMS)
+        feasible = self._params(MetalogFitMethod.Feasible)
         results = {
-            "fit_grid": fit_grid(
-                x, y, ols, num_terms=terms, precomputed_quantiles=True
+            "terms": fit_grid(x, y, ols, num_terms=terms),
+            "datasets x terms": fit_grid(bx, by, ols, num_terms=terms),
+            "datasets x penalties x terms": fit_grid(
+                bx, by, lasso, l1_penalties=l1, num_terms=terms
             ),
-            "fit_grid_num_terms": fit_grid_num_terms(data, ols, terms),
-            "fit_grid_datasets_num_terms": fit_grid_datasets_num_terms(
-                bx, by, ols, terms, precomputed_quantiles=True
-            ),
-            "fit_grid_full": fit_grid_full(
-                bx, by, lasso, l1, terms, precomputed_quantiles=True
-            ),
-            "fit_grid_datasets": fit_grid_datasets(
-                bx, by, ols, precomputed_quantiles=True
-            ),
-            "fit_grid_hyperparams": fit_grid_hyperparams(data, lasso, l1),
-            "fit_grid_datasets_hyperparams": fit_grid_datasets_hyperparams(
-                bx, by, lasso, l1, precomputed_quantiles=True
-            ),
+            "datasets": fit_grid(bx, by, ols),
+            "penalties": fit_grid(x, y, lasso, l1_penalties=l1),
+            "datasets x penalties": fit_grid(bx, by, lasso, l1_penalties=l1),
+            "Feasible datasets x terms": fit_grid(bx, by, feasible, num_terms=terms),
         }
         for name, result in results.items():
             with self.subTest(function=name):
                 self._assert_scored_at_y(result, x, y)
 
 
-def _unbounded(method: MetalogFitMethod, num_terms: int = 7) -> MetalogParameters:
-    """Return unbounded parameters for the given fit method and term count."""
+def _unbounded(
+    method: MetalogFitMethod,
+    num_terms: int = 7,
+    term_order: TermOrder = TermOrder.METALOG_2,
+) -> MetalogParameters:
+    """Return unbounded parameters for the given fit method, term count and order."""
     return MetalogParameters(
         boundedness=MetalogBoundedness.UNBOUNDED,
         method=method,
         lower_bound=0.0,
         upper_bound=0.0,
         num_terms=num_terms,
+        term_order=term_order,
     )
 
 
@@ -1729,30 +1235,28 @@ class TestFitGridLassoParams(absltest.TestCase):
         _assert_coefficients_close(solved.metalog.a[0], expected)
         self.assertFalse(np.allclose(one_step.metalog.a[0], expected))
 
-    def test_num_terms_grids_pass_regression_params(self):
-        """The term-count grids fit with regression_params, as fit_grid does."""
+    def test_num_terms_grids_use_lasso_params(self):
+        """Term-count grids, of one dataset or a batch, fit with lasso_params."""
         lasso_params = LassoParameters(lam=self.LAM)
         terms = [5, 7]
-        expected = fit_grid(
+        single = fit_grid(
             self.DATA.x,
             self.DATA.y,
             self.LASSO,
             num_terms=terms,
             lasso_params=lasso_params,
         ).metalog.a
-        single = fit_grid_num_terms(self.DATA, self.LASSO, terms, lasso_params)
-        batched = fit_grid_datasets_num_terms(
+        batched = fit_grid(
             self.DATA.x[None],
             self.DATA.y[None],
             self.LASSO,
-            terms,
-            regression_params=lasso_params,
+            num_terms=terms,
+            lasso_params=lasso_params,
         )
 
-        _assert_coefficients_close(single.metalog.a, expected)
-        _assert_coefficients_close(batched.metalog.a[0], expected)
+        _assert_coefficients_close(batched.metalog.a[0], single)
         _assert_coefficients_close(
-            expected[1], fit(self.DATA, self.LASSO, lasso_params).a
+            single[1], fit(self.DATA, self.LASSO, lasso_params).a
         )
 
     def test_lasso_params_for_an_ols_grid_raise(self):
@@ -1762,7 +1266,13 @@ class TestFitGridLassoParams(absltest.TestCase):
         with self.assertRaisesRegex(TypeError, "lasso_params only affects Lasso fits"):
             fit_grid(self.DATA.x, self.DATA.y, ols, lasso_params=lasso_params)
         with self.assertRaises(TypeError):
-            fit_grid_num_terms(self.DATA, ols, [5, 7], lasso_params)
+            fit_grid(
+                self.DATA.x,
+                self.DATA.y,
+                ols,
+                num_terms=[5, 7],
+                lasso_params=lasso_params,
+            )
 
     def test_lasso_params_for_an_ols_penalty_grid(self):
         """With l1_penalties, OLS parameters take lasso_params too."""
@@ -1796,8 +1306,8 @@ class TestGridFitMethodLabel(absltest.TestCase):
             "fit_grid with num_terms": fit_grid(
                 x, y, self.OLS, l1_penalties=self.L1, num_terms=self.TERMS
             ),
-            "fit_grid_full": fit_grid_full(
-                x[None], y[None], self.OLS, self.L1, self.TERMS
+            "fit_grid batched": fit_grid(
+                x[None], y[None], self.OLS, l1_penalties=self.L1, num_terms=self.TERMS
             ),
         }
         for name, result in results.items():
@@ -1814,13 +1324,13 @@ class TestGridFitMethodLabel(absltest.TestCase):
         result = fit_grid(self.DATA.x, self.DATA.y, self.OLS, num_terms=self.TERMS)
         self.assertEqual(extract_metalog(result, 0).method, MetalogFitMethod.OLS)
 
-    def test_fit_grid_full_rejects_feasible(self):
-        """fit_grid_full raises for Feasible rather than labelling Lasso fits so."""
+    def test_feasible_grids_label_fits_feasible(self):
+        """A Feasible grid's fits say Feasible, and it can't take penalties."""
         feasible = self.OLS.replace(method=MetalogFitMethod.Feasible)
-        with self.assertRaisesRegex(ValueError, "fit_grid_datasets"):
-            fit_grid_full(
-                self.DATA.x[None], self.DATA.y[None], feasible, self.L1, self.TERMS
-            )
+        result = fit_grid(self.DATA.x, self.DATA.y, feasible, num_terms=self.TERMS)
+        self.assertEqual(extract_metalog(result, 0).method, MetalogFitMethod.Feasible)
+        with self.assertRaises(TypeError):
+            fit_grid(self.DATA.x, self.DATA.y, feasible, l1_penalties=self.L1)
 
 
 class TestGridPrecomputedQuantiles(absltest.TestCase):
@@ -1838,21 +1348,19 @@ class TestGridPrecomputedQuantiles(absltest.TestCase):
     TERMS = (5, 7)
 
     def _grids(self, x, **flag):
-        """Fit x with each grid function that takes arrays, passing flag through."""
+        """Fit x in each grid configuration, passing flag through."""
         y, ols, lasso = self.Y, self.OLS, self.LASSO
-        on_infeasible = {"on_infeasible": "flag"}
+        feasible = ols.replace(method=MetalogFitMethod.Feasible)
         return {
-            "fit_grid": fit_grid(x[0], y[0], ols, **flag),
-            "fit_grid batched": fit_grid(
+            "one dataset": fit_grid(x[0], y[0], ols, **flag),
+            "datasets x penalties x terms": fit_grid(
                 x, y, lasso, l1_penalties=self.L1, num_terms=self.TERMS, **flag
             ),
-            "fit_grid_datasets_num_terms": fit_grid_datasets_num_terms(
-                x, y, ols, self.TERMS, **flag
-            ),
-            "fit_grid_full": fit_grid_full(x, y, lasso, self.L1, self.TERMS, **flag),
-            "fit_grid_datasets": fit_grid_datasets(x, y, ols, **flag, **on_infeasible),
-            "fit_grid_datasets_hyperparams": fit_grid_datasets_hyperparams(
-                x, y, lasso, self.L1, **flag, **on_infeasible
+            "datasets x terms": fit_grid(x, y, ols, num_terms=self.TERMS, **flag),
+            "datasets": fit_grid(x, y, ols, **flag),
+            "datasets x penalties": fit_grid(x, y, lasso, l1_penalties=self.L1, **flag),
+            "Feasible datasets x terms": fit_grid(
+                x, y, feasible, num_terms=self.TERMS, **flag
             ),
         }
 
@@ -1879,12 +1387,10 @@ class TestGridPrecomputedQuantiles(absltest.TestCase):
 
     def test_ks_dist_is_float64(self):
         """Every grid's KS distances are float64, the inputs' precision."""
-        data = MetalogInputData.from_values(self.QUANTILES[0], DEFAULT_Y, True)
+        x, y = self.QUANTILES[0], DEFAULT_Y
         results = self._grids(self.QUANTILES) | {
-            "fit_grid_num_terms": fit_grid_num_terms(data, self.OLS, self.TERMS),
-            "fit_grid_hyperparams": fit_grid_hyperparams(
-                data, self.LASSO, self.L1, on_infeasible="flag"
-            ),
+            "terms": fit_grid(x, y, self.OLS, num_terms=self.TERMS),
+            "penalties": fit_grid(x, y, self.LASSO, l1_penalties=self.L1),
         }
         for name, result in results.items():
             with self.subTest(function=name):
@@ -1915,6 +1421,154 @@ class TestKsDistanceDtype(absltest.TestCase):
         """Integer samples give a float64 distance."""
         d = ks_distance(jnp.arange(3), jnp.arange(1, 4))
         self.assertEqual(d.dtype, jnp.float64)
+
+
+class TestGridRank(parameterized.TestCase):
+    """OLS and Feasible grids raise for a rank-deficient fit, as fit() does (#55)."""
+
+    # Seven symmetric probabilities: the 2016 order's 7-term basis is singular there
+    # (Baucells et al. 2025, Proposition 2), and the 2.0 order's isn't
+    SYMMETRIC_Y = jnp.array([0.05, 0.15, 0.3, 0.5, 0.7, 0.85, 0.95])
+    ASYMMETRIC_Y = jnp.array([0.05, 0.1, 0.3, 0.5, 0.7, 0.85, 0.95])
+    X = jnp.asarray(gamma(a=2).ppf(np.asarray(SYMMETRIC_Y)))
+
+    def assert_raises_for(self, mask, run):
+        """Check that run raises the rank error, showing the full_rank mask."""
+        with self.assertRaisesRegex(
+            checkify.JaxRuntimeError, r"rank deficient.*full_rank = " + mask
+        ):
+            run()
+
+    @parameterized.parameters(MetalogFitMethod.OLS, MetalogFitMethod.Feasible)
+    def test_2016_order_raises_for_its_singular_term_count(self, method):
+        """Only the 7-term fit of the 2016 order is singular, and the mask says so."""
+        p = _unbounded(method, term_order=TermOrder.KEELIN_2016)
+        self.assert_raises_for(
+            r"\[ True  True False\]",
+            lambda: fit_grid(self.X, self.SYMMETRIC_Y, p, num_terms=[5, 6, 7]),
+        )
+        # fit() raises for the same fit
+        data = MetalogInputData.from_values(self.X, self.SYMMETRIC_Y, True)
+        with self.assertRaisesRegex(checkify.JaxRuntimeError, "rank deficient"):
+            fit(data, p)
+
+    @parameterized.parameters(MetalogFitMethod.OLS, MetalogFitMethod.Feasible)
+    def test_2_0_order_fits_the_same_grid(self, method):
+        """The default order has full rank there, so the grid fits."""
+        result = fit_grid(
+            self.X, self.SYMMETRIC_Y, _unbounded(method), num_terms=[5, 6, 7]
+        )
+        self.assertEqual(result.ks_dist.shape, (3,))
+
+    def test_lasso_is_not_checked(self):
+        """Lasso is regularized, so its singular fits return, as in fit()."""
+        p = _unbounded(MetalogFitMethod.Lasso, term_order=TermOrder.KEELIN_2016)
+        result = fit_grid(self.X, self.SYMMETRIC_Y, p, num_terms=[5, 7])
+        self.assertEqual(result.ks_dist.shape, (2,))
+
+    def test_more_terms_than_quantiles_raise(self):
+        """With 7 quantiles, an 8-term fit isn't unique."""
+        self.assert_raises_for(
+            r"\[ True False\]",
+            lambda: fit_grid(
+                self.X,
+                self.SYMMETRIC_Y,
+                _unbounded(MetalogFitMethod.OLS),
+                num_terms=[5, 8],
+            ),
+        )
+
+    def test_mask_has_the_grid_shape(self):
+        """With datasets, the mask is datasets x terms, from each dataset's own y."""
+        x = jnp.stack([self.X, self.X, self.X])
+        y = jnp.stack([self.SYMMETRIC_Y, self.ASYMMETRIC_Y, self.SYMMETRIC_Y])
+        p = _unbounded(MetalogFitMethod.OLS, term_order=TermOrder.KEELIN_2016)
+        self.assert_raises_for(
+            r"\[\[ True False\]\s+\[ True  True\]\s+\[ True False\]\]",
+            lambda: fit_grid(x, y, p, num_terms=[6, 7]),
+        )
+        self.assert_raises_for(
+            r"\[False  True False\]", lambda: fit_grid(x, y, p.replace(num_terms=7))
+        )
+
+    def test_jitted_grids_report_rank_through_checkify(self):
+        """Under jit, y is traced, so every row is checked and checkify reports it."""
+        terms = [5, 7]
+        for term_order in (TermOrder.METALOG_2, TermOrder.KEELIN_2016):
+            p = _unbounded(MetalogFitMethod.OLS, term_order=term_order)
+            grid = checkify.checkify(
+                jax.jit(lambda x, y, p=p: fit_grid(x, y, p, num_terms=terms))
+            )
+            err, result = grid(self.X, self.SYMMETRIC_Y)
+            with self.subTest(term_order=term_order.name):
+                if term_order == TermOrder.KEELIN_2016:
+                    self.assertIn("full_rank = [ True False]", err.get())
+                else:
+                    self.assertIsNone(err.get())
+                    eager = fit_grid(self.X, self.SYMMETRIC_Y, p, num_terms=terms)
+                    np.testing.assert_array_equal(result.ks_dist, eager.ks_dist)
+
+    @parameterized.parameters(TermOrder.METALOG_2, TermOrder.KEELIN_2016)
+    def test_grid_raises_when_fit_does(self, term_order):
+        """For n = k symmetric probabilities, a grid raises exactly when fit() does."""
+        for k in range(3, 16):
+            with self.subTest(num_terms=k):
+                y = jnp.linspace(0.5 / k, 1 - 0.5 / k, k)
+                x = jnp.asarray(gamma(a=2).ppf(np.asarray(y)))
+                p = _unbounded(MetalogFitMethod.OLS, k, term_order)
+                design = MetalogBase._get_target(y, k, term_order)
+                if bool(has_full_column_rank(design)):
+                    fit_grid(x, y, p)
+                else:
+                    self.assert_raises_for(
+                        r"False", lambda x=x, y=y, p=p: fit_grid(x, y, p)
+                    )
+
+
+class TestFitGridArguments(absltest.TestCase):
+    """fit_grid is the one grid function, with keyword-only arguments (#55)."""
+
+    X = jnp.asarray(gamma(a=2).ppf(np.asarray(DEFAULT_Y)))
+    REMOVED = (
+        "fit_grid_datasets",
+        "fit_grid_hyperparams",
+        "fit_grid_datasets_hyperparams",
+        "fit_grid_num_terms",
+        "fit_grid_datasets_num_terms",
+        "fit_grid_full",
+    )
+
+    def test_fit_grid_is_the_only_grid_function(self):
+        """The six specialized grid functions are gone."""
+        for name in self.REMOVED:
+            with self.subTest(function=name):
+                self.assertFalse(hasattr(grid_search, name))
+
+    def test_everything_after_params_is_keyword_only(self):
+        """Arguments after params are keyword-only, so new ones don't break callers."""
+        signature = inspect.signature(fit_grid).parameters
+        kinds = {name: p.kind for name, p in signature.items()}
+        self.assertEqual(list(kinds)[:3], ["x", "y", "params"])
+        for name in list(kinds)[3:]:
+            with self.subTest(argument=name):
+                self.assertEqual(kinds[name], inspect.Parameter.KEYWORD_ONLY)
+
+    def test_on_infeasible_defaults_to_flag(self):
+        """Grids return every fit by default, with the infeasible ones marked."""
+        signature = inspect.signature(fit_grid).parameters
+        self.assertEqual(signature["on_infeasible"].default, "flag")
+
+    def test_ols_and_lasso_grids_fit_at_most_max_terms(self):
+        """The masked design has MAX_TERMS columns, so more terms raise ValueError."""
+        for method in (MetalogFitMethod.OLS, MetalogFitMethod.Lasso):
+            with self.subTest(method=method.name):
+                with self.assertRaisesRegex(ValueError, f"at most {MAX_TERMS} terms"):
+                    fit_grid(
+                        self.X,
+                        DEFAULT_Y,
+                        _unbounded(method),
+                        num_terms=[5, MAX_TERMS + 1],
+                    )
 
 
 if __name__ == "__main__":

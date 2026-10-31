@@ -99,7 +99,7 @@ body:
       options:
         - Fitting (fit)
         - SPT metalog (fit_spt_metalog)
-        - Grid search (fit_grid and related)
+        - Grid search (fit_grid)
         - Distribution methods (ppf, pdf, cdf, q, p, d, rvs, moments)
         - Feasibility tools (metalog_jax.feasibility)
         - Serialization (save, load, dumps, loads)

@@ -8,7 +8,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import checkify
 
 from metalog_jax.base import (
-    MetalogBaseData,
+    MetalogBase,
     MetalogBoundedness,
     MetalogFitMethod,
     MetalogInputData,
@@ -19,12 +19,6 @@ from metalog_jax.grid_search import (
     extract_best_from_grid,
     find_best_config,
     fit_grid,
-    fit_grid_datasets,
-    fit_grid_datasets_hyperparams,
-    fit_grid_datasets_num_terms,
-    fit_grid_full,
-    fit_grid_hyperparams,
-    fit_grid_num_terms,
 )
 from metalog_jax.metalog import GridResult, Metalog
 from metalog_jax.utils import DEFAULT_Y
@@ -54,7 +48,7 @@ def certified(a, num_terms):
 
 
 class GridFeasibilityTest(parameterized.TestCase):
-    """Every grid function marks which fits are valid distributions."""
+    """Every grid marks which fits are valid distributions."""
 
     # The issue's batch: dataset 1's 9-term OLS fit is infeasible, the rest are fine
     GOOD = quantiles(np.random.default_rng(0).normal(size=500))
@@ -85,35 +79,21 @@ class GridFeasibilityTest(parameterized.TestCase):
         ]
         self.assertEqual(np.asarray(result.feasible).reshape(-1).tolist(), expected)
 
-    def test_masked_grids(self):
-        """The four masked grids mark dataset 1's 9-term fit infeasible."""
-        bad = MetalogBaseData(x=self.BAD, y=DEFAULT_Y, precomputed_quantiles=True)
+    def test_term_count_grids(self):
+        """Term-count grids mark dataset 1's 9-term fit infeasible."""
         terms = list(self.TERMS)
-        results = {
-            "fit_grid": fit_grid(
-                self.X, self.Y, self.OLS, num_terms=terms, precomputed_quantiles=True
-            ),
-            "fit_grid_datasets_num_terms": fit_grid_datasets_num_terms(
-                self.X, self.Y, self.OLS, terms, precomputed_quantiles=True
-            ),
-        }
-        for name, result in results.items():
-            with self.subTest(function=name):
-                self.assertEqual(
-                    result.feasible.tolist(), [list(row) for row in self.EXPECTED]
-                )
-                self.assert_feasible_is_certified(result, np.array(self.TERMS))
-        result = fit_grid_num_terms(bad, self.OLS, terms)
+        result = fit_grid(self.X, self.Y, self.OLS, num_terms=terms)
+        self.assertEqual(result.feasible.tolist(), [list(row) for row in self.EXPECTED])
+        self.assert_feasible_is_certified(result, np.array(self.TERMS))
+        result = fit_grid(self.BAD, DEFAULT_Y, self.OLS, num_terms=terms)
         self.assertEqual(result.feasible.tolist(), [True, False])
         self.assert_feasible_is_certified(result, np.array(self.TERMS))
 
     def test_full_grid(self):
-        """fit_grid_full marks the unpenalized fits of the infeasible metalog."""
+        """A full grid marks the unpenalized fits of the infeasible metalog."""
         x = jnp.stack([self.LASSO_GOOD, self.LASSO_BAD])
         y = jnp.stack([DEFAULT_Y] * 2)
-        result = fit_grid_full(
-            x, y, self.LASSO, self.L1, [3, 5], precomputed_quantiles=True
-        )
+        result = fit_grid(x, y, self.LASSO, l1_penalties=self.L1, num_terms=[3, 5])
         self.assertEqual(result.feasible.shape, (2, 4, 2))
         self.assertEqual(
             result.feasible[:, :, 0].tolist(),
@@ -123,8 +103,8 @@ class GridFeasibilityTest(parameterized.TestCase):
 
     def test_fit_grid_without_axes(self):
         """A single fit has a scalar feasible flag."""
-        bad = fit_grid(self.BAD, DEFAULT_Y, self.OLS, precomputed_quantiles=True)
-        good = fit_grid(self.GOOD, DEFAULT_Y, self.OLS, precomputed_quantiles=True)
+        bad = fit_grid(self.BAD, DEFAULT_Y, self.OLS)
+        good = fit_grid(self.GOOD, DEFAULT_Y, self.OLS)
         self.assertEqual(
             (bad.feasible.shape, bool(bad.feasible), bool(good.feasible)),
             ((), False, True),
@@ -139,69 +119,58 @@ class GridFeasibilityTest(parameterized.TestCase):
         """Feasibility of the unbounded M(y) decides every boundedness type."""
         p = params(MetalogFitMethod.OLS, 9, boundedness, 0.0, 30.0)
         terms = [3, 5, 7, 9]
-        result = fit_grid(
-            self.BAD, DEFAULT_Y, p, num_terms=terms, precomputed_quantiles=True
-        )
+        result = fit_grid(self.BAD, DEFAULT_Y, p, num_terms=terms)
         self.assert_feasible_is_certified(result, np.array(terms))
         # The 7-term fit is feasible in the default Metalog 2.0 order (not in 2016's)
         self.assertEqual(result.feasible.tolist(), [True, True, True, False])
 
 
 class OnInfeasibleTest(parameterized.TestCase):
-    """The grids that call fit() raise for an infeasible fit, or flag it."""
+    """Grids flag infeasible fits by default, or raise for them."""
 
     X, Y, OLS = GridFeasibilityTest.X, GridFeasibilityTest.Y, GridFeasibilityTest.OLS
     LASSO, L1 = GridFeasibilityTest.LASSO, GridFeasibilityTest.L1
     LASSO_X = jnp.stack([GridFeasibilityTest.LASSO_GOOD, GridFeasibilityTest.LASSO_BAD])
     LASSO_EXPECTED = GridFeasibilityTest.LASSO_EXPECTED
 
-    def grids(self, on_infeasible):
-        """Run the three fit()-based grids on batches with an infeasible fit."""
-        bad = MetalogBaseData(
-            x=self.LASSO_X[1], y=DEFAULT_Y, precomputed_quantiles=True
-        )
+    def grids(self, **on_infeasible):
+        """Run three grids, each with an infeasible fit, passing on_infeasible."""
         y = jnp.stack([DEFAULT_Y] * 2)
         return {
-            "fit_grid_datasets": lambda: fit_grid_datasets(
-                self.X,
-                self.Y,
-                self.OLS,
-                precomputed_quantiles=True,
-                on_infeasible=on_infeasible,
-            ),
-            "fit_grid_hyperparams": lambda: fit_grid_hyperparams(
-                bad, self.LASSO, self.L1, on_infeasible=on_infeasible
-            ),
-            "fit_grid_datasets_hyperparams": lambda: fit_grid_datasets_hyperparams(
-                self.LASSO_X,
-                y,
+            "datasets": lambda: fit_grid(self.X, self.Y, self.OLS, **on_infeasible),
+            "penalties": lambda: fit_grid(
+                self.LASSO_X[1],
+                DEFAULT_Y,
                 self.LASSO,
-                self.L1,
-                precomputed_quantiles=True,
-                on_infeasible=on_infeasible,
+                l1_penalties=self.L1,
+                **on_infeasible,
+            ),
+            "datasets x penalties": lambda: fit_grid(
+                self.LASSO_X, y, self.LASSO, l1_penalties=self.L1, **on_infeasible
             ),
         }
 
-    def test_flag_returns_every_fit(self):
-        """on_infeasible='flag' returns every fit with the infeasible ones marked."""
+    @parameterized.parameters({}, {"on_infeasible": "flag"})
+    def test_flag_returns_every_fit(self, **on_infeasible):
+        """By default, or with 'flag', every fit returns with the infeasible marked."""
         expected = {
-            "fit_grid_datasets": [True, False, True],
-            "fit_grid_hyperparams": list(self.LASSO_EXPECTED[1]),
-            "fit_grid_datasets_hyperparams": [list(row) for row in self.LASSO_EXPECTED],
+            "datasets": [True, False, True],
+            "penalties": list(self.LASSO_EXPECTED[1]),
+            "datasets x penalties": [list(row) for row in self.LASSO_EXPECTED],
         }
-        for name, run in self.grids("flag").items():
-            with self.subTest(function=name):
+        for name, run in self.grids(**on_infeasible).items():
+            with self.subTest(grid=name):
                 self.assertEqual(run().feasible.tolist(), expected[name])
 
     def test_raise_names_the_infeasible_fits(self):
-        """The default raises one error for the batch, showing the feasibility mask."""
+        """'raise' raises one error for the grid, showing the feasibility mask."""
         masks = {
-            "fit_grid_datasets": r"\[ True False  True\]",
-            "fit_grid_hyperparams": r"\[False  True  True  True\]",
-            "fit_grid_datasets_hyperparams": r"\[\[ True  True  True  True\]\s+\[False  True  True  True\]\]",
+            "datasets": r"\[ True False  True\]",
+            "penalties": r"\[False  True  True  True\]",
+            "datasets x penalties": r"\[\[ True  True  True  True\]\s+\[False  True  True  True\]\]",
         }
-        for name, run in self.grids("raise").items():
-            with self.subTest(function=name):
+        for name, run in self.grids(on_infeasible="raise").items():
+            with self.subTest(grid=name):
                 with self.assertRaisesRegex(
                     checkify.JaxRuntimeError, "feasible = " + masks[name]
                 ):
@@ -210,38 +179,37 @@ class OnInfeasibleTest(parameterized.TestCase):
     def test_raise_is_a_value_error(self):
         """checkify.JaxRuntimeError is a ValueError, as before."""
         with self.assertRaises(ValueError):
-            self.grids("raise")["fit_grid_datasets"]()
+            self.grids(on_infeasible="raise")["datasets"]()
 
     def test_feasible_batches_still_return(self):
-        """With every fit feasible, the default returns, all marked feasible."""
+        """With every fit feasible, 'raise' returns, all marked feasible."""
         x = jnp.stack([GridFeasibilityTest.GOOD] * 2)
-        result = fit_grid_datasets(x, self.Y[:2], self.OLS, precomputed_quantiles=True)
+        result = fit_grid(x, self.Y[:2], self.OLS, on_infeasible="raise")
         self.assertEqual(result.feasible.tolist(), [True, True])
 
     def test_flag_keeps_the_fits(self):
-        """Flagged fits are the coefficients and KS distances of the masked grid."""
-        flagged = fit_grid_datasets(
-            self.X, self.Y, self.OLS, precomputed_quantiles=True, on_infeasible="flag"
-        )
-        masked = fit_grid_datasets_num_terms(
-            self.X, self.Y, self.OLS, [9], precomputed_quantiles=True
-        )
+        """A flagged infeasible fit is still the least-squares fit."""
+        flagged = fit_grid(self.X, self.Y, self.OLS)
+        design = np.asarray(MetalogBase._get_target(DEFAULT_Y, 9))
+        expected = np.linalg.lstsq(design, np.asarray(GridFeasibilityTest.BAD))[0]
+        self.assertFalse(bool(flagged.feasible[1]))
         np.testing.assert_allclose(
-            flagged.metalog.a, masked.metalog.a[:, 0], rtol=1e-8, atol=1e-10
+            flagged.metalog.a[1], expected, rtol=1e-8, atol=1e-10
         )
-        np.testing.assert_allclose(flagged.ks_dist, masked.ks_dist[:, 0])
 
     def test_feasible_method_fits_are_feasible(self):
         """MetalogFitMethod.Feasible fits of the same batch are all valid."""
         feasible = params(MetalogFitMethod.Feasible, 9)
-        result = fit_grid_datasets(self.X, self.Y, feasible, precomputed_quantiles=True)
-        self.assertEqual(result.feasible.tolist(), [True, True, True])
+        result = fit_grid(
+            self.X, self.Y, feasible, num_terms=[5, 9], on_infeasible="raise"
+        )
+        self.assertEqual(result.feasible.tolist(), [[True, True]] * 3)
 
     @parameterized.parameters("warn", None, True)
     def test_invalid_option_raises(self, on_infeasible):
         """on_infeasible must be 'raise' or 'flag', checked before fitting."""
-        for name, run in self.grids(on_infeasible).items():
-            with self.subTest(function=name):
+        for name, run in self.grids(on_infeasible=on_infeasible).items():
+            with self.subTest(grid=name):
                 with self.assertRaisesRegex(
                     ValueError, "on_infeasible must be 'raise' or 'flag'"
                 ):
@@ -252,15 +220,11 @@ class FeasibleSelectionTest(absltest.TestCase):
     """find_best_config and extract_best_from_grid skip infeasible fits."""
 
     def setUp(self):
-        """Fit the issue's grid and flag fit_grid_datasets on the same batch."""
+        """Fit the issue's grid, and the same batch's 9-term fits."""
         super().setUp()
         g = GridFeasibilityTest
-        self.grid = fit_grid_datasets_num_terms(
-            g.X, g.Y, g.OLS, list(g.TERMS), precomputed_quantiles=True
-        )
-        self.flagged = fit_grid_datasets(
-            g.X, g.Y, g.OLS, precomputed_quantiles=True, on_infeasible="flag"
-        )
+        self.grid = fit_grid(g.X, g.Y, g.OLS, num_terms=list(g.TERMS))
+        self.flagged = fit_grid(g.X, g.Y, g.OLS)
 
     def test_extract_best_skips_the_infeasible_fit(self):
         """Dataset 1's best is its 5-term fit, though the 9-term fit has a lower KS."""
