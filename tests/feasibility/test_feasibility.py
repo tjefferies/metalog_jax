@@ -607,15 +607,18 @@ class TestSolveBatch:
     BATCH = solve_batch(ENGINE, Y, X, shared=True)
 
     def assert_close(self, actual, expected):
-        """Each fit agrees to 1e-8 of its largest coefficient.
+        """Each fit agrees to 1e-7 of its largest coefficient.
 
-        The interior-point projection stops within its tolerance of the optimum, so
-        a different batch can change the last digits.
+        The exchange method's interior-point projection amplifies rounding about
+        ten-million-fold: perturbing these quantiles by 1e-15 moves the coefficients
+        by up to 9e-9 of each fit's largest. A different batch, compilation or CPU
+        rounds differently, so the fits agree to that precision, not bit for bit.
+        Iteration counts and certificates don't change, and are compared exactly.
         """
         actual, expected = np.asarray(actual), np.asarray(expected)
         scale = np.max(np.abs(expected), axis=-1)
         error = np.max(np.abs(actual - expected), axis=-1) / scale
-        assert error.max() < 1e-8, error.max()
+        assert error.max() < 1e-7, error.max()
 
     def test_batch_mixes_triaged_and_solved_fits(self):
         """Some OLS fits are feasible, and some fits need more than one round."""
@@ -643,12 +646,13 @@ class TestSolveBatch:
         np.testing.assert_array_equal(result.iterations, self.BATCH.iterations)
 
     def test_jit_runs_one_round(self):
-        """Under jit there's no compaction, so the fits are vmap's exactly."""
+        """Under jit there's no compaction: one round gives vmap's fits."""
         result = jax.jit(lambda x: solve_batch(self.ENGINE, self.Y, x, shared=True))(
             self.X
         )
-        np.testing.assert_array_equal(result.a_star, self.REFERENCE.a_star)
+        self.assert_close(result.a_star, self.REFERENCE.a_star)
         np.testing.assert_array_equal(result.iterations, self.REFERENCE.iterations)
+        assert bool(jnp.all(result.feasible))
 
     def test_round_sizes(self):
         """Padding wastes under a quarter of a round, with four sizes per octave."""

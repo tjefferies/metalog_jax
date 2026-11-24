@@ -713,7 +713,10 @@ def solve_batch(
       fits that have converged drop out between rounds, so the rest run in a
       smaller batch.
 
-    The fits are those of :func:`best_feasible_fit`, to rounding. Under ``jax.jit``
+    The fits are those of :func:`best_feasible_fit`, with the same iteration counts
+    and certificates. Their coefficients agree to the solver's precision, not bit for
+    bit: the interior-point projection amplifies rounding, so a different batch,
+    compilation or CPU can move them by about 1e-8 of the largest. Under ``jax.jit``
     the batch can't be compacted, so every fit runs in one round, as with
     ``jax.vmap(best_feasible_fit)``.
 
