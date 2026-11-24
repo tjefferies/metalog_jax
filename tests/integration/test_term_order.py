@@ -1,4 +1,4 @@
-"""Integration tests for the Metalog 2.0 term order (issue #58).
+"""Integration tests for the Metalog 2.0 term order.
 
 Each test checks a model in ``TermOrder.METALOG_2`` against an independent reference:
 a NumPy basis written from the paper's list of terms, the feasibility module's own
@@ -133,7 +133,7 @@ def unchecked_quantile(m: Metalog, y: jnp.ndarray) -> jnp.ndarray:
 
 
 class DefaultTermOrderTest(absltest.TestCase):
-    """The Metalog 2.0 order is the default everywhere (#58)."""
+    """The Metalog 2.0 order is the default everywhere."""
 
     def test_the_default_is_metalog_2(self):
         """DEFAULT_TERM_ORDER is METALOG_2, and MetalogParameters uses it."""
@@ -180,7 +180,7 @@ class DefaultTermOrderTest(absltest.TestCase):
 
 
 class TermBasisTest(parameterized.TestCase):
-    """term_basis gives each order's terms, as the papers list them (#58)."""
+    """term_basis gives each order's terms, as the papers list them."""
 
     # (power of x, has the logit) for terms 1 to 12
     KEELIN_2016_TERMS = (
@@ -212,7 +212,7 @@ class TermBasisTest(parameterized.TestCase):
 
 
 class Metalog2EvaluationTest(parameterized.TestCase):
-    """A Metalog 2.0 model's basis, quantile function and density are right (#58)."""
+    """A Metalog 2.0 model's basis, quantile function and density are right."""
 
     def test_design_matrix_matches_the_papers_basis(self):
         """_get_target builds each order's basis, as the papers list it."""
@@ -283,7 +283,7 @@ class Metalog2EvaluationTest(parameterized.TestCase):
 
 
 class TermOrderConversionTest(parameterized.TestCase):
-    """with_term_order rewrites a model in the other order (#58)."""
+    """with_term_order rewrites a model in the other order."""
 
     @parameterized.product(
         boundedness=tuple(MetalogBoundedness), num_terms=(5, 6, 8, 9, 10, 12)
@@ -371,7 +371,7 @@ class TermOrderConversionTest(parameterized.TestCase):
 
 
 class ConvertTermOrderTest(absltest.TestCase):
-    """convert_term_order reorders raw coefficient vectors (#58)."""
+    """convert_term_order reorders raw coefficient vectors."""
 
     def test_matches_with_term_order(self):
         """A raw vector converts as the model holding it does."""
@@ -416,7 +416,7 @@ class ConvertTermOrderTest(absltest.TestCase):
 
 
 class SymmetricPercentilesTest(absltest.TestCase):
-    """k symmetric percentiles fit with k terms in the 2.0 order (#58).
+    """k symmetric percentiles fit with k terms in the 2.0 order.
 
     Baucells et al. (2025), Proposition 2: for probabilities symmetric about 0.5,
     the Metalog 2.0 basis matrix has full rank for every k <= n, and the 2016 order's
@@ -476,7 +476,7 @@ class SymmetricPercentilesTest(absltest.TestCase):
 
 
 class Metalog2MomentsTest(absltest.TestCase):
-    """Exact moments and the mode read the coefficients in the model's order (#58)."""
+    """Exact moments and the mode read the coefficients in the model's order."""
 
     def test_moments_match_quadrature(self):
         """At 7 terms, where no 2016 model is the same, moments match quadrature."""
@@ -521,7 +521,7 @@ class Metalog2MomentsTest(absltest.TestCase):
 
 
 class TermOrderSerializationTest(absltest.TestCase):
-    """term_order saves and loads, and 2016 JSON doesn't change (#58)."""
+    """term_order saves and loads, and 2016 JSON doesn't change."""
 
     def test_metalog2_round_trip(self):
         """A 2.0 model saves its order and loads back equal."""
@@ -585,7 +585,7 @@ class TermOrderSerializationTest(absltest.TestCase):
 
 
 class TermOrderDisplayTest(absltest.TestCase):
-    """Printed terms follow the model's order (#58)."""
+    """Printed terms follow the model's order."""
 
     A = jnp.arange(1.0, 9.0)
 
@@ -612,7 +612,7 @@ class TermOrderDisplayTest(absltest.TestCase):
 
 
 class TermOrderGridTest(absltest.TestCase):
-    """Grids fit, check and extract models in the parameters' order (#58)."""
+    """Grids fit, check and extract models in the parameters' order."""
 
     # Gamma(2) quantiles at DEFAULT_Y: the 7-term 2.0 OLS fit is feasible, and the
     # same coefficients read in the 2016 order are not
@@ -674,7 +674,7 @@ class TermOrderGridTest(absltest.TestCase):
 
 
 class TermOrderTransformsTest(absltest.TestCase):
-    """2.0 models pass through jit and vmap (#58)."""
+    """2.0 models pass through jit and vmap."""
 
     def test_jit_matches_eager(self):
         """A jitted ppf gives the eager values, in both orders."""

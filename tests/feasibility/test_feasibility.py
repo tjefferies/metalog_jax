@@ -35,6 +35,7 @@ from metalog_jax.feasibility import (
     raw_moment,
     summary_stats,
 )
+from metalog_jax.feasibility.a_star import _round_size, solve_batch
 from metalog_jax.metalog import THETA_3, Metalog, fit
 from metalog_jax.utils import DEFAULT_Y, DEFAULT_Y_FULL
 
@@ -557,7 +558,7 @@ class TestMetalogMomentProperties:
         ],
     )
     def test_bounded_moments_match_quadrature(self, boundedness, upper, method):
-        """Regression test for issue #49: bounded moments are integrals, not draws.
+        """Regression test: bounded moments are integrals, not draws.
 
         They averaged 20,000 draws from a 9,990-point table, which biased them
         (0.31% for a lognormal fit). The tails of these fits are light, s = 0.04
@@ -578,6 +579,88 @@ class TestMetalogMomentProperties:
             ),
         )
         self._assert_moments(m, self._by_quadrature(m))
+
+
+def _quantile_batch(n, num_samples=200):
+    """Quantiles at DEFAULT_Y of lognormal samples: 9-term fits need 0 to 7 iterations."""
+    return jnp.asarray(
+        np.stack(
+            [
+                np.quantile(
+                    np.random.default_rng(j).lognormal(1, 0.9, num_samples),
+                    np.asarray(DEFAULT_Y),
+                )
+                for j in range(n)
+            ]
+        )
+    )
+
+
+class TestSolveBatch:
+    """solve_batch gives vmap(best_feasible_fit)'s fits, after triage and in rounds."""
+
+    K = 9
+    ENGINE = get_engine(K)
+    X = _quantile_batch(32)
+    Y = design_matrix(ENGINE, DEFAULT_Y)
+    REFERENCE = jax.vmap(lambda x: best_feasible_fit(x, DEFAULT_Y, num_terms=9))(X)
+    BATCH = solve_batch(ENGINE, Y, X, shared=True)
+
+    def assert_close(self, actual, expected):
+        """Each fit agrees to 1e-7 of its largest coefficient.
+
+        The exchange method's interior-point projection amplifies rounding about
+        ten-million-fold: perturbing these quantiles by 1e-15 moves the coefficients
+        by up to 9e-9 of each fit's largest. A different batch, compilation or CPU
+        rounds differently, so the fits agree to that precision, not bit for bit.
+        Iteration counts and certificates don't change, and are compared exactly.
+        """
+        actual, expected = np.asarray(actual), np.asarray(expected)
+        scale = np.max(np.abs(expected), axis=-1)
+        error = np.max(np.abs(actual - expected), axis=-1) / scale
+        assert error.max() < 1e-7, error.max()
+
+    def test_batch_mixes_triaged_and_solved_fits(self):
+        """Some OLS fits are feasible, and some fits need more than one round."""
+        iterations = np.asarray(self.REFERENCE.iterations)
+        assert (iterations == 0).any() and (iterations > 2).any()
+
+    def test_matches_best_feasible_fit(self):
+        """Coefficients, iteration counts and certificates match the one-by-one fits."""
+        self.assert_close(self.BATCH.a_star, self.REFERENCE.a_star)
+        np.testing.assert_array_equal(self.BATCH.iterations, self.REFERENCE.iterations)
+        assert bool(jnp.all(self.BATCH.feasible)) and bool(
+            jnp.all(self.REFERENCE.feasible)
+        )
+
+    def test_triaged_fits_are_their_ols_fits(self):
+        """A fit that needs no iteration is its OLS fit."""
+        triaged = np.asarray(self.REFERENCE.iterations) == 0
+        self.assert_close(self.BATCH.a_star[triaged], self.REFERENCE.a_ols[triaged])
+
+    def test_per_dataset_design_matches_shared(self):
+        """One design matrix per dataset gives the shared design's fits."""
+        per_dataset = jnp.broadcast_to(self.Y, (self.X.shape[0], *self.Y.shape))
+        result = solve_batch(self.ENGINE, per_dataset, self.X, shared=False)
+        self.assert_close(result.a_star, self.BATCH.a_star)
+        np.testing.assert_array_equal(result.iterations, self.BATCH.iterations)
+
+    def test_jit_runs_one_round(self):
+        """Under jit there's no compaction: one round gives vmap's fits."""
+        result = jax.jit(lambda x: solve_batch(self.ENGINE, self.Y, x, shared=True))(
+            self.X
+        )
+        self.assert_close(result.a_star, self.REFERENCE.a_star)
+        np.testing.assert_array_equal(result.iterations, self.REFERENCE.iterations)
+        assert bool(jnp.all(result.feasible))
+
+    def test_round_sizes(self):
+        """Padding wastes under a quarter of a round, with four sizes per octave."""
+        sizes = [_round_size(n) for n in range(1, 4097)]
+        for n, size in enumerate(sizes, start=1):
+            assert n <= size < n + max(1, n / 4)
+        for octave in range(3, 12):
+            assert len(set(sizes[2 ** (octave - 1) : 2**octave])) <= 4
 
 
 def test_standalone_import_uses_float64():

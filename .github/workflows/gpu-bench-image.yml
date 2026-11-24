@@ -1,0 +1,80 @@
+# Builds the GPU benchmark's image (benchmarks/gpu/Dockerfile) and pushes it to
+# GHCR as ghcr.io/<owner>/<repo>/gpu-bench:<version>-<short sha>, with a provenance
+# attestation that ties its digest to this commit and run. Started by hand; benchmark
+# runs pin the digest in the job summary. Make the package public once, in its
+# settings, so that anyone (and Runpod) can pull it without credentials.
+name: GPU benchmark image
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/gpu-bench
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the version and the lock's digest
+        id: meta
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          {
+            echo "version=$version"
+            echo "tag=$version-${GITHUB_SHA::7}"
+            echo "lock=$(sha256sum uv.lock | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: benchmarks/gpu/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            VERSION=${{ steps.meta.outputs.version }}
+            UV_LOCK_SHA256=${{ steps.meta.outputs.lock }}
+          provenance: false
+
+      - name: Attest the image's provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          {
+            echo "### GPU benchmark image"
+            echo
+            echo "- Tag: \`$IMAGE:$TAG\`"
+            echo "- Run with: \`$IMAGE@$DIGEST\`"
+            echo "- Verify: \`gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"

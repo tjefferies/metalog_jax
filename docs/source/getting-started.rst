@@ -501,9 +501,11 @@ raised for an infeasible fit by default; pass ``on_infeasible="raise"`` to keep 
 Fitting Many Datasets with Feasible
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``fit_grid`` fits a whole batch with ``MetalogFitMethod.Feasible`` in one vmapped
-call. The feasible solver needs the number of terms fixed when it compiles, so a grid
-over ``num_terms`` fits each term count in its own call, which compiles once:
+``fit_grid`` fits a whole batch with ``MetalogFitMethod.Feasible`` in one call.
+Datasets whose OLS fit is already valid keep it, and the rest run the feasible solver
+in rounds, so each fit costs about its own iterations rather than the slowest fit's;
+``GridResult.iterations`` counts them. The solver needs the number of terms fixed when
+it compiles, so a grid over ``num_terms`` fits each term count in its own call:
 
 .. code-block:: python
 
@@ -522,7 +524,7 @@ over ``num_terms`` fits each term count in its own call, which compiles once:
    # Fixed number of terms: one vmapped call over all datasets
    result = fit_grid(batched_x, batched_y, params)  # a: (n_datasets, 10)
 
-   # Different numbers of terms: one call per term count, each compiled once
+   # Different numbers of terms: one call per term count
    num_terms_list = [4, 6, 8, 10, 12]
    grid = fit_grid(batched_x, batched_y, params, num_terms=num_terms_list)
    # ks_dist: (n_datasets, 5); a: (n_datasets, 5, 12), zero-padded to 12 terms

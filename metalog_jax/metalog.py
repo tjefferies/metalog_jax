@@ -1411,6 +1411,10 @@ class GridResult:
             distance between two distributions, and ``find_best_config`` and
             ``extract_best_from_grid`` skip it. fit_grid fills this in;
             it's None for a GridResult built without it.
+        iterations: For a MetalogFitMethod.Feasible grid, each fit's number of
+            exchange iterations (QP solves), with the same shape as ``ks_dist``: 0
+            when the OLS fit was already feasible, and so needed none. It shows
+            what a grid's fits cost. None for OLS and Lasso grids.
 
     Note:
         - This class is immutable due to the `struct.dataclass` decorator
@@ -1441,3 +1445,4 @@ class GridResult:
     metalog: Metalog | SPTMetalog
     ks_dist: chex.Scalar
     feasible: chex.Array | None = None
+    iterations: chex.Array | None = None

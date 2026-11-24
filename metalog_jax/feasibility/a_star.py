@@ -41,6 +41,7 @@ from functools import partial
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import struct
 from jax.experimental import checkify
 
@@ -64,6 +65,21 @@ NOT_CERTIFIED_MESSAGE = (
 )
 UCORNER = 1000.0  # sigmoid(+-1000) is exactly 1/0 in float64, so G there is s(1)/s(0)
 _GOLD = 0.6180339887498949
+
+# Defaults of the exchange method, shared by best_feasible_fit, fit_feasible and
+# solve_batch (see best_feasible_fit for each one's meaning)
+_EPSILON = 1e-6
+_TOL = 0.0
+_MAX_CUTS = 64
+_N_NEW = 8
+_MAX_ITER = 60
+_N_GRID = 2049
+
+# A batched solve runs the exchange loop in rounds of this many passes, and drops the
+# fits that have converged between rounds, so a fit costs about its own passes rather
+# than the slowest fit's. Most fits that need cuts converge in one iteration, which
+# takes two passes: one to cut and one to confirm.
+_ROUND_PASSES = 2
 
 
 @struct.dataclass
@@ -269,6 +285,117 @@ def _violations(engine, a, grid, n_new, tol):
     return jnp.where(use_grid, u_grid, u_fb), jnp.where(use_grid, m_grid, m_fb)
 
 
+def _normalize(x: chex.Array) -> tuple[chex.Array, chex.Array, chex.Array]:
+    """Center x on its median and scale it to unit maximum deviation.
+
+    G is linear in a and blind to the intercept, so the exchange method works on the
+    normalized quantiles and rescales its result.
+
+    Args:
+        x: Quantile values, shape (n,).
+
+    Returns:
+        tuple: The normalized quantiles, the median and the scale.
+    """
+    x_mid = jnp.median(x)
+    x_scale = jnp.maximum(jnp.max(jnp.abs(x - x_mid)), 1e-300)
+    return (x - x_mid) / x_scale, x_mid, x_scale
+
+
+def _logit_grid(n_grid: int) -> chex.Array:
+    """The logit grid that locates violations, with both corners (static size)."""
+    return jnp.concatenate(
+        [jnp.array([-UCORNER]), jnp.linspace(-36.0, 36.0, n_grid), jnp.array([UCORNER])]
+    )
+
+
+def _initial_state(R: chex.Array, z0: chex.Array, max_cuts: int) -> tuple:
+    """The exchange loop's state before its first pass: the OLS fit and no cuts.
+
+    Args:
+        R: Upper triangular factor of the basis matrix, shape (k, k).
+        z0: Whitened normalized quantiles, ``Q.T @ xn``, shape (k,).
+        max_cuts: Capacity of the cut buffer.
+
+    Returns:
+        tuple: ``(a, U, M, it, done)``: the coefficients, the cut points (logit)
+        and their mask, the number of passes so far, and whether no violation
+        remains.
+    """
+    return (
+        jax.scipy.linalg.solve_triangular(R, z0, lower=False),
+        jnp.zeros(max_cuts),
+        jnp.zeros(max_cuts, bool),
+        jnp.array(0),
+        jnp.array(False),
+    )
+
+
+def _exchange(
+    engine: Engine,
+    R: chex.Array,
+    z0: chex.Array,
+    state: tuple,
+    epsilon: float,
+    tol: float,
+    max_cuts: int,
+    n_new: int,
+    n_grid: int,
+    stop: chex.Numeric,
+) -> tuple:
+    """Run exchange passes until no violation remains or ``stop`` passes are done.
+
+    Each pass adds cuts where ``G(y) < 0`` and projects the OLS fit onto them. The
+    state can be resumed with a larger ``stop``, which batched fits use to run in
+    rounds.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        R: Upper triangular factor of the basis matrix, shape (k, k).
+        z0: Whitened normalized quantiles, shape (k,).
+        state: ``(a, U, M, it, done)``, as :func:`_initial_state` returns it.
+        epsilon: Margin in ``G(y) >= epsilon``, relative to ``max|x - median(x)|``.
+        tol: Extra slack for the violation sign test.
+        max_cuts: Capacity of the cut buffer (static).
+        n_new: Minimum number of grid minima refined per pass (static).
+        n_grid: Number of logit grid points used to locate violations (static).
+        stop: Total number of passes at which to stop.
+
+    Returns:
+        tuple: The state after the passes.
+    """
+    grid = _logit_grid(n_grid)
+
+    def to_a(z):
+        return jax.scipy.linalg.solve_triangular(R, z, lower=False)
+
+    def cond(st):
+        return (~st[4]) & (st[3] < stop)
+
+    def body(st):
+        a, U, M, it, _ = st
+        un, mn = _violations(engine, a, grid, n_new, tol)
+        pos = jnp.sum(M) + jnp.cumsum(mn) - 1
+        slot = jnp.where(mn & (pos < max_cuts), pos, max_cuts)
+        U = U.at[slot].set(un, mode="drop")
+        M = M.at[slot].set(True, mode="drop")
+        A = jax.scipy.linalg.solve_triangular(
+            R, _cut_rows(engine, U).T, lower=False, trans="T"
+        ).T
+        z, _ = project_onto_polyhedron(z0, A, jnp.full(max_cuts, epsilon), M)
+        return jnp.where(jnp.any(mn), to_a(z), a), U, M, it + 1, ~jnp.any(mn)
+
+    return jax.lax.while_loop(cond, body, state)
+
+
+def _unnormalize(
+    engine: Engine, a: chex.Array, x_mid: chex.Numeric, x_scale: chex.Numeric
+) -> chex.Array:
+    """Map coefficients fitted to normalized quantiles back to the units of x."""
+    shift = jnp.zeros(engine.num_terms).at[engine.mu_idx[0]].set(x_mid)
+    return a * x_scale + shift
+
+
 @partial(jax.jit, static_argnames=("engine", "max_cuts", "n_new", "max_iter", "n_grid"))
 def _solve(
     engine: Engine,
@@ -300,47 +427,15 @@ def _solve(
     Returns:
         FeasibleFitResult, with coefficients in the units of ``x``.
     """
-    x_mid = jnp.median(x)
-    x_scale = jnp.maximum(jnp.max(jnp.abs(x - x_mid)), 1e-300)
-    xn = (x - x_mid) / x_scale  # G is linear in a and blind to the intercept
+    xn, x_mid, x_scale = _normalize(x)
     Q, R = jnp.linalg.qr(Y)
     z0 = Q.T @ xn
-
-    def to_a(z):
-        return jax.scipy.linalg.solve_triangular(R, z, lower=False)
-
-    grid = jnp.concatenate(
-        [jnp.array([-UCORNER]), jnp.linspace(-36.0, 36.0, n_grid), jnp.array([UCORNER])]
+    init = _initial_state(R, z0, max_cuts)
+    a, U, M, it, done = _exchange(
+        engine, R, z0, init, epsilon, tol, max_cuts, n_new, n_grid, max_iter
     )
-    a_ols = to_a(z0)
-
-    def cond(st):
-        return (~st[4]) & (st[3] < max_iter)
-
-    def body(st):
-        a, U, M, it, _ = st
-        un, mn = _violations(engine, a, grid, n_new, tol)
-        pos = jnp.sum(M) + jnp.cumsum(mn) - 1
-        slot = jnp.where(mn & (pos < max_cuts), pos, max_cuts)
-        U = U.at[slot].set(un, mode="drop")
-        M = M.at[slot].set(True, mode="drop")
-        A = jax.scipy.linalg.solve_triangular(
-            R, _cut_rows(engine, U).T, lower=False, trans="T"
-        ).T
-        z, _ = project_onto_polyhedron(z0, A, jnp.full(max_cuts, epsilon), M)
-        return jnp.where(jnp.any(mn), to_a(z), a), U, M, it + 1, ~jnp.any(mn)
-
-    init = (
-        a_ols,
-        jnp.zeros(max_cuts),
-        jnp.zeros(max_cuts, bool),
-        jnp.array(0),
-        jnp.array(False),
-    )
-    a, U, M, it, done = jax.lax.while_loop(cond, body, init)
-
-    shift = jnp.zeros(engine.num_terms).at[engine.mu_idx[0]].set(x_mid)
-    a_star, a_ls = a * x_scale + shift, a_ols * x_scale + shift
+    a_star = _unnormalize(engine, a, x_mid, x_scale)
+    a_ls = _unnormalize(engine, init[0], x_mid, x_scale)
     rss = lambda c: jnp.sum((x - Y @ c) ** 2)
     return FeasibleFitResult(
         a_star=a_star,
@@ -360,12 +455,12 @@ def best_feasible_fit(
     y: chex.Array,
     num_terms: int,
     order: TermOrder = DEFAULT_TERM_ORDER,
-    epsilon: float = 1e-6,
-    tol: float = 0.0,
-    max_cuts: int = 64,
-    n_new: int = 8,
-    max_iter: int = 60,
-    n_grid: int = 2049,
+    epsilon: float = _EPSILON,
+    tol: float = _TOL,
+    max_cuts: int = _MAX_CUTS,
+    n_new: int = _N_NEW,
+    max_iter: int = _MAX_ITER,
+    n_grid: int = _N_GRID,
 ) -> FeasibleFitResult:
     """Fit the best feasible k-term metalog to quantile/probability pairs.
 
@@ -451,12 +546,251 @@ def fit_feasible(
         engine,
         jnp.asarray(X, jnp.float64),
         jnp.asarray(y, jnp.float64),
-        1e-6,
-        0.0,
-        64,
-        8,
-        60,
-        2049,
+        _EPSILON,
+        _TOL,
+        _MAX_CUTS,
+        _N_NEW,
+        _MAX_ITER,
+        _N_GRID,
     )
     checkify.check(res.feasible, NOT_CERTIFIED_MESSAGE)
     return FeasibleModel(weights=res.a_star)
+
+
+@struct.dataclass
+class BatchFitResult:
+    """Result of :func:`solve_batch`, one entry per dataset.
+
+    Attributes:
+        a_star: Best feasible coefficients, shape (n_datasets, k).
+        feasible: Each fit's certificate from :func:`check_feasibility`.
+        iterations: Each fit's number of QP solves, 0 when its OLS fit is feasible.
+    """
+
+    a_star: chex.Array
+    feasible: chex.Array
+    iterations: chex.Array
+
+
+def _round_size(n: int) -> int:
+    """Round a batch size up to one of four sizes per power of two.
+
+    Rounds compact the unconverged fits into a smaller batch, and each new size
+    compiles once. Four sizes per power of two waste at most a quarter of a round on
+    padding while keeping the number of compilations small.
+
+    Args:
+        n: The number of fits, at least 1.
+
+    Returns:
+        int: The padded size, at least n.
+    """
+    quarter = max(1 << max((n - 1).bit_length() - 3, 0), 1)
+    return -(-n // quarter) * quarter
+
+
+def _pad_index(index: np.ndarray, size: int) -> np.ndarray:
+    """Pad an index array to ``size`` by repeating its last entry."""
+    return np.concatenate([index, np.full(size - index.size, index[-1])])
+
+
+@partial(jax.jit, static_argnames=("shared", "max_cuts"))
+def _start_batch(Y: chex.Array, X: chex.Array, shared: bool, max_cuts: int) -> tuple:
+    """Whiten each dataset's least-squares problem and start its exchange loop.
+
+    Args:
+        Y: Basis matrix, shape (m, k) if ``shared``, else (n_datasets, m, k).
+        X: Quantiles, shape (n_datasets, m).
+        shared: Whether every dataset has the same basis matrix (static).
+        max_cuts: Capacity of the cut buffer (static).
+
+    Returns:
+        tuple: ``(R, z0, x_mid, x_scale, state)``, with R of shape (k, k) if
+        ``shared``, and a batched exchange state.
+    """
+    xn, x_mid, x_scale = jax.vmap(_normalize)(X)
+    if shared:
+        Q, R = jnp.linalg.qr(Y)
+        z0 = xn @ Q
+        state = jax.vmap(lambda z: _initial_state(R, z, max_cuts))(z0)
+    else:
+        Q, R = jax.vmap(jnp.linalg.qr)(Y)
+        z0 = jnp.einsum("nmk,nm->nk", Q, xn)
+        state = jax.vmap(lambda r, z: _initial_state(r, z, max_cuts))(R, z0)
+    return R, z0, x_mid, x_scale, state
+
+
+@partial(jax.jit, static_argnums=0)
+def _certify_rows(engine: Engine, a: chex.Array, tol: float) -> chex.Array:
+    """Return check_feasibility(engine, row, tol).feasible for each row of a."""
+    return jax.vmap(lambda row: check_feasibility(engine, row, tol).feasible)(a)
+
+
+def _certify(
+    engine: Engine, a: chex.Array, index: np.ndarray, tol: float
+) -> chex.Array:
+    """Certify the rows of ``a`` at ``index``, in a batch padded to a round size."""
+    padded = _pad_index(index, _round_size(index.size))
+    return _certify_rows(engine, a[padded], tol)[: index.size]
+
+
+@partial(
+    jax.jit,
+    static_argnames=("engine", "shared", "max_cuts", "n_new", "n_grid", "max_iter"),
+)
+def _run_round(
+    engine: Engine,
+    R: chex.Array,
+    z0: chex.Array,
+    state: tuple,
+    passes: chex.Numeric,
+    epsilon: float,
+    tol: float,
+    shared: bool,
+    max_cuts: int,
+    n_new: int,
+    n_grid: int,
+    max_iter: int,
+) -> tuple:
+    """Run up to ``passes`` more exchange passes on each fit of a batch.
+
+    Args:
+        engine: Engine for the coefficient layout (static).
+        R: Upper triangular factors, shape (k, k) if ``shared``, else (n, k, k).
+        z0: Whitened normalized quantiles, shape (n, k).
+        state: Batched exchange state.
+        passes: The number of passes to run.
+        epsilon: Margin in ``G(y) >= epsilon``.
+        tol: Extra slack for the violation sign test.
+        shared: Whether R is shared by every fit (static).
+        max_cuts: Capacity of the cut buffer (static).
+        n_new: Minimum number of grid minima refined per pass (static).
+        n_grid: Number of logit grid points (static).
+        max_iter: Maximum number of passes in all (static).
+
+    Returns:
+        tuple: The batched state after the round.
+    """
+
+    def run(r, z, st):
+        stop = jnp.minimum(st[3] + passes, max_iter)
+        return _exchange(engine, r, z, st, epsilon, tol, max_cuts, n_new, n_grid, stop)
+
+    return jax.vmap(run, in_axes=(None if shared else 0, 0, 0))(R, z0, state)
+
+
+def _gather(tree, index: np.ndarray):
+    """Take the entries of every leaf of ``tree`` at ``index`` along axis 0."""
+    return jax.tree.map(lambda v: v[index], tree)
+
+
+def _scatter(tree, index: np.ndarray, update):
+    """Write the first ``index.size`` entries of ``update`` into ``tree`` at index."""
+    return jax.tree.map(lambda v, u: v.at[index].set(u[: index.size]), tree, update)
+
+
+def solve_batch(
+    engine: Engine,
+    Y: chex.Array,
+    X: chex.Array,
+    shared: bool,
+    epsilon: float = _EPSILON,
+    tol: float = _TOL,
+    max_cuts: int = _MAX_CUTS,
+    n_new: int = _N_NEW,
+    max_iter: int = _MAX_ITER,
+    n_grid: int = _N_GRID,
+) -> BatchFitResult:
+    """Best feasible fits of a batch of datasets, with triage and rounds.
+
+    Under ``jax.vmap``, the exchange loop of :func:`best_feasible_fit` runs every fit
+    until the slowest has converged, and every fit pays for that. This solves a batch
+    in two steps instead:
+
+    * **Triage:** every dataset's OLS fit is checked with :func:`check_feasibility`.
+      A feasible OLS fit is its own best feasible fit, and needs no exchange loop.
+    * **Rounds:** the other fits run the exchange loop a few passes at a time. The
+      fits that have converged drop out between rounds, so the rest run in a
+      smaller batch.
+
+    The fits are those of :func:`best_feasible_fit`, with the same iteration counts
+    and certificates. Their coefficients agree to the solver's precision, not bit for
+    bit: the interior-point projection amplifies rounding, so a different batch,
+    compilation or CPU can move them by about 1e-8 of the largest. Under ``jax.jit``
+    the batch can't be compacted, so every fit runs in one round, as with
+    ``jax.vmap(best_feasible_fit)``.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        Y: Basis matrix, shape (m, k) if ``shared``, else (n_datasets, m, k).
+        X: Quantiles (possibly transformed), shape (n_datasets, m).
+        shared: Whether every dataset has the same basis matrix, so that it's
+            factored once.
+        epsilon: Margin in ``G(y) >= epsilon``, as for best_feasible_fit.
+        tol: Extra slack for the sign tests, as for best_feasible_fit.
+        max_cuts: Capacity of the cut buffer, as for best_feasible_fit.
+        n_new: Minimum number of grid minima refined per pass, as for
+            best_feasible_fit.
+        max_iter: Maximum number of exchange passes, as for best_feasible_fit.
+        n_grid: Number of logit grid points, as for best_feasible_fit.
+
+    Returns:
+        BatchFitResult: Each dataset's coefficients, certificate and iterations.
+    """
+    X = jnp.asarray(X, jnp.float64)
+    R, z0, x_mid, x_scale, state = _start_batch(Y, X, shared, max_cuts)
+    options = dict(
+        epsilon=epsilon,
+        tol=tol,
+        shared=shared,
+        max_cuts=max_cuts,
+        n_new=n_new,
+        n_grid=n_grid,
+        max_iter=max_iter,
+    )
+    if isinstance(X, jax.core.Tracer):  # traced: no compaction, one round for all
+        state = _run_round(engine, R, z0, state, max_iter, **options)
+        a, _, _, it, done = state
+        feasible = _certify_rows(engine, a, tol)
+    else:
+        state, feasible = _triage_and_rounds(engine, R, z0, state, options)
+        a, _, _, it, done = state
+    iterations = jnp.where(done, it - 1, it)
+    a_star = jax.vmap(lambda c, m, s: _unnormalize(engine, c, m, s))(a, x_mid, x_scale)
+    return BatchFitResult(a_star=a_star, feasible=feasible, iterations=iterations)
+
+
+def _triage_and_rounds(
+    engine: Engine, R: chex.Array, z0: chex.Array, state: tuple, options: dict
+) -> tuple[tuple, chex.Array]:
+    """Mark the feasible OLS fits done, then solve the rest in shrinking rounds.
+
+    Args:
+        engine: Engine for the coefficient layout.
+        R: Upper triangular factors, shared or one per fit.
+        z0: Whitened normalized quantiles, shape (n, k).
+        state: Batched exchange state, starting at the OLS fits.
+        options: The keyword arguments of :func:`_run_round` after ``passes``.
+
+    Returns:
+        tuple: The final batched state, and each fit's certificate.
+    """
+    tol, shared, max_iter = options["tol"], options["shared"], options["max_iter"]
+    triaged = np.asarray(_certify(engine, state[0], np.arange(z0.shape[0]), tol))
+    # A triaged fit ends as the exchange loop would: one pass that found no violation
+    a, U, M, it, _ = state
+    state = (a, U, M, jnp.where(triaged, 1, it), jnp.asarray(triaged))
+    feasible = jnp.asarray(triaged)
+    active = solved = np.flatnonzero(~triaged)
+    while active.size:
+        index = _pad_index(active, _round_size(active.size))
+        r = R if shared else R[index]
+        update = _run_round(
+            engine, r, z0[index], _gather(state, index), _ROUND_PASSES, **options
+        )
+        state = _scatter(state, active, update)
+        it, done = np.asarray(state[3][active]), np.asarray(state[4][active])
+        active = active[~done & (it < max_iter)]
+    if solved.size:
+        feasible = feasible.at[solved].set(_certify(engine, state[0], solved, tol))
+    return state, feasible

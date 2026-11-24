@@ -1,6 +1,6 @@
 """Integration tests for Lasso metalog fits: exact solutions, intercept and grids.
 
-Regression tests for issue #51: fit_lasso ran momentum gradient descent with a fixed
+Regression tests for fit_lasso, which ran momentum gradient descent with a fixed
 step, so its default settings stopped far from the solution (2.21 from OLS at
 lam = 0 for a 5-term fit), larger steps diverged into a misleading density error,
 it never reported convergence, and it penalized the intercept a1. Each test checks

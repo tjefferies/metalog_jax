@@ -1,6 +1,6 @@
 """Unit tests for cdf, rvs, the moments and the mode of bounded metalogs.
 
-Regression tests for issue #49: these used a fixed table of 9,990 probabilities,
+Regression tests: these used a fixed table of 9,990 probabilities,
 0.0001 apart, so cdf was quantized and clamped, rvs draws were discrete and
 truncated, and bounded moments and modes were biased. Each test checks against a
 reference that doesn't use the code under test: the inverse relation with ppf,

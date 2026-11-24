@@ -128,7 +128,7 @@ class TransformTestBase(parameterized.TestCase):
 
 
 class JitTest(TransformTestBase):
-    """Regression tests for issue #25: jax.jit over models and parameters."""
+    """Regression tests: jax.jit over models and parameters."""
 
     @parameterized.named_parameters(*TransformTestBase.BOUNDEDNESS_CASES)
     def test_jit_over_probabilities_matches_eager(self, boundedness, lower, upper):
@@ -220,7 +220,7 @@ class JitTest(TransformTestBase):
 
 
 class VmapTest(TransformTestBase):
-    """Regression tests for issue #25: jax.vmap over stacked models and bounds."""
+    """Regression tests: jax.vmap over stacked models and bounds."""
 
     @parameterized.named_parameters(*TransformTestBase.BOUNDEDNESS_CASES)
     def test_vmap_over_stacked_models_matches_loop(self, boundedness, lower, upper):
@@ -280,7 +280,7 @@ class VmapTest(TransformTestBase):
 
 
 class RvsTest(TransformTestBase):
-    """Regression tests for issue #25: rvs under jax.jit and jax.vmap."""
+    """Regression tests: rvs under jax.jit and jax.vmap."""
 
     SIZE = 50
 
@@ -332,7 +332,7 @@ class RvsTest(TransformTestBase):
 
 
 class FromValuesTest(TransformTestBase):
-    """Regression tests for issue #25: MetalogInputData.from_values in transforms."""
+    """Regression tests: MetalogInputData.from_values in transforms."""
 
     def _batch(self):
         """Return three sample arrays of the same length."""
@@ -480,7 +480,7 @@ class StaticFieldsTest(TransformTestBase):
 
 
 class CompileOnceTest(TransformTestBase):
-    """Regression tests for issue #48: calling a method again doesn't recompile.
+    """Regression tests: calling a method again doesn't recompile.
 
     pdf, rvs and Lasso fits used to define their jitted functions on every call, so
     every call recompiled them. pdf took about 15 ms a call, and ppf, cdf and fit

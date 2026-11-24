@@ -282,7 +282,7 @@ class MetalogBase:
 
         Every method assumes ``a`` is an array (``jnp.result_type``, ``.shape``,
         ``.tolist()``, ``@``), so a plain sequence such as hand-copied coefficients
-        would otherwise fail deep inside JAX (issue #9). Only lists and tuples are
+        would otherwise fail deep inside JAX. Only lists and tuples are
         converted: pytree unflattening under ``jit``/``vmap``/``tree.map`` re-runs
         ``__init__`` with tracers, ``ShapeDtypeStruct`` or ``None`` as ``a``, and
         those must pass through untouched.

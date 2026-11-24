@@ -41,7 +41,7 @@ SEED: int = 0
 SIZE: int = 90_000
 # The acceptable KS distances were calibrated with a cdf that returned the nearest
 # of 9,990 probabilities 0.0001 apart, which moved each distance by up to half a step.
-# cdf is now exact (issue #49), so a distance can land up to 5e-5 above them.
+# cdf is now exact, so a distance can land up to 5e-5 above them.
 KS_ROUNDING_TOL = 5e-5
 
 METALOG_RV_PARAMS = MetalogRandomVariableParameters(
