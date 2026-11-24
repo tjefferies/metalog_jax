@@ -1,5 +1,5 @@
 # Copyright: Travis Jefferies 2026
-"""Tests for issue #41: str, repr, _repr_latex_ and print show the fitted equation."""
+"""Tests that str, repr, _repr_latex_ and print show the fitted equation."""
 
 import contextlib
 import importlib.util

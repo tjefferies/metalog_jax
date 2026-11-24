@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "description": "metalog_jax GPU benchmark: batch fitting and sampling, time-boxed to the pod's deadline",
+  "seed": 59,
+  "data": {
+    "samples_per_dataset": 200,
+    "probabilities": "DEFAULT_Y",
+    "boundedness": "STRICTLY_LOWER_BOUND",
+    "lower_bound": 0.0
+  },
+  "num_terms": 10,
+  "repetitions": 3,
+  "repetition_budget_s": 30,
+  "reserve_s": 60,
+  "phases": [
+    {
+      "name": "check",
+      "share": 0.03,
+      "min_s": 60
+    },
+    {
+      "name": "correctness",
+      "share": 0.05,
+      "min_s": 90,
+      "datasets": 1024,
+      "methods": ["ols", "feasible"]
+    },
+    {
+      "name": "batches",
+      "share": 0.40,
+      "methods": {"feasible": 0.7, "ols": 0.3},
+      "first": 1024,
+      "last": 16777216
+    },
+    {
+      "name": "chunked",
+      "share": 0.20,
+      "methods": {"feasible": 0.7, "ols": 0.3},
+      "seconds": 180,
+      "min_chunks": 2,
+      "knee_tolerance": 0.05
+    },
+    {
+      "name": "terms",
+      "share": 0.17,
+      "num_terms": [4, 6, 8, 10, 12],
+      "datasets": 32768
+    },
+    {
+      "name": "sampling",
+      "share": 0.15,
+      "kinds": {
+        "ppf_jit": [1000000, 10000000, 100000000, 1000000000],
+        "rvs_jax": [1000000, 10000000],
+        "rvs_hdr": [1000000, 10000000],
+        "cdf": [1000000, 10000000],
+        "pdf_cdf": [1000000, 10000000]
+      }
+    }
+  ]
+}

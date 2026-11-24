@@ -308,7 +308,7 @@ class FitSPTMetalogTest(parameterized.TestCase):
             fit_spt_metalog(array, params)
 
     def test_strictly_upper_bound_fit_returns_valid_coefficients(self):
-        """Test SPT fitting for strictly upper-bounded distributions (issue #23)."""
+        """Test SPT fitting for strictly upper-bounded distributions."""
         array = jnp.array(np.linspace(0.05, 9.95, 100))
         params = SPTMetalogParameters(
             alpha=0.1,
@@ -615,7 +615,7 @@ class FitSPTMetalogTest(parameterized.TestCase):
 
 
 class SPTMetalogPropositionsTest(parameterized.TestCase):
-    """Regression tests for issue #20: SPT fits against Keelin (2016), Props 1-4."""
+    """Regression tests: SPT fits against Keelin (2016), Props 1-4."""
 
     # Inside (LOWER_BOUND, UPPER_BOUND), feasible for every alpha in ALPHAS and every
     # supported boundedness type, and skewed so that a3 is nonzero
@@ -878,7 +878,7 @@ class SPTMetalogTransformTest(parameterized.TestCase):
             jax.vmap(lambda d: fit_spt_metalog(d, params).a)(batch)
 
     def test_checkified_jit_reports_an_invalid_dataset(self):
-        """A checkified jitted fit reports issue #20's infeasible lower-bound triplet."""
+        """A checkified jitted fit reports an infeasible lower-bound triplet."""
         params = self._params(MetalogBoundedness.STRICTLY_LOWER_BOUND, 0.0, 0.0)
         # Quantiles 1.0, 1.1 and 10.0, infeasible by Proposition 3
         data = jnp.array([0.5, 1.0, 1.02, 1.05, 1.08, 1.1, 2.0, 4.0, 6.0, 10.0, 12.0])
@@ -891,7 +891,7 @@ class SPTMetalogTransformTest(parameterized.TestCase):
 
 
 class SPTPrecomputedQuantilesTest(parameterized.TestCase):
-    """Tests for issue #24: fit_spt_metalog with precomputed_quantiles=True."""
+    """Tests of fit_spt_metalog with precomputed_quantiles=True."""
 
     # Assessed 10th, 50th and 90th percentiles inside (LOWER_BOUND, UPPER_BOUND),
     # feasible for every supported boundedness type
@@ -1071,7 +1071,7 @@ class GetFitFunctionTest(absltest.TestCase):
 
 
 class TwoTermFitTest(parameterized.TestCase):
-    """Regression tests for issue #47: a 2-term fit regresses on two basis functions.
+    """Regression tests: a 2-term fit regresses on two basis functions.
 
     The design matrix used to have three columns for any num_terms up to 3, so a
     2-term fit was a 3-term fit with its third coefficient dropped.

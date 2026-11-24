@@ -140,7 +140,7 @@ your branch ──PR──▶ development ──release PR──▶ main ──�
 - **Style:** test classes subclass `parameterized.TestCase` or `absltest.TestCase`. Use `@parameterized.named_parameters` for cases and `numpy.testing` for comparisons.
 - **Fixtures:** keep shared fixtures such as parameters and coefficients as class attributes, not module globals.
 - **Docstrings:** keep them to one concise line.
-- **Issue references:** refer to issue numbers in docstrings only, never in test or variable names, for example `"""Regression tests for issue #9: ..."""`.
+- **Issue references:** leave issue numbers out of code, docstrings, comments and documentation, and describe the behavior instead. Link issues from the pull request.
 - **Coverage of cases:** test all four boundedness types and every fit method the change affects. Explain any tolerance in a comment.
 - **Bug fixes:** add a test that fails on `development` and passes with the fix.
 
@@ -209,6 +209,8 @@ If you change fitting, feasibility, grid search or sampling performance, include
 ```bash
 uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
 ```
+
+`benchmarks/gpu/` is the larger benchmark: a time-boxed plan of batch fits and sampling, each measurement in its own process, with the setup recorded for every run. It runs on the CPU from a checkout (`BENCH_LOCAL=1 BENCH_BACKEND=cpu JAX_PLATFORMS=cpu uv run python -m benchmarks.gpu.run`), on your own GPU from its image, or on Runpod's A100, H100 and H200 GPUs through `benchmarks/gpu/launch.py`. Its [README](benchmarks/gpu/README.md) has the details.
 
 ### Dependencies and licensing
 

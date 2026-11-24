@@ -32,6 +32,7 @@ from metalog_jax.feasibility import (
 )
 from metalog_jax.grid_search import (
     MAX_TERMS,
+    _distinct_rows,
     extract_best_from_grid,
     extract_metalog,
     find_best_config,
@@ -1090,6 +1091,28 @@ class TestGridFeasibleMethod(absltest.TestCase):
         )
         np.testing.assert_array_equal(result.metalog.a[:, 0], result.metalog.a[:, 2])
 
+    def test_iterations_match_the_solver(self):
+        """Each fit's iterations are best_feasible_fit's, and selection keeps them."""
+        result = fit_grid(self.batched_x, self.batched_y, self.params, num_terms=[3, 5])
+        self.assertEqual(result.iterations.shape, (2, 2))
+        for i in range(2):
+            for j, k in enumerate((3, 5)):
+                expected = best_feasible_fit(
+                    self.batched_x[i], self.batched_y[i], num_terms=k
+                ).iterations
+                self.assertEqual(int(result.iterations[i, j]), int(expected))
+        best = extract_best_from_grid(result, 0)
+        self.assertIn(int(best.iterations), result.iterations[0].tolist())
+
+    def test_ols_grids_have_no_iterations(self):
+        """Only Feasible grids count exchange iterations."""
+        ols = self.params.replace(method=MetalogFitMethod.OLS)
+        result = fit_grid(self.batched_x, self.batched_y, ols)
+        self.assertIsNone(result.iterations)
+        # These OLS fits are infeasible; mark them valid so that one can be selected
+        valid = result.replace(feasible=jnp.ones_like(result.feasible))
+        self.assertIsNone(extract_best_from_grid(valid, 0).iterations)
+
     def test_l1_penalties_raise(self):
         """Feasible takes no penalty, so an L1 axis raises TypeError."""
         with self.assertRaisesRegex(TypeError, "takes no penalty"):
@@ -1191,7 +1214,7 @@ def _assert_coefficients_close(actual, expected):
 
 
 class TestFitGridLassoParams(absltest.TestCase):
-    """fit_grid fits with lasso_params (#50)."""
+    """fit_grid fits with lasso_params."""
 
     DATA = MetalogInputData.from_values(
         jnp.asarray(np.random.default_rng(0).gamma(2.0, size=300)), DEFAULT_Y, False
@@ -1289,7 +1312,7 @@ class TestFitGridLassoParams(absltest.TestCase):
 
 
 class TestGridFitMethodLabel(absltest.TestCase):
-    """Grids label each fit with the method that made it (#50)."""
+    """Grids label each fit with the method that made it."""
 
     DATA = MetalogInputData.from_values(
         jnp.asarray(np.random.default_rng(0).gamma(2.0, size=300)), DEFAULT_Y, False
@@ -1334,7 +1357,7 @@ class TestGridFitMethodLabel(absltest.TestCase):
 
 
 class TestGridPrecomputedQuantiles(absltest.TestCase):
-    """precomputed_quantiles=False fits raw samples by their quantiles (#50)."""
+    """precomputed_quantiles=False fits raw samples by their quantiles."""
 
     # 400 samples per dataset, quantiles at the 105 DEFAULT_Y levels
     SAMPLES = jnp.asarray(np.random.default_rng(1).gamma(2.0, size=(2, 400)))
@@ -1398,7 +1421,7 @@ class TestGridPrecomputedQuantiles(absltest.TestCase):
 
 
 class TestKsDistanceDtype(absltest.TestCase):
-    """ks_distance returns the inputs' floating-point type (#50)."""
+    """ks_distance returns the inputs' floating-point type."""
 
     X = (0.0, 1.0, 2.0)
     Y = (0.5, 1.5, 2.5)
@@ -1424,7 +1447,7 @@ class TestKsDistanceDtype(absltest.TestCase):
 
 
 class TestGridRank(parameterized.TestCase):
-    """OLS and Feasible grids raise for a rank-deficient fit, as fit() does (#55)."""
+    """OLS and Feasible grids raise for a rank-deficient fit, as fit() does."""
 
     # Seven symmetric probabilities: the 2016 order's 7-term basis is singular there
     # (Baucells et al. 2025, Proposition 2), and the 2.0 order's isn't
@@ -1525,8 +1548,39 @@ class TestGridRank(parameterized.TestCase):
                     )
 
 
+class TestDistinctRows(absltest.TestCase):
+    """fit_grid finds the datasets' distinct probability levels once."""
+
+    OTHER_Y = jnp.linspace(0.02, 0.98, DEFAULT_Y.shape[0])
+
+    def test_shared_levels_are_one_row(self):
+        """Datasets with the same levels share one row."""
+        rows, index = _distinct_rows(jnp.stack([DEFAULT_Y] * 3))
+        self.assertEqual(rows.shape, (1, DEFAULT_Y.shape[0]))
+        np.testing.assert_array_equal(index, [0, 0, 0])
+
+    def test_one_dataset(self):
+        """A single dataset's levels are one row."""
+        rows, index = _distinct_rows(DEFAULT_Y)
+        np.testing.assert_array_equal(rows, DEFAULT_Y[None])
+        np.testing.assert_array_equal(index, [0])
+
+    def test_distinct_levels_map_back(self):
+        """With different levels, each dataset's row is its own."""
+        y = jnp.stack([DEFAULT_Y, self.OTHER_Y, DEFAULT_Y])
+        rows, index = _distinct_rows(y)
+        self.assertEqual(rows.shape[0], 2)
+        np.testing.assert_array_equal(rows[index], y)
+
+    def test_traced_levels_keep_every_row(self):
+        """Under jit, y can't be compared, so every row is kept."""
+        y = jnp.stack([DEFAULT_Y] * 3)
+        rows = jax.jit(lambda v: _distinct_rows(v)[0])(y)
+        self.assertEqual(rows.shape, y.shape)
+
+
 class TestFitGridArguments(absltest.TestCase):
-    """fit_grid is the one grid function, with keyword-only arguments (#55)."""
+    """fit_grid is the one grid function, with keyword-only arguments."""
 
     X = jnp.asarray(gamma(a=2).ppf(np.asarray(DEFAULT_Y)))
     REMOVED = (

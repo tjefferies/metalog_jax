@@ -338,9 +338,11 @@ It takes no `regression_hyperparams` (passing them raises a `TypeError`).
 
 #### Fitting Many Datasets with `Feasible`
 
-`fit_grid` fits a whole batch with `Feasible` in one vmapped call. The feasible solver
-needs the number of terms fixed when it compiles, so a grid over `num_terms` fits each
-term count in its own call, which compiles once.
+`fit_grid` fits a whole batch with `Feasible` in one call. Datasets whose OLS fit is
+already valid keep it, and the rest run the feasible solver in rounds, so each fit costs
+about its own iterations rather than the slowest fit's. `GridResult.iterations` counts
+them. The solver needs the number of terms fixed when it compiles, so a grid over
+`num_terms` fits each term count in its own call.
 
 ```python
 import jax.numpy as jnp
@@ -355,10 +357,10 @@ params = MetalogParameters(
     num_terms=10,
 )
 
-# Fixed number of terms: one vmapped call over all datasets
+# Fixed number of terms: one call over all datasets
 result = fit_grid(batched_x, batched_y, params)  # a: (n_datasets, 10)
 
-# Different numbers of terms: one call per term count, each compiled once
+# Different numbers of terms: one call per term count
 num_terms_list = [4, 6, 8, 10, 12]
 grid = fit_grid(batched_x, batched_y, params, num_terms=num_terms_list)
 # ks_dist: (n_datasets, 5); a: (n_datasets, 5, 12), zero-padded to 12 terms
@@ -379,13 +381,23 @@ also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 
   <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid, measured before it checked validity, is about 20 times faster. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
 </picture>
 
-Measured with `fit_grid_datasets`, which made Feasible fits the way `fit_grid` now does,
-on a **MacBook Pro (Apple M3, 8 cores: 4 performance and 4 efficiency, 8 GB unified
-memory), macOS 26.3.1, Python 3.13.7, JAX 0.8.0 on the CPU backend** (no GPU). Each
-dataset is 200 samples from one of the five distribution families in
-[`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the 105
-`DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
+Measured with `fit_grid_datasets` on a **MacBook Pro (Apple M3, 8 cores: 4 performance
+and 4 efficiency, 8 GB unified memory), macOS 26.3.1, Python 3.13.7, JAX 0.8.0 on the
+CPU backend** (no GPU). Each dataset is 200 samples from one of the five distribution
+families in [`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the
+105 `DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
 compilation, which takes 2-6 s per term count and batch shape.
+
+These numbers predate `fit_grid`'s triage and rounds, which make Feasible batches 2 to 3
+times faster on the same machine (JAX 0.11.2, 10 terms):
+
+| Datasets | Before | Now |
+|---|---|---|
+| 2,000 | 2.13 ms per dataset | 1.05 ms |
+| 10,000 | 1.69 ms | 0.60 ms |
+| 2,000, at 4, 6, 8, 10 and 12 terms | 11.3 ms | 4.0 ms |
+
+The [GPU benchmark](benchmarks/gpu/README.md) refreshes the chart and the tables below.
 
 | Datasets (10 terms) | Time | Per dataset | Peak memory |
 |---|---|---|---|

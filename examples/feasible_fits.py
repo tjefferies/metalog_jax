@@ -23,8 +23,9 @@ def _(mo):
     2. **Different numbers of terms**: one call with `num_terms`, then pick the best
        term count for each dataset by KS distance.
 
-    The feasible solver needs the number of terms fixed when it compiles, so `fit_grid`
-    fits each term count in its own vmapped call, which compiles once.
+    Datasets whose OLS fit is already valid keep it, and the rest run the feasible solver
+    in rounds, so each fit costs about its own iterations. The solver needs the number
+    of terms fixed when it compiles, so `fit_grid` fits each term count in its own call.
     """)
     return
 
@@ -215,9 +216,8 @@ def _(mo):
 
     Pass `num_terms` to fit every term count in one call. The feasible solver needs the
     number of terms fixed when it compiles, so `fit_grid` fits each term count in its
-    own call, batching the datasets inside it, and each term count compiles once. The
-    result is a `(n_datasets, n_terms)` grid, with each fit's coefficients zero-padded
-    to the largest term count.
+    own call, batching the datasets inside it. The result is a `(n_datasets, n_terms)`
+    grid, with each fit's coefficients zero-padded to the largest term count.
     """)
     return
 
@@ -297,10 +297,9 @@ def _(mo):
 
     - `MetalogFitMethod.Feasible` guarantees every fit is a valid distribution, and
       returns the OLS coefficients unchanged when OLS is already valid.
-    - `fit_grid` fits a batch of datasets with `Feasible` in one call, vmapped over the
-      datasets.
-    - To compare term counts, pass `num_terms`: `fit_grid` fits each in its own call,
-      compiled once.
+    - `fit_grid` fits a batch of datasets with `Feasible` in one call. Datasets whose OLS
+      fit is valid keep it, and the rest are solved in rounds.
+    - To compare term counts, pass `num_terms`: `fit_grid` fits each in its own call.
     - Every grid result marks its valid fits in `feasible`, from `check_feasibility`,
       an exact validity check that you can also run on any coefficient vector.
     """)

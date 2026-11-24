@@ -1,0 +1,81 @@
+# Runs the GPU benchmark on Runpod with benchmarks/gpu/launch.py: one pod per
+# GPU type, within a budget, and saves the results as an artifact. Needs RUNPOD_API_KEY
+# as a secret of the runpod environment, which can require a reviewer's approval
+# before each run. A dry run (the default) only reads Runpod's prices and prints the
+# plan; it creates no pod.
+name: GPU benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: The benchmark image, by digest (ghcr.io/...@sha256:...)
+        required: true
+        type: string
+      gpus:
+        description: GPU types, comma-separated
+        default: a100-sxm,h100-sxm,h200-sxm
+        type: string
+      budget:
+        description: The most the run may cost, in USD
+        default: "5.00"
+        type: string
+      cloud:
+        description: Runpod cloud
+        default: SECURE
+        type: choice
+        options:
+          - SECURE
+          - COMMUNITY
+      dry-run:
+        description: Print the plan and cost; create no pod
+        default: true
+        type: boolean
+
+permissions: {}
+
+# One run at a time: cleanup terminates every benchmark pod on the account
+concurrency:
+  group: gpu-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: runpod
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # launch.py uses only the standard library
+      - name: Run the benchmark
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          IMAGE: ${{ inputs.image }}
+          GPUS: ${{ inputs.gpus }}
+          BUDGET: ${{ inputs.budget }}
+          CLOUD: ${{ inputs.cloud }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          args=(run --image "$IMAGE" --gpus "$GPUS" --budget "$BUDGET" --cloud "$CLOUD" --out results)
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 benchmarks/gpu/launch.py "${args[@]}"
+
+      - name: Terminate leftover benchmark pods
+        if: always() && !inputs.dry-run
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: python3 benchmarks/gpu/launch.py cleanup
+
+      - name: Upload the results
+        if: always() && !inputs.dry-run
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpu-benchmark-results
+          path: results/
+          if-no-files-found: warn
+          retention-days: 90

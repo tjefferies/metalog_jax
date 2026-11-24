@@ -1,4 +1,4 @@
-"""Property-based tests for issue #29: invariants checked on generated inputs.
+"""Property-based tests: invariants checked on generated inputs.
 
 Each test states an invariant that holds for every feasible metalog, whatever its
 boundedness, fit method or number of terms, and Hypothesis checks it on generated
@@ -88,7 +88,7 @@ class MetalogPropertiesTest(parameterized.TestCase):
     @FEW
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_r_aliases_match(self, m, y):
-        """Regression test for issue #14: q, p and d match ppf, cdf and pdf(cdf)."""
+        """Regression test: q, p and d match ppf, cdf and pdf(cdf)."""
         x = m.ppf(y)
         c = m.cdf(x)
         np.testing.assert_array_equal(m.q(y), x)
@@ -97,7 +97,7 @@ class MetalogPropertiesTest(parameterized.TestCase):
 
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_cdf_inverts_ppf(self, m, y):
-        """Regression test for issue #49: cdf(ppf(y)) is y, to rounding.
+        """Regression test: cdf(ppf(y)) is y, to rounding.
 
         cdf used to return the nearest of 9,990 probabilities 0.0001 apart. The
         drawn probabilities are multiples of 0.001, which that grid contains, so
@@ -109,7 +109,7 @@ class MetalogPropertiesTest(parameterized.TestCase):
 
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_ppf_is_the_back_transform_of_the_unbounded_ppf(self, m, y):
-        """Regression test for issue #14: ppf back-transforms the unbounded ppf."""
+        """Regression test: ppf back-transforms the unbounded ppf."""
         unbounded = m.metalog_params.replace(boundedness=MetalogBoundedness.UNBOUNDED)
         z = m.replace(metalog_params=unbounded).ppf(y)
         expected = strategies.from_unbounded_scale(
@@ -181,7 +181,7 @@ class MetalogPropertiesTest(parameterized.TestCase):
     @FEW
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_results_do_not_depend_on_the_coefficient_container(self, m, y):
-        """Regression test for issue #9: list, tuple and NumPy coefficients match JAX."""
+        """Regression test: list, tuple and NumPy coefficients match JAX."""
         a = np.asarray(m.a)
         expected = (m.ppf(y), m.pdf(y))
         for container in (a.tolist(), tuple(a.tolist()), a):
@@ -202,7 +202,7 @@ class MetalogPropertiesTest(parameterized.TestCase):
     @FEW
     @given(m=strategies.metalogs(), y=strategies.probabilities())
     def test_float32_probabilities_match_float64(self, m, y):
-        """Regression test for issue #26: float32 probabilities lose no precision."""
+        """Regression test: float32 probabilities lose no precision."""
         y32 = y.astype(jnp.float32)
         y64 = y32.astype(jnp.float64)
         np.testing.assert_array_equal(m.ppf(y32), m.ppf(y64))
@@ -210,7 +210,7 @@ class MetalogPropertiesTest(parameterized.TestCase):
 
 
 class TermOrderPropertiesTest(parameterized.TestCase):
-    """Rewriting a metalog in the other term order keeps its distribution (#58)."""
+    """Rewriting a metalog in the other term order keeps its distribution."""
 
     @FEW
     @given(m=strategies.metalogs(term_counts=(3, 5, 9)), y=strategies.probabilities())
@@ -535,7 +535,7 @@ class FitPropertiesTest(parameterized.TestCase):
 
 
 class TransformPropertiesTest(parameterized.TestCase):
-    """Regression tests for issue #25: jax.jit and jax.vmap match eager calls."""
+    """Regression tests: jax.jit and jax.vmap match eager calls."""
 
     RV_SIZE = 25
     # Each combination of static fields compiles once, so draw fewer term counts
@@ -634,7 +634,7 @@ class TransformPropertiesTest(parameterized.TestCase):
 
 
 class SPTPropertiesTest(parameterized.TestCase):
-    """Regression tests for issues #20, #23 and #24: SPT fits match Keelin (2016)."""
+    """Regression tests: SPT fits match Keelin (2016)."""
 
     @staticmethod
     def _three_term_ratio(q, params):
@@ -683,7 +683,7 @@ class SPTPropertiesTest(parameterized.TestCase):
 
     @given(triplet=strategies.spt_triplets(feasible=True))
     def test_serialization_round_trip(self, triplet):
-        """Regression test for issue #31: SPTMetalog.loads(dumps(m)) equals m."""
+        """Regression test: SPTMetalog.loads(dumps(m)) equals m."""
         q, params = triplet
         m = fit_spt_metalog(jnp.asarray(q), params, precomputed_quantiles=True)
         loaded = SPTMetalog.loads(m.dumps())
@@ -758,7 +758,7 @@ class SPTPropertiesTest(parameterized.TestCase):
 
 
 class GridSearchPropertiesTest(parameterized.TestCase):
-    """Regression tests for issues #26 and #40: grid fits' scores and feasibility."""
+    """Regression tests: grid fits' scores and feasibility."""
 
     L1 = (0.0, 0.01)
     NUM_TERMS = (3, 9)
@@ -857,7 +857,7 @@ class GridSearchPropertiesTest(parameterized.TestCase):
 
 
 class RvsPropertiesTest(parameterized.TestCase):
-    """Regression tests for issue #26: rvs uses every HDR parameter."""
+    """Regression tests: rvs uses every HDR parameter."""
 
     @FEW
     @given(m=strategies.metalogs(), stream=strategies.hdr_streams())
@@ -895,7 +895,7 @@ def _as_python(equation):
 
 
 class DisplayPropertiesTest(parameterized.TestCase):
-    """Regression tests for issue #41: the printed equation is the model."""
+    """Regression tests: the printed equation is the model."""
 
     def assert_printed_equation_is_the_model(self, m, y):
         """Evaluate Q(y), printed at 17 digits with M(y) substituted, against ppf."""

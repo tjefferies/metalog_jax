@@ -1,5 +1,5 @@
 # Copyright: Travis Jefferies 2026
-"""Regression tests for issue #40: grids mark infeasible fits, and selection skips them."""
+"""Regression tests: grids mark infeasible fits, and selection skips them."""
 
 import jax
 import jax.numpy as jnp

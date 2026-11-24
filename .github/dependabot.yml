@@ -62,3 +62,19 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
+
+  # The GPU benchmark's image: its pinned uv and Python base images. The
+  # cooldown can't apply to the uv image: GHCR doesn't report publication dates.
+  - package-ecosystem: "docker"
+    directory: "/benchmarks/gpu"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps"

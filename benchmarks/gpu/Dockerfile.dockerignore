@@ -1,0 +1,9 @@
+# The build context is the repository root; the image needs only these
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!metalog_jax/
+!benchmarks/gpu/
+benchmarks/gpu/results/
+**/__pycache__/

@@ -193,7 +193,7 @@ class MetalogParametersTest(parameterized.TestCase):
 
 
 class MetalogParametersValidationTest(parameterized.TestCase):
-    """Regression tests for issue #47: parameters that can't describe a metalog raise.
+    """Regression tests: parameters that can't describe a metalog raise.
 
     They used to be accepted: fit then fitted three coefficients for fewer than 2
     terms, fitted an empty support, or failed with a misleading density error.
@@ -1262,7 +1262,7 @@ class MetalogBaseLoadsTest(parameterized.TestCase):
 
 
 class SPTMetalogSerializationTest(parameterized.TestCase):
-    """Regression tests for issue #31: SPT metalogs save and load."""
+    """Regression tests: SPT metalogs save and load."""
 
     COEFFICIENTS = (0.5, 1.0, 0.25)
     # (name, boundedness, lower bound, upper bound, the JSON dumps() writes)
@@ -1300,7 +1300,7 @@ class SPTMetalogSerializationTest(parameterized.TestCase):
             '"lower_bound": -2.0, "upper_bound": 15.0, "alpha": 0.1}}',
         ),
     )
-    # The JSON Metalog.dumps writes, unchanged by issue #31
+    # The JSON Metalog.dumps writes, which SPT serialization leaves unchanged
     METALOG_JSON = (
         '{"a": [0.5, 1.0, 0.25], "metalog_params": {"boundedness": 1, '
         '"method": 1, "lower_bound": 0.0, "upper_bound": 0.0, "num_terms": 3}}'
@@ -1385,7 +1385,7 @@ class SPTMetalogSerializationTest(parameterized.TestCase):
 
 
 class MetalogCoefficientCoercionTest(parameterized.TestCase):
-    """Regression tests for issue #9: list or tuple ``a`` must behave like an array."""
+    """Regression tests: list or tuple ``a`` must behave like an array."""
 
     # The coefficients below were fitted in the 2016 term order
     BOUNDED_PARAMS = MetalogParameters(
@@ -1528,7 +1528,7 @@ class MetalogCoefficientCoercionTest(parameterized.TestCase):
 
 
 class MetalogQuantileAliasTest(parameterized.TestCase):
-    """Regression tests for issue #14: q() must match ppf() for every boundedness."""
+    """Regression tests: q() must match ppf() for every boundedness."""
 
     LOWER_BOUND = 2.0
     UPPER_BOUND = 10.0

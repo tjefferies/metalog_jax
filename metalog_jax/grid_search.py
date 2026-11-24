@@ -41,8 +41,9 @@ from metalog_jax.base import (
 )
 from metalog_jax.base.enums import MetalogFitMethod
 from metalog_jax.feasibility import Engine, check_feasibility, get_engine
+from metalog_jax.feasibility.a_star import NOT_CERTIFIED_MESSAGE, solve_batch
 from metalog_jax.feasibility.engine import DEFAULT_TERM_ORDER, TermOrder, term_basis
-from metalog_jax.metalog import GridResult, Metalog, SPTMetalog, _fit_coefficients
+from metalog_jax.metalog import GridResult, Metalog, SPTMetalog
 from metalog_jax.regression import LassoParameters
 from metalog_jax.regression.base import RANK_DEFICIENT_MESSAGE
 from metalog_jax.regression.lasso import DEFAULT_LASSO_PARAMETERS, fit_lasso
@@ -534,18 +535,50 @@ def _full_rank(
     return jax.vmap(row_full_rank)(rows)
 
 
+def _distinct_rows(y: jnp.ndarray) -> tuple[jnp.ndarray, np.ndarray]:
+    """The distinct rows of y, and each dataset's index into them.
+
+    The rank of a design matrix, and the design matrix itself, depend only on the
+    probability levels, so each distinct row of y needs them once. Datasets usually
+    share their levels, which is checked on the device without copying y. Otherwise
+    the rows are copied to the host and deduplicated. Under jit, y is traced and
+    every row is kept.
+
+    Args:
+        y: Probability levels, shape (m,) or (n_datasets, m).
+
+    Returns:
+        tuple: The distinct rows, shape (n_distinct, m), and each dataset's index
+        into them, shape (n_datasets,), or (1,) for one dataset.
+    """
+    rows = y.reshape(-1, y.shape[-1])
+    try:
+        if bool(jnp.all(rows == rows[0])):
+            return rows[:1], np.zeros(rows.shape[0], dtype=int)
+    except jax.errors.ConcretizationTypeError:  # traced
+        return rows, np.arange(rows.shape[0])
+    unique, index = np.unique(np.asarray(rows), axis=0, return_inverse=True)
+    return jnp.asarray(unique), index.reshape(-1)
+
+
 def _check_full_rank(
-    y: jnp.ndarray, terms: list[int], term_order: TermOrder, has_num_terms: bool
+    rows: jnp.ndarray,
+    index: np.ndarray,
+    batch_shape: tuple[int, ...],
+    terms: list[int],
+    term_order: TermOrder,
+    has_num_terms: bool,
 ) -> None:
     """Raise if any fit's least-squares problem has no unique solution.
 
     fit() raises for a rank-deficient design matrix with OLS and Feasible, and so
     does every fit of a grid. The rank depends only on the probability levels and
-    the term count, so each distinct row of y is checked once; datasets usually
-    share their levels.
+    the term count, so each distinct row of y is checked once.
 
     Args:
-        y: Probability levels, shape (m,) or (n_datasets, m).
+        rows: The distinct rows of y, from :func:`_distinct_rows`.
+        index: Each dataset's index into ``rows``.
+        batch_shape: y's shape without its last axis: () or (n_datasets,).
         terms: The term counts.
         term_order: The order of the basis terms.
         has_num_terms: Whether the grid has a term-count axis.
@@ -554,15 +587,8 @@ def _check_full_rank(
         checkify.JaxRuntimeError: If a design matrix is rank deficient. The message
             shows which fits are, in the grid's shape.
     """  # noqa: DOC502
-    rows = y.reshape(-1, y.shape[-1])
-    try:
-        rows, index = np.unique(np.asarray(rows), axis=0, return_inverse=True)
-    except jax.errors.TracerArrayConversionError:  # traced
-        index = np.arange(rows.shape[0])
-    full_rank = _full_rank(
-        jnp.asarray(rows), jnp.asarray(terms), max(terms), term_order
-    )
-    full_rank = full_rank[index.reshape(-1)].reshape(*y.shape[:-1], len(terms))
+    full_rank = _full_rank(rows, jnp.asarray(terms), max(terms), term_order)
+    full_rank = full_rank[index].reshape(*batch_shape, len(terms))
     if not has_num_terms:
         full_rank = full_rank[..., 0]
     checkify.check(jnp.all(full_rank), _GRID_RANK_MESSAGE, full_rank=full_rank)
@@ -614,14 +640,17 @@ def _fit_feasible(
     params: MetalogParameters,
     terms: list[int],
     has_num_terms: bool,
+    shared: bool,
 ) -> GridResult:
     """Fit a grid with MetalogFitMethod.Feasible, one term count at a time.
 
     The feasible solver needs the number of terms fixed at trace time, so each
-    distinct term count is fitted in its own call, vmapped over the datasets and
-    compiled once. The fits are zero-padded to the largest count, which doesn't
-    change their quantile functions, and stacked along the last axis, as in the OLS
-    and Lasso grids. The solver certifies every fit with check_feasibility, and
+    distinct term count is fitted in its own batch, with
+    :func:`~metalog_jax.feasibility.a_star.solve_batch`: the datasets whose OLS fit
+    is already feasible keep it, and the others run the exchange method in rounds.
+    The fits are zero-padded to the largest count, which doesn't change their
+    quantile functions, and stacked along the last axis, as in the OLS and Lasso
+    grids. The solver certifies every fit with check_feasibility, and the grid
     raises if it can't, so every fit is marked feasible.
 
     Args:
@@ -630,26 +659,43 @@ def _fit_feasible(
         params: Parameters with MetalogFitMethod.Feasible.
         terms: The term counts.
         has_num_terms: Whether the grid has a term-count axis.
+        shared: Whether every dataset has the same probability levels, so that
+            each term count's design matrix is built and factored once.
 
     Returns:
-        GridResult: The fits, every one marked feasible.
+        GridResult: The fits, every one marked feasible, with each fit's number of
+        exchange iterations.
 
     Raises:
         checkify.JaxRuntimeError: If the solver can't certify a fit.
     """  # noqa: DOC502
+    batched = x.ndim == 2
+    xb, yb = (x, y) if batched else (x[None], y[None])
+    z = Metalog.quantile_transform(
+        xb, params.boundedness, params.lower_bound, params.upper_bound
+    )
     max_terms = max(terms)
     padded_params = params.replace(num_terms=max_terms)
 
     def fit_terms(k: int) -> GridResult:
         k_params = params.replace(num_terms=k)
 
-        def fit_one(x_i: jnp.ndarray, y_i: jnp.ndarray) -> GridResult:
-            data = MetalogBaseData(x=x_i, y=y_i, precomputed_quantiles=True)
-            result = _score_fit(_fit_coefficients(data, k_params), x_i, y_i)
-            a = jnp.pad(result.metalog.a, (0, max_terms - k))
+        def design(y_i: jnp.ndarray) -> jnp.ndarray:
+            return MetalogBase._get_target(y_i, k, params.term_order)
+
+        Y = design(yb[0]) if shared else jax.vmap(design)(yb)
+        fits = solve_batch(get_engine(k, params.term_order), Y, z, shared)
+        checkify.check(jnp.all(fits.feasible), NOT_CERTIFIED_MESSAGE)
+
+        def score(a_i: jnp.ndarray, x_i: jnp.ndarray, y_i: jnp.ndarray) -> GridResult:
+            result = _score_fit(Metalog(metalog_params=k_params, a=a_i), x_i, y_i)
+            a = jnp.pad(a_i, (0, max_terms - k))
             return result.replace(metalog=Metalog(metalog_params=padded_params, a=a))
 
-        return jax.vmap(fit_one)(x, y) if x.ndim == 2 else fit_one(x, y)
+        result = jax.vmap(score)(fits.a_star, xb, yb).replace(
+            iterations=fits.iterations
+        )
+        return result if batched else jax.tree.map(lambda v: v[0], result)
 
     fits = {k: fit_terms(k) for k in dict.fromkeys(terms)}
     if has_num_terms:
@@ -689,7 +735,9 @@ def fit_grid(
     fits' ``method`` says which. OLS and Lasso grids fit every configuration in one
     vmapped call, with up to MAX_TERMS terms. MetalogFitMethod.Feasible needs the
     number of terms fixed when it compiles, so it fits each term count in its own
-    vmapped call over the datasets. A term-count grid zero-pads each fit's
+    batch. Its datasets whose OLS fit is already feasible keep that fit, and the
+    others run the exchange method in rounds, so a fit costs about its own
+    iterations rather than the slowest fit's. A term-count grid zero-pads each fit's
     coefficients to the largest count, which doesn't change its quantile function.
 
     Each fit is checked as fit() checks it:
@@ -725,7 +773,8 @@ def fit_grid(
     Returns:
         GridResult with metalog fits, KS distances and ``feasible``, whether each fit
         is a valid distribution. Shape depends on active axes. Pass ``feasible`` to
-        find_best_config so that it skips infeasible fits.
+        find_best_config so that it skips infeasible fits. A Feasible grid also
+        fills in ``iterations``, each fit's number of exchange iterations.
 
     Raises:
         ValueError: If ``on_infeasible`` isn't "raise" or "flag", or an OLS or Lasso
@@ -743,10 +792,15 @@ def fit_grid(
     terms = [int(k) for k in num_terms] if has_num_terms else [params.num_terms]
     _check_max_terms(terms, method)
     x = _as_quantiles(x, y, precomputed_quantiles)
+    shared = False
     if method != MetalogFitMethod.Lasso:  # Lasso is regularized, as in fit()
-        _check_full_rank(y, terms, params.term_order, has_num_terms)
+        rows, index = _distinct_rows(y)
+        shared = rows.shape[0] == 1
+        _check_full_rank(
+            rows, index, y.shape[:-1], terms, params.term_order, has_num_terms
+        )
     if method == MetalogFitMethod.Feasible:
-        result = _fit_feasible(x, y, params, terms, has_num_terms)
+        result = _fit_feasible(x, y, params, terms, has_num_terms, shared)
     else:
         result = _fit_masked(
             x, y, params, terms, has_num_terms, l1_penalties, lasso_params
@@ -909,6 +963,8 @@ def extract_best_from_grid(
               if none of the dataset's fits is feasible
             - feasible: Whether that fit is feasible, or None if the grid has no
               ``feasible`` mask
+            - iterations: That fit's exchange iterations, or None if the grid
+              has none (OLS and Lasso grids)
 
     Raises:
         ValueError: If none of the dataset's fits is feasible.
@@ -933,7 +989,14 @@ def extract_best_from_grid(
     )
     best_ks = dataset_ks[tuple(best_idx)]
     best_feasible = None if feasible is None else feasible[full_idx]
-    return GridResult(metalog=best_metalog, ks_dist=best_ks, feasible=best_feasible)
+    iterations = grid_results.iterations
+    best_iterations = None if iterations is None else iterations[full_idx]
+    return GridResult(
+        metalog=best_metalog,
+        ks_dist=best_ks,
+        feasible=best_feasible,
+        iterations=best_iterations,
+    )
 
 
 def extract_metalog(grid_result: GridResult, *indices: int) -> Metalog:
