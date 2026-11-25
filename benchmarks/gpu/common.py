@@ -77,10 +77,13 @@ def knee(records: list[dict], tolerance: float) -> dict | None:
 
 # Requests go to Runpod over HTTPS, or to a local server in tests
 _ALLOWED_URLS = ("https://", "http://127.0.0.1:", "http://localhost:")
+# Runpod's proxy is behind Cloudflare, which refuses urllib's own user agent
+# (Python-urllib) with HTTP 403, error code 1010. Requests name this tool instead.
+USER_AGENT = "metalog-jax-gpu-bench (+https://github.com/tjefferies/metalog_jax)"
 
 
 def open_url(request: urllib.request.Request | str, timeout: float):
-    """Open an HTTPS request, refusing any other scheme, such as file://.
+    """Open an HTTPS request as USER_AGENT, refusing other schemes, such as file://.
 
     Args:
         request: The request or URL.
@@ -92,8 +95,11 @@ def open_url(request: urllib.request.Request | str, timeout: float):
     Raises:
         ValueError: For a URL that isn't HTTPS or local.
     """
-    url = request.full_url if isinstance(request, urllib.request.Request) else request
-    if not url.startswith(_ALLOWED_URLS):
-        raise ValueError(f"refusing to open {url!r}")
+    if not isinstance(request, urllib.request.Request):
+        request = urllib.request.Request(request)
+    if not request.full_url.startswith(_ALLOWED_URLS):
+        raise ValueError(f"refusing to open {request.full_url!r}")
+    if not request.has_header("User-agent"):
+        request.add_header("User-Agent", USER_AGENT)
     # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
     return urllib.request.urlopen(request, timeout=timeout)

@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import signal
 import sys
@@ -61,6 +62,13 @@ TERMINATE_GRACE_S = 600
 # How long to wait for Runpod's billing records of a finished run
 BILLING_WAIT_S = 300
 _RETRIES = 5
+# Statuses that mean the proxy refuses to serve a pod's results at all, rather than
+# that the pod isn't serving them yet
+_REFUSED = frozenset({401, 403})
+# This many refusals in a row end a pod early: it can't be collected
+REFUSALS_TO_STOP = 4
+# The tag GHCR gives an image's attestation: sha256-<the image's digest>
+_ATTESTATION_TAG = re.compile(r":sha256-([0-9a-f]{64})$")
 
 
 class RunpodError(RuntimeError):
@@ -158,8 +166,11 @@ class RunpodClient:
         return self.request("GET", "/billing/pods", query=query)
 
     def stream_logs(self, pod_id: str, out: Path, stop: threading.Event) -> None:
-        """Append a pod's container log lines to ``out`` until ``stop`` is set."""
-        last_id = None
+        """Append a pod's container log lines to ``out`` until ``stop`` is set.
+
+        A failure of the stream is written to ``out`` and printed, once per kind.
+        """
+        last_id = last_error = None
         while not stop.is_set():
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -183,8 +194,13 @@ class RunpodClient:
                             f.flush()
                         if stop.is_set():
                             return
-            except (urllib.error.URLError, TimeoutError, OSError):
-                pass
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode(errors="replace").strip()[:200]
+                last_error = _log_failure(
+                    pod_id, out, f"HTTP {error.code} {detail}", last_error
+                )
+            except (urllib.error.URLError, TimeoutError, OSError) as error:
+                last_error = _log_failure(pod_id, out, str(error), last_error)
             stop.wait(POLL_S)
 
 
@@ -316,6 +332,7 @@ class PodRun:
     record: dict | None = None
     state: str = "creating"
     error: str | None = None
+    refusals: int = 0
     terminated_at: str | None = None
     stop_logs: threading.Event = dataclasses.field(default_factory=threading.Event)
 
@@ -341,6 +358,7 @@ class Launcher:
             + secrets.token_hex(2)
         )
         self.pods: list[PodRun] = []
+        self.billing_errors: dict[str, str] = {}
 
     def create(self, min_cuda: str) -> None:
         """Create one pod per GPU type; a type that can't be placed is recorded."""
@@ -376,13 +394,27 @@ class Launcher:
             self.pods.append(pod)
 
     def status(self, pod: PodRun) -> dict | None:
-        """A pod's status.json, or None while it isn't served yet."""
+        """A pod's status.json, or None while it isn't served.
+
+        A refusal (401 or 403) means the proxy won't serve the results at all, not
+        that the pod isn't ready, so it's printed the first time and counted.
+        """
         try:
-            return json.loads(
+            status = json.loads(
                 fetch(f"{self.url_for(pod.pod_id)}/{pod.token}/status.json", 30)
             )
+        except urllib.error.HTTPError as error:
+            if error.code in _REFUSED:
+                detail = error.read().decode(errors="replace").strip()[:200]
+                message = f"the proxy refused the request: HTTP {error.code} {detail}"
+                if pod.error != message:
+                    print(f"{pod.gpu.slug}: {message}", flush=True)
+                pod.error, pod.refusals = message, pod.refusals + 1
+            return None
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             return None
+        pod.refusals = 0
+        return status
 
     def download(self, pod: PodRun, files: dict[str, str]) -> None:
         """Download a pod's results and check each one's SHA-256.
@@ -416,6 +448,10 @@ class Launcher:
             self.terminate(pod)
             return
         status = self.status(pod)
+        if pod.refusals >= REFUSALS_TO_STOP:
+            pod.state = "proxy refused"
+            self.terminate(pod)
+            return
         if status is None or status.get("state") not in ("done", "failed"):
             try:  # keep the latest record: the data center and host CUDA come later
                 pod.record = {**(pod.record or {}), **self.client.get_pod(pod.pod_id)}
@@ -463,21 +499,26 @@ class Launcher:
             self.terminate(pod)
 
     def charges(self, started: str, wait_s: float = BILLING_WAIT_S) -> dict:
-        """Each pod's billed cost from Runpod, waiting for the records to appear."""
+        """Each pod's billed cost, or None if Runpod doesn't report it in time.
+
+        Runpod's billing records lag, so this waits up to ``wait_s``. A request that
+        fails is recorded in ``billing_errors``.
+        """
         costs, deadline = {}, time.time() + wait_s
+        self.billing_errors = {}
         for pod in self.pods:
             if not pod.pod_id:
                 continue
             while True:
+                amount = None
                 try:
-                    totals = self.client.pod_billing(pod.pod_id, started).get(
-                        "metadata", {}
-                    )
-                    amount = (totals.get("totals") or {}).get("totalAmount")
-                except RunpodError:
-                    amount = None
+                    metadata = self.client.pod_billing(pod.pod_id, started) or {}
+                    totals = (metadata.get("metadata") or {}).get("totals") or {}
+                    amount = totals.get("totalAmount")
+                except RunpodError as error:
+                    self.billing_errors[pod.gpu.slug] = str(error)
                 if amount or time.time() >= deadline:
-                    costs[pod.gpu.slug] = amount
+                    costs[pod.gpu.slug] = amount or None
                     break
                 time.sleep(self.poll_s)
         return costs
@@ -518,22 +559,50 @@ class Launcher:
                 for pod in self.pods
             ],
             "billed": costs,
+            "billing_errors": self.billing_errors,
             "estimated": estimated,
         }
-        record["total_billed"] = sum(v for v in costs.values() if v) if costs else None
+        # A total only when Runpod reported every pod's charges
+        billed = list(costs.values())
+        record["total_billed"] = sum(billed) if billed and all(billed) else None
         record["total_estimated"] = sum(estimated.values())
         write_json(self.out_dir / "launcher.json", record)
         return record
 
 
+def _log_failure(pod_id: str, out: Path, message: str, last: str | None) -> str:
+    """Write a log stream failure to ``out`` and print it, unless it repeats ``last``.
+
+    Returns:
+        str: The message, the new last failure.
+    """
+    if message != last:
+        with out.open("a") as f:
+            f.write(f"[launcher] the log stream failed: {message}\n")
+        print(f"{pod_id}: the log stream failed: {message}", flush=True)
+    return message
+
+
 def check_image(image: str) -> None:
     """Runs use an image digest, never a tag, so that every run is reproducible.
+
+    GHCR also lists a ``sha256-<digest>`` tag beside the image: the image's
+    provenance attestation, named after the image's digest. The error for it gives
+    the image's reference.
 
     Raises:
         ValueError: If the image isn't pinned by digest.
     """
-    if "@sha256:" not in image:
-        raise ValueError(f"pass the image by digest (…@sha256:…), not {image!r}")
+    if "@sha256:" in image:
+        return
+    attestation = _ATTESTATION_TAG.search(image)
+    if attestation:
+        fixed = f"{image[: attestation.start()]}@sha256:{attestation.group(1)}"
+        raise ValueError(
+            f"{image!r} is the image's provenance attestation, not the image; "
+            f"pass {fixed}"
+        )
+    raise ValueError(f"pass the image by digest (…@sha256:…), not {image!r}")
 
 
 def _client() -> RunpodClient:
@@ -596,11 +665,13 @@ def run(args: argparse.Namespace, client: RunpodClient | None = None) -> int:
         launcher.terminate_all()
         costs = launcher.charges(started, args.billing_wait)
         record = launcher.record(started, costs)
-    total = (
-        record["total_billed"]
-        if record["total_billed"] is not None
-        else record["total_estimated"]
-    )
+    total = record["total_billed"]
+    if total is None:
+        total = record["total_estimated"]
+        print(
+            "Runpod didn't report every pod's charges in time; the cost below is "
+            "estimated from the pods' hourly rates (see the Runpod console)"
+        )
     print(f"results in {launcher.out_dir}; cost ${total:.2f} of ${plan.budget:.2f}")
     for pod in record["pods"]:
         print(
