@@ -430,8 +430,9 @@ per dataset is:
   compiled shape. Pad the last chunk to the same size to avoid a recompile.
 - **OLS for comparison:** `fit_grid` with OLS fits in about 0.09 ms per dataset, 20
   times faster, and checking each fit's validity for its `feasible` mask brings that to
-  about 0.19 ms (at 5,000 datasets, with JAX 0.11.2; the chart's OLS line was measured
-  before `fit_grid` checked validity). At 10 terms, 65% of these datasets' OLS fits are
+  about 0.12 ms (at 5,000 datasets, with JAX 0.11.2, factoring the datasets' shared
+  design matrix once; the chart's OLS line was measured before `fit_grid` checked
+  validity). At 10 terms, 65% of these datasets' OLS fits are
   invalid distributions. `fit_grid` returns them, marked in `feasible`; pass
   `on_infeasible="raise"` to raise instead, showing which.
 
@@ -721,7 +722,9 @@ assert spt_metalog == loaded_spt == SPTMetalog.loads(spt_metalog.dumps())
 `fit_grid` is the one grid function. It searches any combination of datasets, L1
 penalties and term counts, detecting the axes from its inputs, and fits with any fit
 method. OLS and LASSO grids fit every configuration in one vmapped call, with up to 30
-terms; `Feasible` fits each term count in its own call (see
+terms. When the datasets share their probability levels, an OLS grid factors each term
+count's design matrix once and solves every dataset with it. `Feasible` fits each term
+count in its own call (see
 [Fitting Many Datasets with `Feasible`](#fitting-many-datasets-with-feasible)).
 Everything after `params` is keyword-only.
 

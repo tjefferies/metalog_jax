@@ -28,7 +28,9 @@ LABEL org.opencontainers.image.source="https://github.com/tjefferies/metalog_jax
       io.github.tjefferies.metalog-jax.uv-lock-sha256="${UV_LOCK_SHA256}"
 
 # JAX_PLATFORMS keeps the CPU too, for the correctness check. With preallocation off,
-# measurements record their own peak, and XLA may use 95% of the GPU's memory.
+# measurements record their own peak, and XLA may use 95% of the GPU's memory. Every
+# measurement runs in its own process, so the compilation cache keeps every
+# compilation, however short, for the later ones to reuse.
 # NVIDIA_DRIVER_CAPABILITIES' utility mounts nvidia-smi.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -42,6 +44,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XLA_PYTHON_CLIENT_PREALLOCATE=false \
     XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
     JAX_COMPILATION_CACHE_DIR=/tmp/jax-cache \
+    JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     BENCH_RESULTS=/results

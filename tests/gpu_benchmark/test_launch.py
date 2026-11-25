@@ -6,12 +6,15 @@ and each pod is a ResultsServer serving a results directory.
 """
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -86,12 +89,15 @@ class FakeRunpod:
             return 200, {"gpus": self.catalog}, None
         if route == "/v2/pods" and method == "POST":
             pod_id = f"pod{len(self.pods)}"
-            self.pods[pod_id] = {"id": pod_id, "name": body["name"], "cost": 2.0}
+            self.pods[pod_id] = {
+                "id": pod_id,
+                "name": body["name"],
+                "cost": 2.0,
+                "env": body["env"],
+            }
             return 201, self.pods[pod_id], None
         if route == "/v2/pods" and method == "GET":
             return 200, list(self.pods.values()), None
-        if route.endswith("/logs"):
-            return 404, {"detail": "no logs"}, None
         if route.startswith("/v2/pods/") and method == "GET":
             pod = self.pods.get(route.rsplit("/", 1)[1])
             return (200, {"status": "RUNNING", **pod}, None) if pod else (404, {}, None)
@@ -99,6 +105,10 @@ class FakeRunpod:
             pod_id = route.rsplit("/", 1)[1]
             return (204, None, None) if self.pods.pop(pod_id, None) else (404, {}, None)
         if route == "/v2/billing/pods":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            if ("startTime" in query) != ("endTime" in query):
+                detail = "startTime and endTime must be provided together"
+                return 400, {"detail": detail}, None
             totals = {"totalAmount": self.billing}
             return 200, {"records": [], "metadata": {"totals": totals}}, None
         return 404, {"detail": route}, None
@@ -200,9 +210,9 @@ class PodBodyTest(absltest.TestCase):
     IMAGE = "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:" + "a" * 64
 
     def test_body(self):
-        """The body follows POST /v2/pods."""
+        """The body follows POST /v2/pods, and passes the plan."""
         body = launch.pod_body(
-            "run1", self.GPU, self.IMAGE, "SECURE", "12.9", 1e9, "tok"
+            "run1", self.GPU, self.IMAGE, "SECURE", "12.9", 1e9, "tok", '{"version":2}'
         )
         self.assertEqual(body["name"], "metalog-bench-run1-h100-sxm")
         self.assertEqual(body["image"], self.IMAGE)
@@ -214,6 +224,13 @@ class PodBodyTest(absltest.TestCase):
         self.assertEqual(body["env"]["BENCH_DEADLINE"], "1000000000")
         self.assertEqual(body["env"]["BENCH_TOKEN"], "tok")
         self.assertEqual(body["env"]["BENCH_GPU"], "h100-sxm")
+        self.assertEqual(body["env"]["BENCH_PLAN_JSON"], '{"version":2}')
+
+    def test_the_plan_is_one_line(self):
+        """The plan goes to the pods as one line of JSON, with the file's content."""
+        text = launch.plan_json()
+        self.assertNotIn("\n", text)
+        self.assertEqual(json.loads(text), json.loads(launch.DEFAULT_PLAN.read_text()))
 
     def test_tags_are_refused(self):
         """Runs use a digest, so that they're reproducible."""
@@ -302,8 +319,33 @@ class LauncherTest(absltest.TestCase):
             launch.utc_now(), launcher.charges(launch.utc_now(), 0)
         )
         self.assertEqual(record["total_billed"], 0.5)
+        self.assertEqual(record["billing_errors"], {})
         self.assertEqual(record["pods"][0]["state"], "collected")
         self.assertTrue((self.out / "launcher.json").exists())
+
+    def test_billing_asks_for_a_window(self):
+        """The billing request has both ends of its window, as Runpod requires."""
+        launcher = self.launcher()
+        launcher.create("12.9")
+        launcher.terminate_all()
+        self.assertEqual(launcher.charges(launch.utc_now(), 0), {"h100-sxm": 0.5})
+        path = next(p for m, p, _ in self.api.requests if "/billing/pods" in p)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+        self.assertEqual(sorted(query), ["bucketSize", "endTime", "podId", "startTime"])
+
+    def test_the_record_leaves_out_the_token_and_the_plan(self):
+        """launcher.json keeps the pod's settings, but not its token or the plan."""
+        launcher = self.launcher()
+        launcher.create("12.9")
+        launcher.terminate_all()
+        record = launcher.record(launch.utc_now(), {"h100-sxm": None})
+        env = record["pods"][0]["pod"]["env"]
+        self.assertNotIn("BENCH_TOKEN", env)
+        self.assertNotIn("BENCH_PLAN_JSON", env)
+        self.assertEqual(env["BENCH_GPU"], "h100-sxm")
+        digest = hashlib.sha256(launcher.bench_plan.encode()).hexdigest()
+        self.assertEqual(record["plan_sha256"], digest)
+        self.assertIn("BENCH_TOKEN", self.api.requests[0][2]["env"])
 
     def test_a_bad_checksum_is_retried_until_the_cap(self):
         """A download that doesn't match is retried, and the pod deleted at its cap."""
@@ -359,17 +401,22 @@ class LauncherTest(absltest.TestCase):
             launch.fetch(proxy.url + "/status.json")
         self.assertEqual(proxy.user_agents, [common.USER_AGENT])
 
-    def test_a_failing_log_stream_is_recorded(self):
-        """A log stream that fails says why in pod.log."""
+    def test_progress_is_printed_when_it_changes(self):
+        """Each new measurement in status.json is printed once."""
+        self.pod_dir.mkdir(parents=True, exist_ok=True)
+        status = {"state": "running", "phase": "batches", "measurements": 3}
+        status["last"] = "fit feasible N=1024 K=10: ok in 29 s"
+        (self.pod_dir / "status.json").write_text(json.dumps(status))
         launcher = self.launcher()
         launcher.create("12.9")
-        log = launcher.pods[0].out / "pod.log"
-        for _ in range(200):
-            if log.exists():
-                break
-            time.sleep(0.01)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            launcher.step(launcher.pods[0])
+            launcher.step(launcher.pods[0])
         launcher.terminate_all()
-        self.assertIn("[launcher] the log stream failed: HTTP 404", log.read_text())
+        line = "h100-sxm: batches, 3 measurements; last: fit feasible N=1024 K=10: ok in 29 s"
+        self.assertEqual(out.getvalue().splitlines(), [line])
+        self.assertEqual(launcher.pods[0].state, "running")
 
     def test_unreported_charges_have_no_billed_total(self):
         """Without every pod's charges, the total is None, not $0.00."""

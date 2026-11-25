@@ -80,6 +80,10 @@ _N_GRID = 2049
 # than the slowest fit's. Most fits that need cuts converge in one iteration, which
 # takes two passes: one to cut and one to confirm.
 _ROUND_PASSES = 2
+# Rounds are never compacted below this many fits. Each new round size compiles the
+# exchange loop again, which costs far more than a few padded fits, and the last
+# rounds' sizes would otherwise vary from batch to batch.
+_MIN_ROUND = 64
 
 
 @struct.dataclass
@@ -573,11 +577,12 @@ class BatchFitResult:
 
 
 def _round_size(n: int) -> int:
-    """Round a batch size up to one of four sizes per power of two.
+    """Round a batch size up to _MIN_ROUND, or to one of four sizes per power of two.
 
     Rounds compact the unconverged fits into a smaller batch, and each new size
     compiles once. Four sizes per power of two waste at most a quarter of a round on
-    padding while keeping the number of compilations small.
+    padding while keeping the number of compilations small, and the floor keeps the
+    last, smallest rounds to one size.
 
     Args:
         n: The number of fits, at least 1.
@@ -585,13 +590,16 @@ def _round_size(n: int) -> int:
     Returns:
         int: The padded size, at least n.
     """
-    quarter = max(1 << max((n - 1).bit_length() - 3, 0), 1)
+    if n <= _MIN_ROUND:
+        return _MIN_ROUND
+    quarter = 1 << ((n - 1).bit_length() - 3)
     return -(-n // quarter) * quarter
 
 
-def _pad_index(index: np.ndarray, size: int) -> np.ndarray:
-    """Pad an index array to ``size`` by repeating its last entry."""
-    return np.concatenate([index, np.full(size - index.size, index[-1])])
+def _pad_index(index: np.ndarray, size: int, fill: int | None = None) -> np.ndarray:
+    """Pad an index array to ``size`` with ``fill``, by default its last entry."""
+    fill = index[-1] if fill is None else fill
+    return np.concatenate([index, np.full(size - index.size, fill)])
 
 
 @partial(jax.jit, static_argnames=("shared", "max_cuts"))
@@ -628,10 +636,10 @@ def _certify_rows(engine: Engine, a: chex.Array, tol: float) -> chex.Array:
 
 def _certify(
     engine: Engine, a: chex.Array, index: np.ndarray, tol: float
-) -> chex.Array:
+) -> np.ndarray:
     """Certify the rows of ``a`` at ``index``, in a batch padded to a round size."""
     padded = _pad_index(index, _round_size(index.size))
-    return _certify_rows(engine, a[padded], tol)[: index.size]
+    return np.asarray(_certify_rows(engine, _gather(a, padded), tol))[: index.size]
 
 
 @partial(
@@ -679,14 +687,19 @@ def _run_round(
     return jax.vmap(run, in_axes=(None if shared else 0, 0, 0))(R, z0, state)
 
 
-def _gather(tree, index: np.ndarray):
+@jax.jit
+def _gather(tree, index: chex.Array):
     """Take the entries of every leaf of ``tree`` at ``index`` along axis 0."""
     return jax.tree.map(lambda v: v[index], tree)
 
 
-def _scatter(tree, index: np.ndarray, update):
-    """Write the first ``index.size`` entries of ``update`` into ``tree`` at index."""
-    return jax.tree.map(lambda v, u: v.at[index].set(u[: index.size]), tree, update)
+@jax.jit
+def _scatter(tree, index: chex.Array, update):
+    """Write ``update`` into every leaf of ``tree`` at ``index`` along axis 0.
+
+    An index past the end drops its entry, so a round's padding writes nothing.
+    """
+    return jax.tree.map(lambda v, u: v.at[index].set(u, mode="drop"), tree, update)
 
 
 def solve_batch(
@@ -776,21 +789,23 @@ def _triage_and_rounds(
         tuple: The final batched state, and each fit's certificate.
     """
     tol, shared, max_iter = options["tol"], options["shared"], options["max_iter"]
-    triaged = np.asarray(_certify(engine, state[0], np.arange(z0.shape[0]), tol))
+    n = z0.shape[0]
+    triaged = _certify(engine, state[0], np.arange(n), tol)
     # A triaged fit ends as the exchange loop would: one pass that found no violation
     a, U, M, it, _ = state
     state = (a, U, M, jnp.where(triaged, 1, it), jnp.asarray(triaged))
-    feasible = jnp.asarray(triaged)
+    feasible = triaged.copy()
     active = solved = np.flatnonzero(~triaged)
     while active.size:
-        index = _pad_index(active, _round_size(active.size))
-        r = R if shared else R[index]
-        update = _run_round(
-            engine, r, z0[index], _gather(state, index), _ROUND_PASSES, **options
-        )
-        state = _scatter(state, active, update)
-        it, done = np.asarray(state[3][active]), np.asarray(state[4][active])
+        # Pad the round by repeating its last fit, and drop the padding's update
+        size = _round_size(active.size)
+        take, put = _pad_index(active, size), _pad_index(active, size, fill=n)
+        r = R if shared else _gather(R, take)
+        z, st = _gather((z0, state), take)
+        update = _run_round(engine, r, z, st, _ROUND_PASSES, **options)
+        state = _scatter(state, put, update)
+        it, done = (np.asarray(v)[: active.size] for v in update[3:])
         active = active[~done & (it < max_iter)]
     if solved.size:
-        feasible = feasible.at[solved].set(_certify(engine, state[0], solved, tol))
-    return state, feasible
+        feasible[solved] = _certify(engine, state[0], solved, tol)
+    return state, jnp.asarray(feasible)

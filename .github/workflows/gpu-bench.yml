@@ -1,8 +1,9 @@
 # Runs the GPU benchmark on Runpod with benchmarks/gpu/launch.py: one pod per
 # GPU type, within a budget, and saves the results as an artifact. Needs RUNPOD_API_KEY
 # as a secret of the runpod environment, which can require a reviewer's approval
-# before each run. A dry run (the default) only reads Runpod's prices and prints the
-# plan; it creates no pod.
+# before each run. The pods run benchmarks/gpu/plan.json from the ref this workflow
+# runs on, which the launcher passes them. A dry run (the default) only reads
+# Runpod's prices and prints the plan; it creates no pod.
 name: GPU benchmark
 
 on:

@@ -634,6 +634,95 @@ def _fit_masked(
     return _with_feasibility(result)
 
 
+def _stack_terms(
+    fits: dict[int, GridResult], terms: list[int], has_num_terms: bool, axis: int
+) -> GridResult:
+    """Put each term count's fits together, along a last axis if the grid has one.
+
+    Args:
+        fits: Each distinct term count's fits, zero-padded to the largest count.
+        terms: The term counts, in the grid's order.
+        has_num_terms: Whether the grid has a term-count axis.
+        axis: The term-count axis: 1 for a batch of datasets, else 0.
+
+    Returns:
+        GridResult: The grid's fits.
+    """
+    if not has_num_terms:
+        return fits[terms[0]]
+    return jax.tree.map(
+        lambda *leaves: jnp.stack(leaves, axis=axis), *(fits[k] for k in terms)
+    )
+
+
+@partial(jax.jit, static_argnames=("num_terms", "max_terms"))
+def _ols_batch(
+    x: jnp.ndarray,
+    y: jnp.ndarray,
+    params: MetalogParameters,
+    num_terms: int,
+    max_terms: int,
+) -> GridResult:
+    """OLS fits of a batch of datasets that share their probability levels.
+
+    The datasets share one design matrix, so it's factored once: ``lstsq`` with
+    every dataset's quantiles as a right-hand side, rather than one solve each.
+
+    Args:
+        x: Each dataset's quantiles at y, shape (n_datasets, m).
+        y: The shared probability levels, shape (m,).
+        params: Parameters with MetalogFitMethod.OLS.
+        num_terms: The number of terms (static).
+        max_terms: The grid's largest term count, which the fits are padded to
+            (static).
+
+    Returns:
+        GridResult: The fits, shape (n_datasets,), without ``feasible``.
+    """
+    z = Metalog.quantile_transform(
+        x, params.boundedness, params.lower_bound, params.upper_bound
+    )
+    design = MetalogBase._get_target(y, num_terms, params.term_order)
+    weights = jnp.linalg.lstsq(design, z.T)[0].T
+    weights = jnp.pad(weights, ((0, 0), (0, MAX_TERMS - num_terms)))
+    return jax.vmap(
+        lambda w, x_i: _grid_result(w, x_i, y, num_terms, params, max_terms)
+    )(weights, x)
+
+
+def _fit_ols_shared(
+    x: jnp.ndarray,
+    y: jnp.ndarray,
+    params: MetalogParameters,
+    terms: list[int],
+    has_num_terms: bool,
+) -> GridResult:
+    """Fit an OLS grid whose datasets share their probability levels.
+
+    Each term count's design matrix is factored once for every dataset, with
+    :func:`_ols_batch`, instead of one least-squares solve per dataset on the masked
+    MAX_TERMS design. The fits are zero-padded and stacked as in the other grids.
+
+    Args:
+        x: Each dataset's quantiles at y, shape (n,) or (n_datasets, n).
+        y: The shared probability levels, shape (m,).
+        params: Parameters with MetalogFitMethod.OLS.
+        terms: The term counts.
+        has_num_terms: Whether the grid has a term-count axis.
+
+    Returns:
+        GridResult: The fits, with ``feasible`` from check_feasibility.
+    """
+    batched = x.ndim == 2
+    xb = x if batched else x[None]
+    max_terms = max(terms)
+    fits = {}
+    for k in dict.fromkeys(terms):
+        result = _ols_batch(xb, y, params, k, max_terms)
+        fits[k] = result if batched else jax.tree.map(lambda v: v[0], result)
+    return _with_feasibility(_stack_terms(fits, terms, has_num_terms, x.ndim - 1))
+
+
 def _fit_feasible(
     x: jnp.ndarray,
     y: jnp.ndarray,
@@ -698,13 +787,7 @@ def _fit_feasible(
         return result if batched else jax.tree.map(lambda v: v[0], result)
 
     fits = {k: fit_terms(k) for k in dict.fromkeys(terms)}
-    if has_num_terms:
-        axis = x.ndim - 1
-        result = jax.tree.map(
-            lambda *leaves: jnp.stack(leaves, axis=axis), *(fits[k] for k in terms)
-        )
-    else:
-        result = fits[terms[0]]
+    result = _stack_terms(fits, terms, has_num_terms, x.ndim - 1)
     return result.replace(feasible=jnp.ones(result.ks_dist.shape, dtype=bool))
 
 
@@ -733,7 +816,9 @@ def fit_grid(
 
     Every fit uses ``params.method``, and Lasso when ``l1_penalties`` is given; the
     fits' ``method`` says which. OLS and Lasso grids fit every configuration in one
-    vmapped call, with up to MAX_TERMS terms. MetalogFitMethod.Feasible needs the
+    vmapped call, with up to MAX_TERMS terms. When every dataset has the same
+    probability levels, as usual, an OLS grid factors each term count's design matrix
+    once and solves every dataset with it. MetalogFitMethod.Feasible needs the
     number of terms fixed when it compiles, so it fits each term count in its own
     batch. Its datasets whose OLS fit is already feasible keep that fit, and the
     others run the exchange method in rounds, so a fit costs about its own
@@ -801,6 +886,8 @@ def fit_grid(
         )
     if method == MetalogFitMethod.Feasible:
         result = _fit_feasible(x, y, params, terms, has_num_terms, shared)
+    elif method == MetalogFitMethod.OLS and shared:
+        result = _fit_ols_shared(x, rows[0], params, terms, has_num_terms)
     else:
         result = _fit_masked(
             x, y, params, terms, has_num_terms, l1_penalties, lasso_params

@@ -42,6 +42,35 @@ class ConfigTest(absltest.TestCase):
         )
         self.assertTrue(config.local)
         self.assertAlmostEqual(config.deadline, time.time() + 60, delta=5)
+        self.assertIsNone(config.plan_json)
+
+    def test_the_launchers_plan_is_saved_with_the_results(self):
+        """BENCH_PLAN_JSON replaces the image's plan, and is kept as plan.json."""
+        directory = Path(self.enter_context(tempfile.TemporaryDirectory()))
+        text = json.dumps({**PLAN, "seed": 60}, separators=(",", ":"))
+        config = run.Config.from_environment(
+            {
+                "BENCH_LOCAL": "1",
+                "BENCH_RESULTS": str(directory),
+                "BENCH_PLAN_JSON": text,
+            }
+        )
+        plan, digest = run.load_plan(config)
+        self.assertEqual(plan["seed"], 60)
+        self.assertEqual(config.plan, directory / "plan.json")
+        self.assertEqual((directory / "plan.json").read_text(), text)
+        self.assertEqual(digest, sha256_file(directory / "plan.json"))
+
+    def test_the_images_plan_by_default(self):
+        """Without BENCH_PLAN_JSON, the plan beside run.py is saved as it is."""
+        directory = Path(self.enter_context(tempfile.TemporaryDirectory()))
+        config = run.Config.from_environment(
+            {"BENCH_LOCAL": "1", "BENCH_RESULTS": str(directory)}
+        )
+        plan, digest = run.load_plan(config)
+        self.assertEqual(plan, PLAN)
+        self.assertEqual(digest, sha256_file(run.PACKAGE_DIR / "plan.json"))
+        self.assertEqual(config.plan, directory / "plan.json")
 
 
 class SecretsTest(absltest.TestCase):
@@ -110,7 +139,7 @@ class ResultsServerTest(absltest.TestCase):
 
 
 class SchedulingTest(absltest.TestCase):
-    """Phases share the time, doubling stops in time, and chunks use the knee."""
+    """Phases share the time, batch sizes stop in time, and chunks use the knee."""
 
     def runner(self, seconds=1000.0):
         """A runner whose measurements are recorded, not run."""
@@ -138,7 +167,24 @@ class SchedulingTest(absltest.TestCase):
         check = PLAN["phases"][0]
         self.assertGreaterEqual(runner.until(check), time.time() + check["min_s"] - 1)
 
-    def test_doubling_stops_before_running_out_of_time(self):
+    def test_plan_reuses_compilations(self):
+        """Correctness and term counts use batch sizes, sharing their compilations."""
+        phases = {p["name"]: p for p in PLAN["phases"]}
+        sizes = phases["batches"]["sizes"]
+        self.assertEqual(sizes, sorted(sizes))
+        self.assertIn(phases["correctness"]["datasets"], sizes)
+        self.assertIn(phases["terms"]["datasets"], sizes)
+        self.assertIn(PLAN["num_terms"], phases["terms"]["num_terms"])
+
+    def test_predicted_wall(self):
+        """The overhead stays, and the steady calls grow with the batch."""
+        record = {"steady_s": 2.0, "wall_s": 30.0, "repetitions": 3}
+        # 30 - 2 * 4 = 22 s of overhead, then a first call and 3 steady calls of 8 s
+        self.assertAlmostEqual(run.predicted_wall(record, 4, 3, 30), 22 + 4 * 8)
+        # 20-s calls leave room for one steady call in the 30-s budget
+        self.assertAlmostEqual(run.predicted_wall(record, 10, 3, 30), 22 + 2 * 20)
+
+    def test_sizes_stop_before_running_out_of_time(self):
         """A batch whose predicted time doesn't fit is recorded as skipped."""
         runner = self.runner()
         now = [1000.0]
@@ -146,25 +192,45 @@ class SchedulingTest(absltest.TestCase):
 
         def measure(spec, until):
             runner.specs.append(spec)
-            wall = 30.0 * spec["N"] / 1024
+            steady = spec["N"] / 1024
+            repetitions = min(3, max(1, int(30 // steady)))
+            wall = 20 + (repetitions + 1) * steady
             now[0] += wall
             return runner.record(
-                {**spec, "status": "ok", "wall_s": wall, "mode": "feasible"}
+                {
+                    **spec,
+                    "status": "ok",
+                    "wall_s": wall,
+                    "steady_s": steady,
+                    "repetitions": repetitions,
+                    "mode": "feasible",
+                }
             )
 
         runner.measure = measure
         phase = {
             "name": "batches",
             "methods": {"feasible": 1.0},
-            "first": 1024,
-            "last": 2**24,
+            "sizes": [1024, 4096, 16384, 65536],
         }
-        runner.phase_end["batches"] = now[0] + 600
+        runner.phase_end["batches"] = now[0] + 300
         runner.run_batches(phase)
-        # 16,384 datasets would take about 2.2 * 240 s, and only 150 s are left
-        self.assertEqual([s["N"] for s in runner.specs], [1024, 2048, 4096, 8192])
+        # 65,536 datasets would take 1.5 * (20 + 2 * 64) s, and only 188 s are left
+        self.assertEqual([s["N"] for s in runner.specs], [1024, 4096, 16384])
         self.assertEqual(
-            (runner.records[-1]["N"], runner.records[-1]["status"]), (16384, "skipped")
+            (runner.records[-1]["N"], runner.records[-1]["status"]), (65536, "skipped")
+        )
+
+    def test_correctness_runs_each_method_alone(self):
+        """One measurement per method, so that a timeout loses only one."""
+        runner = self.runner()
+        specs = []
+        runner.measure = lambda spec, until: specs.append(spec) or {"status": "ok"}
+        phase = next(p for p in PLAN["phases"] if p["name"] == "correctness")
+        runner.run_correctness(phase)
+        self.assertEqual(
+            [(s["method"], s["methods"]) for s in specs],
+            [(m, [m]) for m in phase["methods"]],
         )
 
     def test_knee(self):
@@ -247,9 +313,40 @@ class FinishTest(absltest.TestCase):
         listed = (directory / "checksums.sha256").read_text().splitlines()
         self.assertEqual(len(listed), 2)
 
-    def test_self_delete_outside_a_pod(self):
-        """Outside a pod there's nothing to delete."""
-        self.assertIsNone(run.self_delete({}))
+
+class ProgressTest(absltest.TestCase):
+    """status.json tells the launcher the phase and the latest measurement."""
+
+    def test_each_record_updates_the_status(self):
+        """Recording a measurement rewrites status.json with it."""
+        directory = Path(self.enter_context(tempfile.TemporaryDirectory()))
+        config = run.Config.from_environment(
+            {"BENCH_LOCAL": "1", "BENCH_RESULTS": str(directory)}
+        )
+        runner = run.Runner(config, PLAN)
+        runner.phase = "batches"
+        runner.record(
+            {
+                "phase": "batches",
+                "kind": "fit",
+                "method": "feasible",
+                "N": 1024,
+                "K": 10,
+                "status": "ok",
+                "wall_s": 29.1,
+            }
+        )
+        status = json.loads((directory / "status.json").read_text())
+        self.assertEqual(
+            (status["state"], status["phase"], status["measurements"]),
+            ("running", "batches", 1),
+        )
+        self.assertEqual(status["last"], "fit feasible N=1024 K=10: ok in 29 s")
+
+    def test_describe_a_skipped_sampling(self):
+        """A record without a method or wall time still reads."""
+        record = {"kind": "sampling", "mode": "cdf", "N": 10**7, "status": "skipped"}
+        self.assertEqual(run.describe(record), "sampling cdf N=10000000: skipped")
 
 
 if __name__ == "__main__":
