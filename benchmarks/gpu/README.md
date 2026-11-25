@@ -44,7 +44,9 @@ Each pod's results:
 1. **Build the image:** run the
    [GPU benchmark image](../../.github/workflows/gpu-bench-image.yml) workflow. It
    pushes `ghcr.io/tjefferies/metalog_jax/gpu-bench:<version>-<sha>`, with a provenance
-   attestation, and prints the digest to run.
+   attestation, and prints the image to run, `…/gpu-bench@sha256:…`, in the run's
+   summary. The package page also lists a `sha256-…` tag: that's the attestation, not
+   the image.
 2. **Make the package public,** in its settings on GitHub, so that Runpod, and anyone
    reproducing a run, can pull it without credentials.
 3. **Add the Runpod API key:** as `RUNPOD_API_KEY` in your shell for local launches, or
@@ -90,7 +92,9 @@ checksums.
   launcher acknowledges them, or the download window closes, the pod deletes itself
   with its own `RUNPOD_API_KEY`, or else exits, which stops compute billing.
 - **The launcher:** it terminates each pod when its results are in or its cap ends, and
-  every pod it created when it exits, on errors, Ctrl-C and SIGTERM included.
+  every pod it created when it exits, on errors, Ctrl-C and SIGTERM included. If
+  Runpod's proxy refuses its requests (HTTP 401 or 403) four times in a row, the pod
+  can't be collected, so it's terminated at once and the reason printed.
 - **`cleanup`:** terminates any pod named `metalog-bench-*`.
 - **The bill:** after a run, the launcher reads Runpod's charges into `launcher.json`,
   and exits with status 2 if they exceed the budget.

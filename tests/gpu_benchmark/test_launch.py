@@ -11,12 +11,13 @@ import json
 import tempfile
 import threading
 import time
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from absl.testing import absltest
 
-from benchmarks.gpu import launch
+from benchmarks.gpu import common, launch
 from benchmarks.gpu.common import GPU_TYPES
 from benchmarks.gpu.serve import ResultsServer
 
@@ -111,6 +112,35 @@ class FakeRunpod:
         self.httpd.shutdown()
 
 
+class RefusingProxy:
+    """A local stand-in for a proxy that refuses every request, as Cloudflare did."""
+
+    def __init__(self):
+        """Serve on a free port, recording each request's user agent."""
+        self.user_agents: list[str] = []
+        proxy = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                proxy.user_agents.append(self.headers.get("User-Agent"))
+                body = b"error code: 1010"
+                self.send_response(403)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+
+    def close(self):
+        """Stop serving."""
+        self.httpd.shutdown()
+
+
 def make_results(directory: Path, state="done", corrupt=None) -> dict:
     """Write a finished pod's results and status.json; return the file digests."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -190,6 +220,14 @@ class PodBodyTest(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "by digest"):
             launch.check_image("ghcr.io/tjefferies/metalog_jax/gpu-bench:latest")
         launch.check_image(self.IMAGE)
+
+    def test_the_attestation_tag_names_the_image(self):
+        """The sha256-<digest> tag is the attestation; the error gives the image."""
+        tag = self.IMAGE.replace("@sha256:", ":sha256-")
+        with self.assertRaises(ValueError) as error:
+            launch.check_image(tag)
+        self.assertIn("provenance attestation", str(error.exception))
+        self.assertIn(f"pass {self.IMAGE}", str(error.exception))
 
     def test_cuda_floor_comes_from_the_lock(self):
         """The hosts' minimum CUDA is the runtime uv.lock pins, as major.minor."""
@@ -296,6 +334,55 @@ class LauncherTest(absltest.TestCase):
         launcher.watch()
         self.assertEqual(launcher.pods[0].state, "pod exited without results")
         self.assertEqual(self.api.deleted(), ["pod0"])
+
+    def test_a_refusing_proxy_ends_the_pod_early(self):
+        """Refusals stop the pod after REFUSALS_TO_STOP polls, not at its cap."""
+        proxy = RefusingProxy()
+        self.addCleanup(proxy.close)
+        launcher = launch.Launcher(
+            self.client, self.plan, PodBodyTest.IMAGE, self.out, poll_s=0.01
+        )
+        launcher.url_for = lambda _pod_id: proxy.url
+        launcher.create("12.9")
+        launcher.watch()
+        pod = launcher.pods[0]
+        self.assertEqual(pod.state, "proxy refused")
+        self.assertIn("HTTP 403 error code: 1010", pod.error)
+        self.assertLen(proxy.user_agents, launch.REFUSALS_TO_STOP)
+        self.assertEqual(self.api.deleted(), ["pod0"])
+
+    def test_requests_name_the_tool(self):
+        """Every request sends USER_AGENT, not urllib's, which Cloudflare refuses."""
+        proxy = RefusingProxy()
+        self.addCleanup(proxy.close)
+        with self.assertRaises(urllib.error.HTTPError):
+            launch.fetch(proxy.url + "/status.json")
+        self.assertEqual(proxy.user_agents, [common.USER_AGENT])
+
+    def test_a_failing_log_stream_is_recorded(self):
+        """A log stream that fails says why in pod.log."""
+        launcher = self.launcher()
+        launcher.create("12.9")
+        log = launcher.pods[0].out / "pod.log"
+        for _ in range(200):
+            if log.exists():
+                break
+            time.sleep(0.01)
+        launcher.terminate_all()
+        self.assertIn("[launcher] the log stream failed: HTTP 404", log.read_text())
+
+    def test_unreported_charges_have_no_billed_total(self):
+        """Without every pod's charges, the total is None, not $0.00."""
+        launcher = self.launcher()
+        launcher.create("12.9")
+        launcher.terminate_all()
+        started = launch.utc_now()
+        record = launcher.record(started, {"h100-sxm": None})
+        self.assertIsNone(record["total_billed"])
+        self.assertGreaterEqual(record["total_estimated"], 0)
+        self.assertEqual(
+            launcher.record(started, {"h100-sxm": 0.5})["total_billed"], 0.5
+        )
 
     def test_terminate_all_deletes_each_pod_once(self):
         """On exit every created pod is deleted, and none twice."""
