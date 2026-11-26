@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "description": "metalog_jax benchmark on a CPU: the GPU plan's measurements at the sizes of the README's M3 tables, which a laptop's memory holds",
+  "seed": 59,
+  "data": {
+    "samples_per_dataset": 200,
+    "probabilities": "DEFAULT_Y",
+    "boundedness": "STRICTLY_LOWER_BOUND",
+    "lower_bound": 0.0
+  },
+  "num_terms": 10,
+  "repetitions": 3,
+  "repetition_budget_s": 30,
+  "reserve_s": 30,
+  "phases": [
+    {
+      "name": "check",
+      "share": 0.02,
+      "min_s": 60
+    },
+    {
+      "name": "batches",
+      "share": 0.45,
+      "methods": {"feasible": 0.75, "ols": 0.25},
+      "sizes": [5, 50, 500, 2000, 5000, 10000, 20000]
+    },
+    {
+      "name": "chunked",
+      "share": 0.15,
+      "methods": {"ols": 0.2, "feasible": 0.8},
+      "seconds": 120,
+      "min_chunks": 2,
+      "knee_tolerance": 0.05
+    },
+    {
+      "name": "terms",
+      "share": 0.23,
+      "num_terms": [4, 6, 8, 10, 12],
+      "datasets": 5000
+    },
+    {
+      "name": "sampling",
+      "share": 0.15,
+      "kinds": {
+        "ppf_jit": [1000000, 10000000, 100000000],
+        "rvs_jax": [1000000, 10000000],
+        "rvs_hdr": [1000000, 10000000],
+        "cdf": [1000000, 10000000],
+        "pdf_cdf": [1000000, 10000000]
+      }
+    }
+  ]
+}

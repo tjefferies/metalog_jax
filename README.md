@@ -284,7 +284,7 @@ Start with `MetalogFitMethod.Feasible`. Set `MetalogParameters.method` to one of
 | Method | Use when | Hyperparameters |
 |--------|----------|-----------------|
 | `MetalogFitMethod.Feasible` | **Recommended default.** Always returns a valid distribution: the OLS fit when it is valid, otherwise the closest valid metalog | None |
-| `MetalogFitMethod.OLS` | You need speed: in a large grid, about 10 times faster than `Feasible` at 10 terms, with the invalid fits marked. Closed-form least squares; `fit` raises if the density is negative on its check grid | None |
+| `MetalogFitMethod.OLS` | You need speed: in a large grid, about 6 times faster than `Feasible` at 10 terms, with the invalid fits marked. Closed-form least squares; `fit` raises if the density is negative on its check grid | None |
 | `MetalogFitMethod.Lasso` | Noisy data or many terms; L1 regularization shrinks unneeded coefficients | `LassoParameters` |
 
 ### Always-Feasible Fitting
@@ -378,72 +378,65 @@ also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_dark.svg">
-  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 1.9 ms per dataset, projecting to about 32 minutes for one million datasets; OLS through fit_grid, measured before it checked validity, is about 20 times faster. Right: peak memory for a single batch grows about 88 KB per dataset and would reach 8 GB near 86,000 datasets, while fitting 50,000 datasets in chunks of 5,000 peaked at 1.4 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
+  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 0.56 ms per dataset, projecting to about 9 minutes for one million datasets; OLS through fit_grid, its validity check included, is about 6 times faster. Right: peak memory for a single batch grows about 72 KB per dataset and would reach 8 GB near 109,000 datasets, while fitting 160,000 datasets in chunks of 10,000 peaked at 1.7 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
 </picture>
 
-Measured with `fit_grid_datasets` on a **MacBook Pro (Apple M3, 8 cores: 4 performance
-and 4 efficiency, 8 GB unified memory), macOS 26.3.1, Python 3.13.7, JAX 0.8.0 on the
-CPU backend** (no GPU). Each dataset is 200 samples from one of the five distribution
-families in [`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the
-105 `DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
-compilation, which takes 2-6 s per term count and batch shape.
-
-These numbers predate `fit_grid`'s triage and rounds, which make Feasible batches 2 to 3
-times faster on the same machine (JAX 0.11.2, 10 terms):
-
-| Datasets | Before | Now |
-|---|---|---|
-| 2,000 | 2.13 ms per dataset | 1.05 ms |
-| 10,000 | 1.69 ms | 0.60 ms |
-| 2,000, at 4, 6, 8, 10 and 12 terms | 11.3 ms | 4.0 ms |
-
-The [GPU benchmark](benchmarks/gpu/README.md) refreshes the chart and the tables below.
+Measured with `fit_grid` on a **MacBook Pro (Apple M3, 8 cores: 4 performance and 4
+efficiency, 8 GB unified memory), macOS 26.3.1, Python 3.13.7, JAX 0.11.2 on the CPU
+backend** (no GPU), by [`benchmarks/cpu/run.sh`](benchmarks/cpu/run.sh). The run's
+results, with its full setup, are in
+[`benchmarks/cpu/results/20261126T035035Z`](benchmarks/cpu/results/20261126T035035Z).
+Each dataset is 200 samples from one of the five distribution families in
+[`examples/feasible_fits.py`](examples/feasible_fits.py), summarized at the 105
+`DEFAULT_Y` quantiles and fitted with a lower bound of 0. Times exclude the one-time
+compilation, which takes 2-16 s per term count and batch shape.
 
 | Datasets (10 terms) | Time | Per dataset | Peak memory |
 |---|---|---|---|
-| 5 | 0.08 s | 16.6 ms | 0.61 GB |
-| 50 | 0.22 s | 4.3 ms | 0.62 GB |
-| 500 | 1.24 s | 2.5 ms | 0.73 GB |
-| 2,000 | 4.51 s | 2.3 ms | 0.92 GB |
-| 5,000 | 9.41 s | 1.9 ms | 1.28 GB |
-| 10,000 | 17.8 s | 1.8 ms | 1.60 GB |
-| 20,000 | 39.7 s | 2.0 ms | 2.42 GB |
-| 50,000 (10 chunks of 5,000) | 96.3 s | 1.9 ms | 1.43 GB |
+| 5 | 0.16 s | 32.1 ms | 0.49 GB |
+| 50 | 0.16 s | 3.1 ms | 0.48 GB |
+| 500 | 0.52 s | 1.05 ms | 0.68 GB |
+| 2,000 | 2.07 s | 1.04 ms | 0.91 GB |
+| 5,000 | 3.57 s | 0.71 ms | 0.73 GB |
+| 10,000 | 5.50 s | 0.55 ms | 1.31 GB |
+| 20,000 | 11.2 s | 0.56 ms | 1.81 GB |
+| 160,000 (16 chunks of 10,000) | 89.9 s | 0.56 ms | 1.67 GB |
 
 The number of terms matters more than the number of datasets. At 5,000 datasets the time
 per dataset is:
 
 | Terms | 4 | 6 | 8 | 10 | 12 |
 |---|---|---|---|---|---|
-| Per dataset | 0.19 ms | 0.69 ms | 1.22 ms | 1.88 ms | 3.10 ms |
+| Per dataset | 0.03 ms | 0.10 ms | 0.39 ms | 0.69 ms | 1.26 ms |
 
-**Extrapolating** (dashed lines in the chart; linear fits to batches of 500 or more):
+**Extrapolating** (dashed lines in the chart; linear fits to the largest batches):
 
-- **Throughput:** about 1.9 ms per dataset at 10 terms, or roughly 1.9 million datasets
-  per hour on this laptop; one million datasets take about 32 minutes. Comparing all five
-  term counts, as in the example's second case, costs about 7 ms per dataset (about
-  2 hours per million).
-- **Memory:** one batch needs about 0.76 GB plus 88 KB per dataset, so it would reach this
-  machine's 8 GB near 86,000 datasets. Split larger jobs into fixed-size chunks instead:
-  5,000-10,000 datasets per chunk was the fastest per dataset here, memory stays flat
-  (50,000 datasets in chunks of 5,000 peaked at 1.4 GB), and every chunk reuses one
+- **Throughput:** about 0.56 ms per dataset at 10 terms, or roughly 6.4 million datasets
+  per hour on this laptop; one million datasets take about 9 minutes. Comparing all five
+  term counts in one grid, as in the example's second case, costs about 2.5 ms per
+  dataset (about 42 minutes per million).
+- **Memory:** one batch needs about 0.49 GB plus 72 KB per dataset, so it would reach this
+  machine's 8 GB near 109,000 datasets. Split larger jobs into fixed-size chunks instead:
+  10,000-20,000 datasets per chunk was the fastest per dataset here, memory stays flat
+  (160,000 datasets in chunks of 10,000 peaked at 1.7 GB), and every chunk reuses one
   compiled shape. Pad the last chunk to the same size to avoid a recompile.
-- **OLS for comparison:** `fit_grid` with OLS fits in about 0.09 ms per dataset, 20
-  times faster, and checking each fit's validity for its `feasible` mask brings that to
-  about 0.12 ms (at 5,000 datasets, with JAX 0.11.2, factoring the datasets' shared
-  design matrix once; the chart's OLS line was measured before `fit_grid` checked
-  validity). At 10 terms, 65% of these datasets' OLS fits are
-  invalid distributions. `fit_grid` returns them, marked in `feasible`; pass
+- **OLS for comparison:** `fit_grid` with OLS fits in about 0.09 ms per dataset at
+  10,000-20,000 datasets, about 6 times faster, including the validity check behind its
+  `feasible` mask. At 10 terms, 64% of these datasets' OLS fits are invalid
+  distributions. `fit_grid` returns them, marked in `feasible`; pass
   `on_infeasible="raise"` to raise instead, showing which.
 
-GPU performance was not measured. To reproduce, or to rerun on your own hardware:
+The [GPU benchmark](benchmarks/gpu/README.md) measures the same fits on NVIDIA A100, H100
+and H200 GPUs, and [`benchmarks/README.md`](benchmarks/README.md) lists every benchmark.
+To rerun this one on your own machine:
 
 ```bash
-uv run python benchmarks/feasible_scaling/bench.py feasible 5000 10 3       # one batch
-uv run python benchmarks/feasible_scaling/bench_chunked.py 50000 5000 10    # chunked
-uv run --with matplotlib python benchmarks/feasible_scaling/plot.py \
-    benchmarks/feasible_scaling/results.json docs/source/_static           # redraw the chart
+benchmarks/cpu/run.sh                                     # up to an hour; 11 minutes here
+benchmarks/report/collect.sh --dir benchmarks/cpu/results/<the run's time>
 ```
+
+`collect.sh` prints the tables above and draws the chart into the run's `charts/`
+folder; this README's copies are `docs/source/_static/feasible_scaling_*.svg`.
 
 ### Regularized Fitting
 

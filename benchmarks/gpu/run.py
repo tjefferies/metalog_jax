@@ -39,6 +39,7 @@ from benchmarks.gpu import environment
 from benchmarks.gpu.common import (
     GPU_TYPES,
     RESULT_PREFIX,
+    home_as_tilde,
     knee,
     sha256_file,
     to_json,
@@ -216,7 +217,8 @@ class Runner:
                 {**base, "status": "timeout", "wall_s": time.time() - began}
             )
         with self.log.open("a") as f:
-            f.write(f"--- {utc_now()} {json.dumps(spec)}\n{proc.stderr[-20000:]}\n")
+            entry = f"--- {utc_now()} {json.dumps(spec)}\n{proc.stderr[-20000:]}\n"
+            f.write(home_as_tilde(entry))
         lines = [l for l in proc.stdout.splitlines() if l.startswith(RESULT_PREFIX)]
         if proc.returncode == 0 and lines:
             return self.record({**base, **json.loads(lines[-1][len(RESULT_PREFIX) :])})

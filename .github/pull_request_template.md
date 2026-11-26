@@ -82,8 +82,10 @@ Environment: <!-- OS, Python, jax/jaxlib versions, CPU or GPU -->
 
 <!--
 For changes to fitting, feasibility, grid search, or sampling: before and after
-numbers, the hardware, and the command, e.g.
-uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
+numbers, the hardware, and the commands. For example, run the CPU benchmark on
+development and on this branch, and compare their tables:
+benchmarks/cpu/run.sh --minutes 10 --out benchmarks/cpu/results/before
+benchmarks/report/collect.sh --dir benchmarks/cpu/results/before --no-charts
 -->
 
 ## Documentation

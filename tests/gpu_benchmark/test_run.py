@@ -14,7 +14,7 @@ import numpy as np
 from absl.testing import absltest
 
 from benchmarks.gpu import environment, run
-from benchmarks.gpu.common import knee, sha256_file
+from benchmarks.gpu.common import home_as_tilde, knee, sha256_file
 from benchmarks.gpu.data import quantiles
 from benchmarks.gpu.serve import ResultsServer
 
@@ -103,6 +103,38 @@ class SecretsTest(absltest.TestCase):
         )
 
 
+class HomeTest(absltest.TestCase):
+    """Results write the home directory as ~, so that a local run doesn't name the user."""
+
+    HOME = "/home/tester"
+
+    def test_paths_in_home(self):
+        """A path in the home directory starts ~, wherever it starts in the text."""
+        for text, expected in (
+            ("/home/tester", "~"),
+            ("/home/tester/code/x", "~/code/x"),
+            ("PATH=/home/tester/bin:/usr/bin", "PATH=~/bin:/usr/bin"),
+            ('{"plan": "/home/tester/p.json"}', '{"plan": "~/p.json"}'),
+            ("in /home/tester/a and /home/tester/b", "in ~/a and ~/b"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(home_as_tilde(text, self.HOME), expected)
+
+    def test_other_paths_stay(self):
+        """Paths that only contain or extend the home directory's are left alone."""
+        for text in ("/home/testers/x", "/data/home/tester/x", "/opt/venv/bin/python"):
+            with self.subTest(text=text):
+                self.assertEqual(home_as_tilde(text, self.HOME), text)
+        self.assertEqual(home_as_tilde("/x/y", "/"), "/x/y")
+
+    def test_the_manifest_writes_home_as_tilde(self):
+        """The recorded environment and executable don't contain the home directory."""
+        home = str(Path.home())
+        kept = environment.safe_environment({"BENCH_RESULTS": f"{home}/out"})
+        self.assertEqual(kept, {"BENCH_RESULTS": "~/out"})
+        self.assertFalse(environment.software()["executable"].startswith(home + "/"))
+
+
 class ResultsServerTest(absltest.TestCase):
     """Results are served only under the token, only by name; ack is recorded."""
 
@@ -175,6 +207,19 @@ class SchedulingTest(absltest.TestCase):
         self.assertIn(phases["correctness"]["datasets"], sizes)
         self.assertIn(phases["terms"]["datasets"], sizes)
         self.assertIn(PLAN["num_terms"], phases["terms"]["num_terms"])
+
+    def test_cpu_plan(self):
+        """The CPU plan's phases share all the time, and the runner knows each one."""
+        plan = json.loads((run.REPO_DIR / "benchmarks/cpu/plan.json").read_text())
+        self.assertAlmostEqual(sum(p["share"] for p in plan["phases"]), 1.0)
+        phases = {p["name"]: p for p in plan["phases"]}
+        self.assertNotIn("correctness", phases)  # it compares a GPU with the CPU
+        self.assertLessEqual(set(phases), set(p["name"] for p in PLAN["phases"]))
+        self.assertIn(phases["terms"]["datasets"], phases["batches"]["sizes"])
+        self.assertEqual(
+            {k: v for k, v in plan.items() if k not in ("description", "phases")},
+            {k: v for k, v in PLAN.items() if k not in ("description", "phases")},
+        )
 
     def test_predicted_wall(self):
         """The overhead stays, and the steady calls grow with the batch."""

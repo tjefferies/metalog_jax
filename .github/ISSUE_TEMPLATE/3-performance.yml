@@ -60,7 +60,7 @@ body:
     attributes:
       label: What you expected
       description: |
-        For example, timings from an earlier release, another library, or the benchmarks in [`benchmarks/feasible_scaling/`](https://github.com/tjefferies/metalog_jax/tree/development/benchmarks/feasible_scaling).
+        For example, timings from an earlier release, another library, or the [benchmarks](https://github.com/tjefferies/metalog_jax/tree/development/benchmarks), such as `benchmarks/cpu/run.sh --minutes 10`.
 
   - type: dropdown
     id: hardware

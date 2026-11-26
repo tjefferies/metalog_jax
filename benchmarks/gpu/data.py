@@ -1,7 +1,6 @@
 """Benchmark datasets, drawn on the device with jax.random.
 
-The five families of ``examples/feasible_fits.py`` and ``benchmarks/feasible_scaling``,
-with the same parameters. Dataset ``j`` is family ``j % 5``, drawn with
+The five families of ``examples/feasible_fits.py``, with the same parameters. Dataset ``j`` is family ``j % 5``, drawn with
 ``fold_in(key(seed), j)``, so a dataset doesn't depend on the chunk it's drawn in, and
 every device draws the same ones (JAX's default PRNG is the same on every backend).
 """

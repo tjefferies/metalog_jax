@@ -1,0 +1,68 @@
+--- 2026-11-26T03:50:36+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "check", "kind": "check", "backend": "cpu", "device_kind": null}
+
+--- 2026-11-26T03:50:43+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 5, "K": 10}
+
+--- 2026-11-26T03:50:48+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 50, "K": 10}
+
+--- 2026-11-26T03:50:58+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 500, "K": 10}
+
+--- 2026-11-26T03:51:17+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 2000, "K": 10}
+
+--- 2026-11-26T03:51:43+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 5000, "K": 10}
+
+--- 2026-11-26T03:52:19+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 10000, "K": 10}
+
+--- 2026-11-26T03:53:07+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 20000, "K": 10}
+
+--- 2026-11-26T03:53:09+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 5, "K": 10}
+
+--- 2026-11-26T03:53:11+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 50, "K": 10}
+
+--- 2026-11-26T03:53:14+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 500, "K": 10}
+
+--- 2026-11-26T03:53:18+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 2000, "K": 10}
+
+--- 2026-11-26T03:53:22+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 5000, "K": 10}
+
+--- 2026-11-26T03:53:29+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 10000, "K": 10}
+
+--- 2026-11-26T03:53:40+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 20000, "K": 10}
+
+--- 2026-11-26T03:55:39+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "chunked", "kind": "chunked", "method": "ols", "K": 10, "N": 1300000, "chunk": 20000, "time_s": 120}
+
+--- 2026-11-26T03:57:31+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "chunked", "kind": "chunked", "method": "feasible", "K": 10, "N": 210000, "chunk": 10000, "time_s": 120}
+
+--- 2026-11-26T03:57:35+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 5000, "K": 4}
+
+--- 2026-11-26T03:57:43+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 5000, "K": 6}
+
+--- 2026-11-26T03:58:00+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 5000, "K": 8}
+
+--- 2026-11-26T03:58:19+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 5000, "K": 10}
+
+--- 2026-11-26T03:59:00+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 5000, "K": 12}
+
+--- 2026-11-26T03:59:55+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 5000, "K": 12, "num_terms": [4, 6, 8, 10, 12]}
+
+--- 2026-11-26T03:59:59+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 1000000}
+
+--- 2026-11-26T04:00:01+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 10000000}
+
+--- 2026-11-26T04:00:05+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 100000000}
+
+--- 2026-11-26T04:00:07+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_jax", "N": 1000000}
+
+--- 2026-11-26T04:00:09+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_jax", "N": 10000000}
+
+--- 2026-11-26T04:00:11+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_hdr", "N": 1000000}
+
+--- 2026-11-26T04:00:15+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_hdr", "N": 10000000}
+
+--- 2026-11-26T04:00:18+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "cdf", "N": 1000000}
+
+--- 2026-11-26T04:00:37+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "cdf", "N": 10000000}
+
+--- 2026-11-26T04:00:41+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "pdf_cdf", "N": 1000000}
+
+--- 2026-11-26T04:01:01+00:00 {"plan": "benchmarks/cpu/results/20261126T035035Z/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "pdf_cdf", "N": 10000000}
+
