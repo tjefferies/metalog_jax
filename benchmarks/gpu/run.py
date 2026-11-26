@@ -6,11 +6,14 @@ Each phase of ``plan.json`` gets its share of the time until the deadline, and e
 measurement runs in its own process (``benchmarks.gpu.measure``). This process never
 imports JAX, so it holds no GPU memory. Results go to ``BENCH_RESULTS``, and are
 served to the launcher until it acknowledges them or the download window closes.
-Then the pod deletes itself, or else exits, which stops Runpod's compute billing.
+Then the process exits, which stops Runpod's compute billing, and the launcher
+terminates the pod.
 
 Environment:
     BENCH_RESULTS: Results directory. Default ``/results``.
     BENCH_PLAN: The plan. Default ``plan.json`` beside this module.
+    BENCH_PLAN_JSON: The plan itself, as the launcher passes it, in place of
+        BENCH_PLAN. Either plan is saved with the results as ``plan.json``.
     BENCH_DEADLINE: Unix time by which the results must be ready. Default: now
         plus ``BENCH_TIME_BUDGET_S``, which defaults to 3600.
     BENCH_BACKEND: The backend to require, ``gpu`` (the default) or ``cpu``.
@@ -30,7 +33,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 from benchmarks.gpu import environment
@@ -38,7 +40,6 @@ from benchmarks.gpu.common import (
     GPU_TYPES,
     RESULT_PREFIX,
     knee,
-    open_url,
     sha256_file,
     to_json,
     utc_now,
@@ -48,13 +49,12 @@ from benchmarks.gpu.serve import ResultsServer
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_DIR = PACKAGE_DIR.parent.parent
-RUNPOD_API = "https://api.runpod.io/v2"
 
 # A measurement needs at least this long to start JAX, draw data and compile
 MIN_MEASUREMENT_S = 20
-# The next batch size is skipped unless this many times the last one's wall time
-# remains: doubling the batch at least doubles the work
-DOUBLING_FACTOR = 2.2
+# The next batch size is skipped unless its predicted wall time, times this margin,
+# remains in the phase: compilation varies from size to size
+GROWTH_MARGIN = 1.5
 # Errors that mean the device ran out of memory
 _OOM_MARKERS = ("RESOURCE_EXHAUSTED", "out of memory", "Out of memory", "OOM")
 _TELEMETRY_FIELDS = (
@@ -69,6 +69,7 @@ class Config:
 
     results: Path
     plan: Path
+    plan_json: str | None
     deadline: float
     backend: str
     gpu: str | None
@@ -95,6 +96,7 @@ class Config:
         config = cls(
             results=Path(env.get("BENCH_RESULTS", "/results")),
             plan=Path(env.get("BENCH_PLAN", PACKAGE_DIR / "plan.json")),
+            plan_json=env.get("BENCH_PLAN_JSON") or None,
             deadline=float(env.get("BENCH_DEADLINE", time.time() + budget)),
             backend=env.get("BENCH_BACKEND", "gpu"),
             gpu=env.get("BENCH_GPU") or None,
@@ -108,6 +110,38 @@ class Config:
         return config
 
 
+def predicted_wall(
+    record: dict, growth: float, repetitions: int, budget_s: float
+) -> float:
+    """The wall time of a batch ``growth`` times the size of ``record``'s.
+
+    The work grows at most in proportion to the batch. The rest of the record's wall
+    time, starting the process, drawing the data and compiling, stays about the same.
+    The steady-state calls are counted as benchmarks.gpu.measure.timed makes them.
+
+    Args:
+        record: A successful single-batch record.
+        growth: The next batch's size over this one's.
+        repetitions: The plan's most steady-state calls.
+        budget_s: The plan's seconds for the steady-state calls.
+
+    Returns:
+        float: The predicted seconds, without a margin.
+    """
+    steady = record["steady_s"] * growth
+    overhead = record["wall_s"] - record["steady_s"] * (record["repetitions"] + 1)
+    calls = 1 + max(1, min(repetitions, math.floor(budget_s / steady)))
+    return max(overhead, 0.0) + calls * steady
+
+
+def describe(record: dict) -> str:
+    """A record in a few words, for the launcher's progress lines."""
+    words = [record.get("kind"), record.get("method") or record.get("mode")]
+    words += [f"{key}={record[key]}" for key in ("N", "K") if record.get(key)]
+    wall = f" in {record['wall_s']:.0f} s" if record.get("wall_s") else ""
+    return f"{' '.join(w for w in words if w)}: {record['status']}{wall}"
+
+
 class Runner:
     """Run the plan's phases, each measurement in its own process."""
 
@@ -115,6 +149,7 @@ class Runner:
         """Divide the time until the deadline among the phases by their shares."""
         self.config, self.plan = config, plan
         self.records: list[dict] = []
+        self.phase: str | None = None
         self.results = config.results / "results.jsonl"
         self.log = config.results / "measurements.log"
         self.start = time.time()
@@ -131,23 +166,27 @@ class Runner:
         return min(max(planned, time.time() + phase.get("min_s", 0)), self.end)
 
     def status(self, state: str, **extra) -> None:
-        """Write status.json, which the launcher polls."""
+        """Write status.json, which the launcher polls and prints the progress of."""
+        last = describe(self.records[-1]) if self.records else None
         write_json(
             self.config.results / "status.json",
             {
                 "state": state,
+                "phase": self.phase,
                 "measurements": len(self.records),
+                "last": last,
                 "updated": utc_now(),
                 **extra,
             },
         )
 
     def record(self, record: dict) -> dict:
-        """Keep a record: append it to results.jsonl and print it for the logs."""
+        """Keep a record: append it to results.jsonl, print it and update the status."""
         self.records.append(record)
         with self.results.open("a") as f:
             f.write(to_json(record) + "\n")
         print(RESULT_PREFIX + to_json(record), flush=True)
+        self.status("running")
         return record
 
     def measure(self, spec: dict, until: float) -> dict:
@@ -206,30 +245,43 @@ class Runner:
         return self.measure(spec, self.until(phase))["status"] == "ok"
 
     def run_correctness(self, phase: dict) -> None:
-        """Compare the device's fits with the CPU's."""
-        spec = {"phase": phase["name"], "kind": "correctness", "N": phase["datasets"]}
-        spec |= {"K": self.plan["num_terms"], "methods": phase["methods"]}
-        self.measure(spec, self.until(phase))
+        """Compare the device's fits with the CPU's, one method per measurement."""
+        end = self.until(phase)
+        for method in phase["methods"]:
+            spec = {"phase": phase["name"], "kind": "correctness", "method": method}
+            spec |= {"N": phase["datasets"], "K": self.plan["num_terms"]}
+            self.measure(spec | {"methods": [method]}, end)
 
     def run_batches(self, phase: dict) -> None:
-        """Double each method's batch until memory, time or the plan's limit."""
+        """Fit each method's batch sizes in turn, until memory or time runs out.
+
+        A size is skipped, with the rest, when its predicted wall time doesn't fit in
+        what's left of the method's share.
+        """
         end = self.until(phase)
         methods = self._method_shares(phase)
         for i, (method, _) in enumerate(methods):
             left = sum(share for _, share in methods[i:])
             until = time.time() + (end - time.time()) * methods[i][1] / left
-            n, last_wall = phase["first"], None
-            while n <= phase["last"]:
+            last = None
+            for n in phase["sizes"]:
                 spec = {"phase": phase["name"], "kind": "fit", "method": method}
                 spec |= {"N": n, "K": self.plan["num_terms"]}
-                if last_wall and last_wall * DOUBLING_FACTOR > until - time.time():
-                    base = {k: spec[k] for k in ("phase", "kind", "method", "N", "K")}
-                    self.record({**base, "status": "skipped", "reason": "time budget"})
+                if last:
+                    need = GROWTH_MARGIN * predicted_wall(
+                        last,
+                        n / last["N"],
+                        self.plan["repetitions"],
+                        self.plan["repetition_budget_s"],
+                    )
+                    if need > until - time.time():
+                        self.record(
+                            {**spec, "status": "skipped", "reason": "time budget"}
+                        )
+                        break
+                last = self.measure(spec, until)
+                if last["status"] != "ok":
                     break
-                record = self.measure(spec, until)
-                if record["status"] != "ok":
-                    break
-                last_wall, n = record["wall_s"], 2 * n
 
     def batches(self, mode: str) -> list[dict]:
         """The successful single-batch records of one mode."""
@@ -307,7 +359,8 @@ class Runner:
             "sampling": self.run_sampling,
         }
         for phase in self.plan["phases"]:
-            self.status("running", phase=phase["name"])
+            self.phase = phase["name"]
+            self.status("running")
             if phases[phase["name"]](phase) is False:
                 return "failed"
         return "done"
@@ -360,38 +413,19 @@ def finish(config: Config, manifest: dict, state: str) -> dict:
     return digests
 
 
-def self_delete(environ: dict[str, str] | None = None) -> int | None:
-    """Ask Runpod to delete this pod with its own key; return the HTTP status.
-
-    Args:
-        environ: The environment; ``os.environ`` if None.
-
-    Returns:
-        int | None: The status, or None outside a pod or when the request fails.
-    """
-    env = os.environ if environ is None else environ
-    pod, key = env.get("RUNPOD_POD_ID"), env.get("RUNPOD_API_KEY")
-    if not pod or not key:
-        return None
-    request = urllib.request.Request(
-        f"{RUNPOD_API}/pods/{pod}",
-        method="DELETE",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    try:
-        with open_url(request, timeout=30) as response:
-            return response.status
-    except Exception as error:  # any failure means: exit instead
-        print(f"self-delete failed: {error}", flush=True)
-        return None
+def load_plan(config: Config) -> tuple[dict, str]:
+    """The plan and its SHA-256, saved with the results, where measurements read it."""
+    text = config.plan_json or config.plan.read_text()
+    config.plan = config.results / "plan.json"
+    config.plan.write_text(text)
+    return json.loads(text), sha256_file(config.plan)
 
 
 def main() -> int:
     """Run the plan, serve the results, then leave."""
     config = Config.from_environment()
     config.results.mkdir(parents=True, exist_ok=True)
-    plan = json.loads(config.plan.read_text())
-    plan_sha256 = sha256_file(config.plan)
+    plan, plan_sha256 = load_plan(config)
     server = None
     if not config.local:
         server = ResultsServer(config.results, config.token, config.port).start()
@@ -421,7 +455,6 @@ def main() -> int:
     server.stop()
     if not server.acknowledged.is_set():
         print("results weren't acknowledged; leaving", flush=True)
-    self_delete()
     return 0
 
 

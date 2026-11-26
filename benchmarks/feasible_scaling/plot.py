@@ -9,6 +9,10 @@ Each INPUT is either the CPU benchmark's ``results.json``, which gives
 directory gives ``gpu_scaling_<gpu>_{light,dark}.svg``, and a CPU run's gives
 ``feasible_scaling_{light,dark}.svg``. With more than one input, the inputs' Feasible
 times per dataset are also drawn together, in ``gpu_scaling_comparison_*.svg``.
+
+A run directory's Feasible points include the term-count phase's fits at the plan's
+term count, and a line is projected only from MIN_PROJECTION_POINTS measured points:
+for time, those from the throughput knee on.
 """
 
 import dataclasses
@@ -49,6 +53,11 @@ THEMES = {
 SERIES_COLORS = ("#2a78d6", "#eb6834", "#1f9d6b", "#8a5cd1", "#c43c5c")
 KNEE_TOLERANCE = 0.05  # benchmarks/gpu/plan.json's chunked knee_tolerance
 GIB = 2**30
+# A line is projected from at least this many measured points; fewer are only joined
+MIN_PROJECTION_POINTS = 3
+# The time projections end at most this far up their log axis, so that their labels
+# stay under the panel's title
+END_FRACTION = 0.91
 
 
 @dataclasses.dataclass
@@ -151,6 +160,7 @@ def load_run_dir(path: Path) -> Device:
     gpu_type = manifest.get("gpu_type")
     on_gpu = bool(manifest.get("gpu", {}).get("gpus"))
     memory_key = "peak_gpu_bytes" if on_gpu else "host_peak_bytes"
+    num_terms = manifest["plan"]["num_terms"]
 
     def batches(mode):
         rows = [
@@ -160,6 +170,18 @@ def load_run_dir(path: Path) -> Device:
             and r.get("mode") == mode
             and r["status"] == "ok"
         ]
+        if mode == "feasible":  # the term-count phase's single batches, too
+            sizes = {r["N"] for r in rows}
+            rows += [
+                r
+                for r in records
+                if r.get("phase") == "terms"
+                and r.get("mode") == mode
+                and r.get("K") == num_terms
+                and not r.get("num_terms")
+                and r["status"] == "ok"
+                and r["N"] not in sizes
+            ]
         for r in rows:
             r["memory_gb"] = r[memory_key] / GIB
         return sorted(rows, key=lambda r: r["N"])
@@ -237,19 +259,31 @@ def load_run_dir(path: Path) -> Device:
 
 
 def models(d: Device) -> tuple[dict, dict]:
-    """Time and memory, fitted as a + b * N on each method's linear range."""
-    big_fe = [r for r in d.feasible if r["N"] >= d.fit_from["feasible"]]
-    big_ols = [r for r in d.ols if r["N"] >= d.fit_from["ols"]]
-    fe_n, fe_t = [r["N"] for r in big_fe], [r["steady_s"] for r in big_fe]
-    if d.chunk:
-        fe_n, fe_t = [*fe_n, d.chunk["N"]], [*fe_t, d.chunk["fit_s_excl_compile"]]
-    a_f, b_f = linfit(fe_n, fe_t)
-    a_o, b_o = linfit([r["N"] for r in big_ols], [r["steady_s"] for r in big_ols])
-    t_model = {"feasible": {"a": a_f, "b": b_f}, "ols": {"a": a_o, "b": b_o}}
-    m_model = {}
-    for key, pts in (("feasible", big_fe), ("ols", big_ols)):
-        c0, d0 = linfit([r["N"] for r in pts], [r["memory_gb"] * 1024 for r in pts])
-        m_model[key] = {"c_mb": c0, "d_mb": d0}
+    """Time and memory, fitted as a + b * N on each method's linear range.
+
+    Time is fitted from the throughput knee on, with the chunked run if its chunks
+    are that large; memory, which has no knee, on at least the three largest batches.
+    A method with fewer than MIN_PROJECTION_POINTS points gets None.
+    """
+    t_model, m_model = {}, {}
+    for key, pts in (("feasible", d.feasible), ("ols", d.ols)):
+        big = [r for r in pts if r["N"] >= d.fit_from[key]]
+        n, t = [r["N"] for r in big], [r["steady_s"] for r in big]
+        if key == "feasible" and d.chunk and d.chunk["chunk"] >= d.fit_from[key]:
+            n, t = [*n, d.chunk["N"]], [*t, d.chunk["fit_s_excl_compile"]]
+        t_model[key] = None
+        if len(n) >= MIN_PROJECTION_POINTS:
+            a, b = linfit(n, t)
+            t_model[key] = {"a": a, "b": b}
+        sizes = sorted(r["N"] for r in pts)
+        start = min(d.fit_from[key], *sizes[-MIN_PROJECTION_POINTS:])
+        fitted = [r for r in pts if r["N"] >= start]
+        m_model[key] = None
+        if len(fitted) >= MIN_PROJECTION_POINTS:
+            c0, d0 = linfit(
+                [r["N"] for r in fitted], [r["memory_gb"] * 1024 for r in fitted]
+            )
+            m_model[key] = {"c_mb": c0, "d_mb": d0, "from": start}
     return t_model, m_model
 
 
@@ -302,16 +336,25 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
     ax_t.set_xscale("log")
     ax_t.set_yscale("log")
     for key, pts, col in series:
-        a, b = t_model[key]["a"], t_model[key]["b"]
-        n_hi = (
-            d.chunk["N"] if key == "feasible" and d.chunk else max(p["N"] for p in pts)
-        )
-        n_solid = np.geomspace(d.fit_from[key], n_hi, 100)
-        n_dash = np.geomspace(n_hi, n_max, 100)
-        ax_t.plot(
-            n_solid, a + b * n_solid, color=col, linewidth=2, solid_capstyle="round"
-        )
-        ax_t.plot(n_dash, a + b * n_dash, color=col, linewidth=2, linestyle=(0, (4, 3)))
+        if t_model[key] is None:  # too few points to project: join them
+            ax_t.plot(
+                [p["N"] for p in pts], [p["steady_s"] for p in pts], color=col, lw=2
+            )
+        else:
+            a, b = t_model[key]["a"], t_model[key]["b"]
+            n_hi = (
+                d.chunk["N"]
+                if key == "feasible" and d.chunk
+                else max(p["N"] for p in pts)
+            )
+            n_solid = np.geomspace(d.fit_from[key], n_hi, 100)
+            n_dash = np.geomspace(n_hi, n_max, 100)
+            ax_t.plot(
+                n_solid, a + b * n_solid, color=col, linewidth=2, solid_capstyle="round"
+            )
+            ax_t.plot(
+                n_dash, a + b * n_dash, color=col, linewidth=2, linestyle=(0, (4, 3))
+            )
         ax_t.scatter(
             [p["N"] for p in pts],
             [p["steady_s"] for p in pts],
@@ -340,8 +383,12 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
             fontsize=8.5,
             color=c["ink2"],
         )
+    ends = []
     for key, name, dy in (("feasible", "Feasible", 8), ("ols", "OLS", -40)):
+        if t_model[key] is None:
+            continue
         y_end = t_model[key]["a"] + t_model[key]["b"] * n_max
+        ends.append(y_end)
         ax_t.annotate(
             f"{name}\n~{duration(y_end)} for {compact(n_max)}",
             (n_max, y_end),
@@ -352,9 +399,11 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
             color=c["ink"],
         )
     y_values = [p["steady_s"] for p in d.feasible + d.ols]
-    y_end = max(t_model[k]["a"] + t_model[k]["b"] * n_max for k in t_model)
     y_lo = 0.05 if min(y_values) > 0.05 else min(y_values) * 0.5
-    y_hi = max(3600, y_end) * 1.6
+    y_hi = max(
+        [3600 * 1.6, max(y_values) * 1.6]
+        + [y_lo * (e / y_lo) ** (1 / END_FRACTION) for e in ends]
+    )
     ax_t.set_yticks(*_time_ticks(y_lo, y_hi))
     ax_t.set_ylim(y_lo, y_hi)
     ax_t.set_xlim(x_lo, n_max * 1.3)
@@ -373,19 +422,24 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
     style_axes(ax_m, c)
     ax_m.set_xscale("log")
     for key, pts, col in series:
-        cc, dd = m_model[key]["c_mb"], m_model[key]["d_mb"]
-        n_hi = max(p["N"] for p in pts)
-        n_end = (limit * 1024 - cc) / dd
-        n_solid = np.geomspace(d.fit_from[key], n_hi, 100)
-        n_dash = np.geomspace(n_hi, n_end, 100)
-        ax_m.plot(n_solid, (cc + dd * n_solid) / 1024, color=col, linewidth=2)
-        ax_m.plot(
-            n_dash,
-            (cc + dd * n_dash) / 1024,
-            color=col,
-            linewidth=2,
-            linestyle=(0, (4, 3)),
-        )
+        if m_model[key] is None:  # too few points to project: join them
+            ax_m.plot(
+                [p["N"] for p in pts], [p["memory_gb"] for p in pts], color=col, lw=2
+            )
+        else:
+            cc, dd = m_model[key]["c_mb"], m_model[key]["d_mb"]
+            n_hi = max(p["N"] for p in pts)
+            n_end = (limit * 1024 - cc) / dd
+            n_solid = np.geomspace(m_model[key]["from"], n_hi, 100)
+            n_dash = np.geomspace(n_hi, n_end, 100)
+            ax_m.plot(n_solid, (cc + dd * n_solid) / 1024, color=col, linewidth=2)
+            ax_m.plot(
+                n_dash,
+                (cc + dd * n_dash) / 1024,
+                color=col,
+                linewidth=2,
+                linestyle=(0, (4, 3)),
+            )
         ax_m.scatter(
             [p["N"] for p in pts],
             [p["memory_gb"] for p in pts],
@@ -405,7 +459,6 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
                 linewidth=2,
                 zorder=4,
             )
-    n_cap = (limit * 1024 - m_model["feasible"]["c_mb"]) / m_model["feasible"]["d_mb"]
     ax_m.axhline(limit, color=c["muted"], linewidth=1)
     ax_m.annotate(
         f"{d.memory_name} ({limit:.3g} GB)",
@@ -415,13 +468,17 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
         fontsize=8.5,
         color=c["ink2"],
     )
-    ax_m.annotate(
-        f"Feasible: one batch reaches {limit:.3g} GB\nnear {compact(round(n_cap, -3))} datasets",
-        (x_text, 0.9125 * limit),
-        fontsize=8.5,
-        color=c["ink2"],
-        va="top",
-    )
+    if m_model["feasible"]:
+        n_cap = (limit * 1024 - m_model["feasible"]["c_mb"]) / m_model["feasible"][
+            "d_mb"
+        ]
+        ax_m.annotate(
+            f"Feasible: one batch reaches {limit:.3g} GB\nnear {compact(round(n_cap, -3))} datasets",
+            (x_text, 0.9125 * limit),
+            fontsize=8.5,
+            color=c["ink2"],
+            va="top",
+        )
     if d.chunk:
         ax_m.annotate(
             f"Chunking keeps memory flat:\n{compact(d.chunk['N'])} datasets in chunks of "

@@ -19,9 +19,10 @@ from pathlib import Path
 
 # Variables worth recording, by prefix
 _ENV_PREFIXES = ("BENCH_", "CUDA_", "JAX_", "NVIDIA_", "RUNPOD_", "TF_", "XLA_")
-# Never recorded, whatever their prefix: credentials, and what identifies a person
+# Never recorded, whatever their prefix: credentials, what identifies a person, and
+# the plan the launcher passes, which the manifest records whole
 _SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
-_DROPPED = ("RUNPOD_PUBLIC_IP", "RUNPOD_POD_HOSTNAME")
+_DROPPED = ("RUNPOD_PUBLIC_IP", "RUNPOD_POD_HOSTNAME", "BENCH_PLAN_JSON")
 
 # Written into the image by its Dockerfile
 BUILD_INFO = Path("/opt/metalog_jax/build-info.json")

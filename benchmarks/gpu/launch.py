@@ -4,14 +4,15 @@ Usage:
     export RUNPOD_API_KEY=...
     uv run python benchmarks/gpu/launch.py run --image ghcr.io/...@sha256:...
         [--gpus a100-sxm,h100-sxm,h200-sxm] [--budget 5.00] [--cloud SECURE] [--dry-run]
+        [--plan benchmarks/gpu/plan.json]
     uv run python benchmarks/gpu/launch.py cleanup
 
 ``run`` reads Runpod's live prices and gives all the pods one time cap, so that the
 sum of each GPU's price times the cap stays within BUDGET_SHARE of the budget. It
-creates the pods, saves their logs, downloads and checks their results, and
-terminates each pod when its results are in or its cap is reached, and every pod it
-created when it exits. Then it reads the charges and fails if they exceed the
-budget. ``cleanup`` terminates any pod left over from a run.
+creates the pods, passing each the plan, prints their progress, downloads and checks
+their results, and terminates each pod when its results are in or its cap is
+reached, and every pod it created when it exits. Then it reads the charges and fails
+if they exceed the budget. ``cleanup`` terminates any pod left over from a run.
 
 Uses only the standard library and Runpod's REST API v2
 (https://docs.runpod.io/api-reference-v2/overview).
@@ -28,7 +29,6 @@ import re
 import secrets
 import signal
 import sys
-import threading
 import time
 import tomllib
 import urllib.error
@@ -45,6 +45,7 @@ from benchmarks.gpu.common import GPU_TYPES, open_url, utc_now, write_json
 API = "https://api.runpod.io/v2"
 REPO_DIR = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_DIR / "benchmarks" / "gpu" / "results"
+DEFAULT_PLAN = REPO_DIR / "benchmarks" / "gpu" / "plan.json"
 POD_PREFIX = "metalog-bench-"
 PORT = 8000
 
@@ -53,14 +54,16 @@ PORT = 8000
 BUDGET_SHARE = 0.92
 # A cap shorter than this leaves too little time to measure anything
 MIN_CAP_MINUTES = 15
-# Seconds of a pod's cap kept for downloading its results after its deadline
-DOWNLOAD_RESERVE_S = 240
+# Seconds of a pod's cap kept for downloading its results after its deadline: a
+# download takes seconds, and this leaves room for a poll and a few retries
+DOWNLOAD_RESERVE_S = 120
 CONTAINER_DISK_GB = 20
 POLL_S = 15
 # How long past the last cap to keep trying to terminate pods
 TERMINATE_GRACE_S = 600
-# How long to wait for Runpod's billing records of a finished run
-BILLING_WAIT_S = 300
+# How long to wait for Runpod's billing records of a finished run. They lag, so
+# this tries a few times, then the run reports its estimate
+BILLING_WAIT_S = 30
 _RETRIES = 5
 # Statuses that mean the proxy refuses to serve a pod's results at all, rather than
 # that the pod isn't serving them yet
@@ -69,6 +72,9 @@ _REFUSED = frozenset({401, 403})
 REFUSALS_TO_STOP = 4
 # The tag GHCR gives an image's attestation: sha256-<the image's digest>
 _ATTESTATION_TAG = re.compile(r":sha256-([0-9a-f]{64})$")
+# Pod environment variables left out of launcher.json: the results' secret path, and
+# the plan, which launcher.json records by its SHA-256
+_UNRECORDED_ENV = ("BENCH_TOKEN", "BENCH_PLAN_JSON")
 
 
 class RunpodError(RuntimeError):
@@ -160,48 +166,15 @@ class RunpodClient:
             return response.get("pods") or response.get("data") or []
         return response or []
 
-    def pod_billing(self, pod_id: str, start: str) -> dict:
-        """A pod's charges by the hour since ``start`` (RFC 3339)."""
-        query = {"podId": pod_id, "startTime": start, "bucketSize": "hour"}
+    def pod_billing(self, pod_id: str, start: str, end: str) -> dict:
+        """A pod's charges by the hour from ``start`` to ``end`` (RFC 3339)."""
+        query = {
+            "podId": pod_id,
+            "startTime": start,
+            "endTime": end,
+            "bucketSize": "hour",
+        }
         return self.request("GET", "/billing/pods", query=query)
-
-    def stream_logs(self, pod_id: str, out: Path, stop: threading.Event) -> None:
-        """Append a pod's container log lines to ``out`` until ``stop`` is set.
-
-        A failure of the stream is written to ``out`` and printed, once per kind.
-        """
-        last_id = last_error = None
-        while not stop.is_set():
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Accept": "text/event-stream",
-            }
-            if last_id:
-                headers["Last-Event-ID"] = last_id
-            url = f"{self.base}/pods/{pod_id}/logs?source=container&tail=5000"
-            req = urllib.request.Request(url, headers=headers)
-            try:
-                with open_url(req, timeout=60) as response, out.open("a") as f:
-                    for raw in response:
-                        line = raw.decode(errors="replace").rstrip("\n")
-                        if line.startswith("id:"):
-                            last_id = line[3:].strip()
-                        elif line.startswith("data:"):
-                            try:
-                                f.write(json.loads(line[5:]).get("line", "") + "\n")
-                            except json.JSONDecodeError:
-                                f.write(line[5:].strip() + "\n")
-                            f.flush()
-                        if stop.is_set():
-                            return
-            except urllib.error.HTTPError as error:
-                detail = error.read().decode(errors="replace").strip()[:200]
-                last_error = _log_failure(
-                    pod_id, out, f"HTTP {error.code} {detail}", last_error
-                )
-            except (urllib.error.URLError, TimeoutError, OSError) as error:
-                last_error = _log_failure(pod_id, out, str(error), last_error)
-            stop.wait(POLL_S)
 
 
 @dataclasses.dataclass
@@ -281,6 +254,15 @@ def cuda_runtime(lock: Path = REPO_DIR / "uv.lock") -> str:
     return ".".join(version.split(".")[:2])
 
 
+def plan_json(path: Path = DEFAULT_PLAN) -> str:
+    """The benchmark plan as one line of JSON, for the pods' BENCH_PLAN_JSON.
+
+    Raises:
+        ValueError: If the file isn't valid JSON.
+    """  # noqa: DOC502
+    return json.dumps(json.loads(path.read_text()), separators=(",", ":"))
+
+
 def pod_body(
     run_id: str,
     gpu: GpuPlan,
@@ -289,8 +271,9 @@ def pod_body(
     min_cuda: str,
     deadline: float,
     token: str,
+    plan: str,
 ) -> dict:
-    """The POST /v2/pods body for one GPU type."""
+    """The POST /v2/pods body for one GPU type, with the plan as one line of JSON."""
     return {
         "name": f"{POD_PREFIX}{run_id}-{gpu.slug}",
         "image": image,
@@ -304,6 +287,7 @@ def pod_body(
             "BENCH_DEADLINE": str(int(deadline)),
             "BENCH_TOKEN": token,
             "BENCH_IMAGE": image,
+            "BENCH_PLAN_JSON": plan,
         },
     }
 
@@ -333,8 +317,8 @@ class PodRun:
     state: str = "creating"
     error: str | None = None
     refusals: int = 0
+    progress: str | None = None
     terminated_at: str | None = None
-    stop_logs: threading.Event = dataclasses.field(default_factory=threading.Event)
 
 
 class Launcher:
@@ -348,10 +332,16 @@ class Launcher:
         out_dir: Path,
         url_for: Callable[[str], str] = proxy_url,
         poll_s: float = POLL_S,
+        bench_plan: str | None = None,
     ):
-        """Prepare a run; nothing is created until ``run``."""
+        """Prepare a run; nothing is created until ``run``.
+
+        ``bench_plan`` is the plan the pods run, as one line of JSON; by default
+        DEFAULT_PLAN's.
+        """
         self.client, self.plan, self.image = client, run_plan, image
         self.out_dir, self.url_for, self.poll_s = out_dir, url_for, poll_s
+        self.bench_plan = plan_json() if bench_plan is None else bench_plan
         self.run_id = (
             dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
             + "-"
@@ -378,16 +368,12 @@ class Launcher:
                 min_cuda,
                 created + cap_s - DOWNLOAD_RESERVE_S,
                 pod.token,
+                self.bench_plan,
             )
             try:
                 pod.record = self.client.create_pod(body)
                 pod.pod_id, pod.state = pod.record["id"], "provisioning"
                 print(f"{gpu.slug}: created pod {pod.pod_id}", flush=True)
-                threading.Thread(
-                    target=self.client.stream_logs,
-                    args=(pod.pod_id, pod.out / "pod.log", pod.stop_logs),
-                    daemon=True,
-                ).start()
             except RunpodError as error:
                 pod.state, pod.error = "not placed", str(error)
                 print(f"{gpu.slug}: not placed: {error}", flush=True)
@@ -416,6 +402,17 @@ class Launcher:
         pod.refusals = 0
         return status
 
+    def report(self, pod: PodRun, status: dict) -> None:
+        """Print a pod's progress from its status.json, when it has changed."""
+        state = status.get("state")
+        stage = status.get("phase") if state == "running" else state
+        progress = f"{stage}, {status.get('measurements', 0)} measurements"
+        if status.get("last"):
+            progress += f"; last: {status['last']}"
+        if progress != pod.progress:
+            print(f"{pod.gpu.slug}: {progress}", flush=True)
+            pod.progress = progress
+
     def download(self, pod: PodRun, files: dict[str, str]) -> None:
         """Download a pod's results and check each one's SHA-256.
 
@@ -439,7 +436,6 @@ class Launcher:
                 return
             pod.terminated_at = utc_now()
             print(f"{pod.gpu.slug}: terminated pod {pod.pod_id}", flush=True)
-        pod.stop_logs.set()
 
     def step(self, pod: PodRun) -> None:
         """Advance one pod: check its status, collect its results, or end it."""
@@ -452,12 +448,17 @@ class Launcher:
             pod.state = "proxy refused"
             self.terminate(pod)
             return
+        if status:
+            self.report(pod, status)
         if status is None or status.get("state") not in ("done", "failed"):
             try:  # keep the latest record: the data center and host CUDA come later
                 pod.record = {**(pod.record or {}), **self.client.get_pod(pod.pod_id)}
             except RunpodError:
                 pass
             lifecycle = (pod.record or {}).get("status")
+            if status is None and lifecycle and pod.progress != lifecycle:
+                print(f"{pod.gpu.slug}: pod {lifecycle.lower()}", flush=True)
+                pod.progress = lifecycle
             if lifecycle in ("EXITED", "ERROR", "TERMINATED"):
                 pod.state = f"pod {lifecycle.lower()} without results"
                 self.terminate(pod)
@@ -512,7 +513,9 @@ class Launcher:
             while True:
                 amount = None
                 try:
-                    metadata = self.client.pod_billing(pod.pod_id, started) or {}
+                    metadata = (
+                        self.client.pod_billing(pod.pod_id, started, utc_now()) or {}
+                    )
                     totals = (metadata.get("metadata") or {}).get("totals") or {}
                     amount = totals.get("totalAmount")
                 except RunpodError as error:
@@ -537,6 +540,7 @@ class Launcher:
         record = {
             "run_id": self.run_id,
             "image": self.image,
+            "plan_sha256": hashlib.sha256(self.bench_plan.encode()).hexdigest(),
             "cloud": self.plan.cloud,
             "budget": self.plan.budget,
             "cap_minutes": self.plan.cap_minutes,
@@ -554,7 +558,7 @@ class Launcher:
                     "state": pod.state,
                     "error": pod.error,
                     "terminated_at": pod.terminated_at,
-                    "pod": pod.record,
+                    "pod": _recorded(pod.record),
                 }
                 for pod in self.pods
             ],
@@ -570,17 +574,12 @@ class Launcher:
         return record
 
 
-def _log_failure(pod_id: str, out: Path, message: str, last: str | None) -> str:
-    """Write a log stream failure to ``out`` and print it, unless it repeats ``last``.
-
-    Returns:
-        str: The message, the new last failure.
-    """
-    if message != last:
-        with out.open("a") as f:
-            f.write(f"[launcher] the log stream failed: {message}\n")
-        print(f"{pod_id}: the log stream failed: {message}", flush=True)
-    return message
+def _recorded(pod_record: dict | None) -> dict | None:
+    """A pod's Runpod record without the environment variables _UNRECORDED_ENV names."""
+    if not pod_record or not isinstance(pod_record.get("env"), dict):
+        return pod_record
+    env = {k: v for k, v in pod_record["env"].items() if k not in _UNRECORDED_ENV}
+    return {**pod_record, "env": env}
 
 
 def check_image(image: str) -> None:
@@ -624,6 +623,7 @@ def run(args: argparse.Namespace, client: RunpodClient | None = None) -> int:
         int: 0 if the run stayed within budget, 2 if it didn't, 1 for an error.
     """
     check_image(args.image)
+    bench_plan = plan_json(Path(args.plan))
     slugs = [s.strip() for s in args.gpus.split(",") if s.strip()]
     if args.prices:
         catalog = json.loads(Path(args.prices).read_text())
@@ -641,6 +641,10 @@ def run(args: argparse.Namespace, client: RunpodClient | None = None) -> int:
         f"cap {plan.cap_minutes} minutes per pod, estimated ${plan.estimated_cost:.2f} "
         f"of a ${plan.budget:.2f} budget ({plan.cloud})"
     )
+    digest = hashlib.sha256(bench_plan.encode()).hexdigest()
+    print(
+        f"plan {args.plan} (version {json.loads(bench_plan).get('version')}, {digest})"
+    )
     if args.dry_run:
         return 0
     if not plan.gpus:
@@ -648,7 +652,11 @@ def run(args: argparse.Namespace, client: RunpodClient | None = None) -> int:
         return 1
     client = client or _client()
     launcher = Launcher(
-        client, plan, args.image, Path(args.out) if args.out else RESULTS_DIR
+        client,
+        plan,
+        args.image,
+        Path(args.out) if args.out else RESULTS_DIR,
+        bench_plan=bench_plan,
     )
     launcher.out_dir = launcher.out_dir / launcher.run_id
     launcher.out_dir.mkdir(parents=True, exist_ok=True)
@@ -715,6 +723,11 @@ def parser() -> argparse.ArgumentParser:
     )
     r.add_argument(
         "--prices", help="a saved GPU catalog (JSON), instead of Runpod's live one"
+    )
+    r.add_argument(
+        "--plan",
+        default=str(DEFAULT_PLAN),
+        help="the benchmark plan the pods run (default benchmarks/gpu/plan.json)",
     )
     r.add_argument(
         "--billing-wait",

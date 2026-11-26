@@ -1579,6 +1579,62 @@ class TestDistinctRows(absltest.TestCase):
         self.assertEqual(rows.shape, y.shape)
 
 
+class TestOlsSharedLevels(absltest.TestCase):
+    """An OLS grid whose datasets share their levels factors each design once."""
+
+    X = jnp.stack(
+        [
+            jnp.asarray(dist.ppf(np.asarray(DEFAULT_Y)))
+            for dist in (lognorm(s=0.6), gamma(a=2), beta(a=2, b=5), lognorm(s=1.1))
+        ]
+    )
+    Y = jnp.broadcast_to(DEFAULT_Y, X.shape)
+    OLS = _unbounded(MetalogFitMethod.OLS, num_terms=6)
+
+    def least_squares(self, x, k):
+        """Each row of x's own least-squares coefficients, with k terms."""
+        design = np.asarray(MetalogBase._get_target(DEFAULT_Y, k))
+        return np.linalg.lstsq(design, np.asarray(x).T, rcond=None)[0].T
+
+    def test_each_dataset_gets_its_own_fit(self):
+        """One factorization gives every dataset its own least-squares fit."""
+        result = fit_grid(self.X, self.Y, self.OLS)
+        self.assertEqual(result.metalog.a.shape, (4, 6))
+        _assert_coefficients_close(result.metalog.a, self.least_squares(self.X, 6))
+
+    def test_one_dataset(self):
+        """A single dataset's fit is unbatched."""
+        result = fit_grid(self.X[0], DEFAULT_Y, self.OLS)
+        self.assertEqual(result.metalog.a.shape, (6,))
+        self.assertEqual(result.ks_dist.shape, ())
+        _assert_coefficients_close(result.metalog.a, self.least_squares(self.X[0], 6))
+
+    def test_term_counts_are_padded_and_stacked(self):
+        """Each term count's fits are zero-padded to the largest, along the last axis."""
+        result = fit_grid(self.X, self.Y, self.OLS, num_terms=[4, 6])
+        self.assertEqual(result.metalog.a.shape, (4, 2, 6))
+        self.assertEqual(result.feasible.shape, (4, 2))
+        _assert_coefficients_close(
+            result.metalog.a[:, 0, :4], self.least_squares(self.X, 4)
+        )
+        np.testing.assert_array_equal(result.metalog.a[:, 0, 4:], 0.0)
+        _assert_coefficients_close(
+            result.metalog.a[:, 1], self.least_squares(self.X, 6)
+        )
+
+    def test_matches_datasets_with_their_own_levels(self):
+        """The fits match a grid whose datasets have different levels."""
+        other = jnp.linspace(0.02, 0.98, DEFAULT_Y.shape[0])
+        x = jnp.concatenate(
+            [self.X, jnp.asarray(gamma(a=3).ppf(np.asarray(other)))[None]]
+        )
+        mixed = fit_grid(x, jnp.concatenate([self.Y, other[None]]), self.OLS)
+        shared = fit_grid(self.X, self.Y, self.OLS)
+        _assert_coefficients_close(mixed.metalog.a[:4], shared.metalog.a)
+        np.testing.assert_allclose(mixed.ks_dist[:4], shared.ks_dist, rtol=1e-9)
+        np.testing.assert_array_equal(mixed.feasible[:4], shared.feasible)
+
+
 class TestFitGridArguments(absltest.TestCase):
     """fit_grid is the one grid function, with keyword-only arguments."""
 

@@ -13,14 +13,22 @@ process (`measure.py`), so that peak memory starts from zero and running out of 
 ends only that measurement:
 
 1. **Check:** the backend, the device and float64. The run stops if any is wrong.
-2. **Correctness:** 1,024 fits on the GPU and on the CPU, compared.
-3. **Single batches:** 10-term Feasible and OLS `fit_grid` calls, doubling from 1,024
-   datasets until the GPU runs out of memory or the phase's time runs out.
+2. **Correctness:** 1,024 fits on the GPU and on the CPU, compared, one fit method at a
+   time.
+3. **Single batches:** 10-term Feasible and OLS `fit_grid` calls at 1,024 and 4,096
+   datasets, as on the M3, then from 32,768 up four times at a time, until the GPU runs
+   out of memory or the phase's time runs out. A size is skipped when its predicted
+   time doesn't fit in what's left.
 4. **A chunked run:** chunks of the throughput knee's size (the smallest batch within
-   5% of the best time per dataset) for about 3 minutes.
-5. **Term counts:** Feasible at 4, 6, 8, 10 and 12 terms, then all five in one grid.
+   5% of the best time per dataset) for about 2 minutes.
+5. **Term counts:** Feasible at 4, 6, 8, 10 and 12 terms on 32,768 datasets, then all
+   five in one grid.
 6. **Sampling:** a jitted `ppf(u)`, `rvs` with both PRNGs, `cdf` and `pdf(cdf(x))`,
    from 10⁶ to 10⁹ points.
+
+Compiling takes longer than fitting at most sizes. JAX's compilation cache keeps every
+compilation for the later measurements, so the shapes that correctness, the chunked
+run and the term counts share with the single batches compile once.
 
 Data are drawn on the device (`data.py`): the five families of
 `examples/feasible_fits.py`, 200 samples each, summarized at the 105 `DEFAULT_Y`
@@ -36,8 +44,11 @@ Each pod's results:
 | `nvidia-smi.xml` | `nvidia-smi -q -x` |
 | `telemetry.csv` | GPU utilization, memory, power and clocks every 0.5 s |
 | `measurements.log` | Each measurement's stderr |
-| `pod.log` | The container's log, saved by the launcher |
-| `launcher.json` | One level up: the pods' Runpod records, prices, states and charges |
+| `plan.json` | The plan the pod ran: the launcher's, or else the image's |
+| `launcher.json` | One level up: the pods' Runpod records (without their secrets), prices, states and charges, and the plan's SHA-256 |
+
+The launcher prints each pod's progress, a line per measurement. The container's own
+log is in the Runpod console while the pod exists.
 
 ## One-time setup
 
@@ -65,6 +76,9 @@ uv run python benchmarks/gpu/launch.py run --image "$IMAGE" --dry-run
 # Run all three GPUs at once, within $5
 uv run python benchmarks/gpu/launch.py run --image "$IMAGE" --budget 5.00 --cloud SECURE
 
+# Run another plan; the pods run the plan they're given, not the image's
+uv run python benchmarks/gpu/launch.py run --image "$IMAGE" --plan my-plan.json
+
 # Rerun one GPU type, for example one that couldn't be placed
 uv run python benchmarks/gpu/launch.py run --image "$IMAGE" --gpus h200-sxm
 
@@ -83,27 +97,35 @@ on 2026-10-30:
 | Community Cloud, per hour | $1.39 | $2.69 | $3.59 | $7.67 |
 | 35-minute cap | $0.81 | $1.57 | $2.09 | **$4.47** |
 
+Prices change: on 2026-11-24, Secure Cloud charged $2.19 for the A100 and $4.39 for the
+H100, so $5 bought a 23-minute cap. A dry run prints the live prices and the cap.
+
 Results go to `benchmarks/gpu/results/<run id>/<gpu>/`, checked against each pod's
 checksums.
 
 **Cost guards:**
 
 - **The pod:** at its deadline, the benchmark stops and serves its results. After the
-  launcher acknowledges them, or the download window closes, the pod deletes itself
-  with its own `RUNPOD_API_KEY`, or else exits, which stops compute billing.
+  launcher acknowledges them, or the download window closes, the benchmark exits,
+  which stops compute billing. A pod can't delete itself: Runpod refuses its own
+  `RUNPOD_API_KEY` for that.
 - **The launcher:** it terminates each pod when its results are in or its cap ends, and
   every pod it created when it exits, on errors, Ctrl-C and SIGTERM included. If
   Runpod's proxy refuses its requests (HTTP 401 or 403) four times in a row, the pod
   can't be collected, so it's terminated at once and the reason printed.
 - **`cleanup`:** terminates any pod named `metalog-bench-*`.
 - **The bill:** after a run, the launcher reads Runpod's charges into `launcher.json`,
-  and exits with status 2 if they exceed the budget.
+  and exits with status 2 if they exceed the budget. Reading them needs the key's
+  `billing:read` scope. Runpod's records lag, so after 30 seconds without them, the
+  launcher uses an estimate from the pods' hourly rates.
 
 ## Reproducing a run
 
-Every published result names its image digest in `manifest.json`. To rerun it:
+Every published result names its image digest in `manifest.json`, and keeps its plan
+as `plan.json`. To rerun it:
 
-- **On Runpod:** `launch.py run --image <digest>`, with your own API key.
+- **On Runpod:** `launch.py run --image <digest> --plan <its plan.json>`, with your own
+  API key.
 - **On your own NVIDIA GPU:**
 
   ```bash

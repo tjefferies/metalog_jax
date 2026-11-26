@@ -35,7 +35,7 @@ from metalog_jax.feasibility import (
     raw_moment,
     summary_stats,
 )
-from metalog_jax.feasibility.a_star import _round_size, solve_batch
+from metalog_jax.feasibility.a_star import _MIN_ROUND, _round_size, solve_batch
 from metalog_jax.metalog import THETA_3, Metalog, fit
 from metalog_jax.utils import DEFAULT_Y, DEFAULT_Y_FULL
 
@@ -655,12 +655,22 @@ class TestSolveBatch:
         assert bool(jnp.all(result.feasible))
 
     def test_round_sizes(self):
-        """Padding wastes under a quarter of a round, with four sizes per octave."""
+        """Small rounds share one size; larger ones pad under a quarter, four per octave."""
         sizes = [_round_size(n) for n in range(1, 4097)]
         for n, size in enumerate(sizes, start=1):
-            assert n <= size < n + max(1, n / 4)
-        for octave in range(3, 12):
+            if n <= _MIN_ROUND:
+                assert size == _MIN_ROUND
+            else:
+                assert n <= size < n + n / 4
+        for octave in range(_MIN_ROUND.bit_length(), 12):
             assert len(set(sizes[2 ** (octave - 1) : 2**octave])) <= 4
+
+    def test_batch_smaller_than_a_round(self):
+        """Fewer fits than _MIN_ROUND are padded, and the padding changes no fit."""
+        assert self.X.shape[0] < _MIN_ROUND
+        few = solve_batch(self.ENGINE, self.Y, self.X[:3], shared=True)
+        self.assert_close(few.a_star, self.BATCH.a_star[:3])
+        np.testing.assert_array_equal(few.iterations, self.BATCH.iterations[:3])
 
 
 def test_standalone_import_uses_float64():
