@@ -6,4 +6,5 @@
 !metalog_jax/
 !benchmarks/gpu/
 benchmarks/gpu/results/
+benchmarks/gpu/*.sh
 **/__pycache__/

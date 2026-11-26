@@ -3,7 +3,8 @@
 Batch fitting and sampling on NVIDIA A100 SXM, H100 SXM and H200 SXM GPUs, rented from
 [Runpod](https://docs.runpod.io/overview) for under $5 a run. Each run is
 reproducible: the image is pinned by digest, and every pod records its setup in
-`manifest.json`.
+`manifest.json`. [`benchmarks/README.md`](../README.md) maps the whole folder, CPU
+runs and reports included.
 
 ## What a run measures
 
@@ -20,11 +21,15 @@ ends only that measurement:
    out of memory or the phase's time runs out. A size is skipped when its predicted
    time doesn't fit in what's left.
 4. **A chunked run:** chunks of the throughput knee's size (the smallest batch within
-   5% of the best time per dataset) for about 2 minutes.
+   5% of the best time per dataset): a few OLS chunks, then Feasible's for about a
+   minute.
 5. **Term counts:** Feasible at 4, 6, 8, 10 and 12 terms on 32,768 datasets, then all
    five in one grid.
 6. **Sampling:** a jitted `ppf(u)`, `rvs` with both PRNGs, `cdf` and `pdf(cdf(x))`,
    from 10⁶ to 10⁹ points.
+
+The same program runs on a CPU, with [`benchmarks/cpu/plan.json`](../cpu/plan.json) and
+[`benchmarks/cpu/run.sh`](../cpu/run.sh).
 
 Compiling takes longer than fitting at most sizes. JAX's compilation cache keeps every
 compilation for the later measurements, so the shapes that correctness, the chunked
@@ -39,7 +44,7 @@ Each pod's results:
 
 | File | Contents |
 |---|---|
-| `results.jsonl` | One record per measurement, in the CPU benchmark's schema (`mode`, `N`, `K`, `first_s`, `steady_s`, `per_dataset_ms`, `chunk`) plus `peak_gpu_bytes`, `bytes_limit`, `status`, compile time and solver iterations |
+| `results.jsonl` | One record per measurement: `mode`, `N`, `K`, `first_s`, `steady_s`, `per_dataset_ms`, `chunk`, `peak_gpu_bytes` (on a CPU, `host_peak_bytes`), `bytes_limit`, `status`, compile time and solver iterations |
 | `manifest.json` | The image, the software (every package's version), the GPU, the host, the environment (without secrets), the plan and its SHA-256, and timestamps |
 | `nvidia-smi.xml` | `nvidia-smi -q -x` |
 | `telemetry.csv` | GPU utilization, memory, power and clocks every 0.5 s |
@@ -49,6 +54,24 @@ Each pod's results:
 
 The launcher prints each pod's progress, a line per measurement. The container's own
 log is in the Runpod console while the pod exists.
+
+## Scripts
+
+| Script | What it does | Cost |
+|---|---|---|
+| [`build_image.sh`](build_image.sh) | Builds and pushes the image on GitHub, then prints it by digest | — |
+| [`run_runpod.sh`](run_runpod.sh) | Runs the benchmark on Runpod. The launcher runs on GitHub, or here with `--local`. A dry run unless `--run`. | Up to `--budget` |
+| [`run_docker.sh`](run_docker.sh) | Runs the image on your own NVIDIA GPU | — |
+
+```bash
+IMAGE=$(benchmarks/gpu/build_image.sh | tail -n 1)
+benchmarks/gpu/run_runpod.sh --image "$IMAGE"                # dry run: prices and cap
+benchmarks/gpu/run_runpod.sh --image "$IMAGE" --run --watch  # all three GPUs, $5
+benchmarks/report/collect.sh                                 # tables and charts
+```
+
+Each script's `--help` documents it. The sections below show the commands the scripts
+run.
 
 ## One-time setup
 
@@ -139,17 +162,24 @@ as `plan.json`. To rerun it:
 - **On the CPU,** from a checkout, which refreshes the M3 numbers:
 
   ```bash
-  BENCH_LOCAL=1 BENCH_BACKEND=cpu JAX_PLATFORMS=cpu BENCH_RESULTS=out/m3 \
-      BENCH_TIME_BUDGET_S=3600 uv run python -m benchmarks.gpu.run
+  BENCH_LOCAL=1 BENCH_BACKEND=cpu JAX_PLATFORMS=cpu BENCH_PLAN=benchmarks/cpu/plan.json \
+      BENCH_RESULTS=out/m3 BENCH_TIME_BUDGET_S=3600 uv run python -m benchmarks.gpu.run
   ```
+
+  `benchmarks/cpu/plan.json` measures at the sizes of the README's M3 tables. The GPU plan's
+  batches would need tens of gigabytes.
 
 ## Charts and tables
 
+[`benchmarks/report/collect.sh`](../report/collect.sh) downloads a run and draws both.
+By hand:
+
 ```bash
-# The README's chart for each device, and one comparing them
-uv run --with matplotlib python benchmarks/feasible_scaling/plot.py \
+# For each device, the README's batch-fitting chart and a sampling chart; for
+# several devices, a chart comparing each
+uv run --with matplotlib python benchmarks/report/charts.py \
     benchmarks/gpu/results/<run id>/*/ docs/source/_static
 
 # The README's tables, in Markdown
-uv run python benchmarks/gpu/report.py benchmarks/gpu/results/<run id>/*/
+uv run python benchmarks/report/tables.py benchmarks/gpu/results/<run id>/*/
 ```

@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import urllib.request
 from pathlib import Path
 
@@ -20,6 +21,26 @@ GPU_TYPES = {
     "h100-sxm": "NVIDIA H100 80GB HBM3",
     "h200-sxm": "NVIDIA H200",
 }
+
+
+def home_as_tilde(text: str, home: str | None = None) -> str:
+    """Text with the user's home directory written as ~, so results don't name the user.
+
+    A path counts only where it starts: at the start of the text, or after whitespace,
+    ``:``, ``=`` or a quote. So ``/home/me/x`` becomes ``~/x``, but ``/data/home/me``
+    and ``/home/meg`` stay as they are.
+
+    Args:
+        text: A path, or text containing paths.
+        home: The home directory; the current user's if None.
+
+    Returns:
+        str: The text, with each path in the home directory starting ``~``.
+    """
+    home = (os.path.expanduser("~") if home is None else home).rstrip("/")
+    if not home:
+        return text
+    return re.sub(r"(?<![^\s:=\"'])" + re.escape(home) + r"(?=[/:\s\"']|$)", "~", text)
 
 
 def utc_now() -> str:

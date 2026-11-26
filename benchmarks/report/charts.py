@@ -1,18 +1,23 @@
 """Render the Feasible scaling charts (light and dark SVG) from benchmark results.
 
 Usage:
-    uv run --with matplotlib python benchmarks/feasible_scaling/plot.py INPUT... OUT_DIR [--png]
+    uv run --with matplotlib python benchmarks/report/charts.py INPUT... OUT_DIR [--png]
 
-Each INPUT is either the CPU benchmark's ``results.json``, which gives
-``feasible_scaling_{light,dark}.svg``, or a results directory of
-``benchmarks/gpu/run.py`` (``results.jsonl`` and ``manifest.json``). A GPU's
-directory gives ``gpu_scaling_<gpu>_{light,dark}.svg``, and a CPU run's gives
-``feasible_scaling_{light,dark}.svg``. With more than one input, the inputs' Feasible
-times per dataset are also drawn together, in ``gpu_scaling_comparison_*.svg``.
+Each INPUT is a results directory of ``benchmarks/gpu/run.py`` (``results.jsonl`` and
+``manifest.json``), from a GPU or a CPU. A GPU's directory gives
+``gpu_scaling_<gpu>_{light,dark}.svg``, and a CPU's gives
+``feasible_scaling_{light,dark}.svg``, the README's chart. With more than one input, the
+inputs' Feasible times per dataset are also drawn together, in
+``gpu_scaling_comparison_*.svg``.
+
+A run directory with sampling results also gives ``gpu_sampling_<gpu>_*.svg`` (or
+``cpu_sampling_*.svg``): each sampling kind's throughput and peak memory against the
+points per call. With more than one such directory, ``gpu_sampling_comparison_*.svg``
+compares each kind's best throughput across them.
 
 A run directory's Feasible points include the term-count phase's fits at the plan's
 term count, and a line is projected only from MIN_PROJECTION_POINTS measured points:
-for time, those from the throughput knee on.
+for time, the largest batches, from the throughput knee on where there are enough.
 """
 
 import dataclasses
@@ -49,8 +54,16 @@ THEMES = {
         ols="#d95926",
     ),
 }
-# Lines for the comparison chart, one per device
+# Lines for the comparison chart, one per device, and the sampling chart, one per kind
 SERIES_COLORS = ("#2a78d6", "#eb6834", "#1f9d6b", "#8a5cd1", "#c43c5c")
+# The sampling kinds of benchmarks/gpu/plan.json, and their labels
+SAMPLING = {
+    "ppf_jit": "Jitted ppf(u)",
+    "rvs_jax": "rvs, jax.random",
+    "rvs_hdr": "rvs, HDR",
+    "cdf": "cdf(x)",
+    "pdf_cdf": "pdf(cdf(x))",
+}
 KNEE_TOLERANCE = 0.05  # benchmarks/gpu/plan.json's chunked knee_tolerance
 GIB = 2**30
 # A line is projected from at least this many measured points; fewer are only joined
@@ -78,14 +91,17 @@ class Device:
     memory_limit_gb: float
     memory_name: str
     memory_title: str
-    ols_label: str
     n_max: int
     fit_from: dict[str, int]
     oom: dict[str, int]
+    sampling: dict[str, list[dict]] = dataclasses.field(default_factory=dict)
+    sampling_stem: str = ""
 
 
 def compact(v, _pos=None):
-    """1,000 -> 1K, 1,000,000 -> 1M."""
+    """1,000 -> 1K, 1,000,000 -> 1M, 10**9 -> 1B."""
+    if v >= 1e9:
+        return f"{v / 1e9:.3g}B"
     if v >= 1e6:
         return f"{v / 1e6:.3g}M"
     if v >= 1e3:
@@ -108,47 +124,17 @@ def linfit(n, v):
     return float(a), float(b)
 
 
-def load_cpu_json(path: Path) -> Device:
-    """The CPU benchmark's results.json, with its hand-written machine block."""
-    res = json.loads(path.read_text())
-    spec = res["machine"]
-    fe = sorted(
-        (r for r in res["runs"] if r["mode"] == "feasible" and r["K"] == 10),
-        key=lambda r: r["N"],
-    )
-    ols = sorted(
-        (r for r in res["runs"] if r["mode"] == "ols_grid"), key=lambda r: r["N"]
-    )
-    chunk = next(r for r in res["runs"] if r["mode"] == "feasible_chunked")
-    for r in [*fe, *ols, chunk]:
-        r["memory_gb"] = r["rss_peak_mb"] / 1024
-    return Device(
-        stem="feasible_scaling",
-        label=f"{spec['cpu']} CPU",
-        machine=(
-            f"{spec['model']}, {spec['cpu']} ({spec['cores']}), {spec['ram_gb']:g} GB RAM, "
-            f"{spec['os']}, JAX {spec['jax']} on {spec['backend']}"
-        ),
-        feasible=fe,
-        ols=ols,
-        chunk=chunk,
-        memory_limit_gb=spec["ram_gb"],
-        memory_name="Machine RAM",
-        memory_title="Peak memory, single batch",
-        ols_label="OLS (fit_grid; no validity check)",
-        n_max=1_000_000,
-        # Smaller batches are overhead-bound
-        fit_from={"feasible": 500, "ols": 500},
-        oom={},
-    )
-
-
 def _knee_n(records: list[dict]) -> int:
     """The smallest batch within KNEE_TOLERANCE of the best time per dataset."""
     best = min(r["steady_s"] / r["N"] for r in records)
     return min(
         r["N"] for r in records if r["steady_s"] / r["N"] <= best * (1 + KNEE_TOLERANCE)
     )
+
+
+def _os_name(platform: str) -> str:
+    """The OS and its version from platform.platform(): macOS-26.3.1-arm64-... -> macOS 26.3.1."""
+    return " ".join(platform.split("-")[:2])
 
 
 def load_run_dir(path: Path) -> Device:
@@ -205,6 +191,22 @@ def load_run_dir(path: Path) -> Device:
     )
     if chunk:
         chunk["memory_gb"] = chunk[memory_key] / GIB
+    sampling = {}
+    for kind in SAMPLING:
+        rows = sorted(
+            (
+                r
+                for r in records
+                if r.get("kind") == "sampling"
+                and r.get("mode") == kind
+                and r["status"] == "ok"
+            ),
+            key=lambda r: r["N"],
+        )
+        for r in rows:
+            r["memory_gb"] = r[memory_key] / GIB
+        if rows:
+            sampling[kind] = rows
     packages = manifest["software"]["packages"]
     if on_gpu:
         card = manifest["gpu"]["gpus"][0]
@@ -230,7 +232,8 @@ def load_run_dir(path: Path) -> Device:
         )
         machine = (
             f"{manifest['host']['cpu_model']}, {manifest['host']['cpu_count']} cores, "
-            f"{limit:.0f} GB RAM, {manifest['host']['platform']}, JAX {packages['jax']} on CPU"
+            f"{limit:.0f} GB RAM, {_os_name(manifest['host']['platform'])}, "
+            f"JAX {packages['jax']} on CPU"
         )
         label, name, title = (
             f"{manifest['host']['cpu_model']} CPU",
@@ -247,7 +250,6 @@ def load_run_dir(path: Path) -> Device:
         memory_limit_gb=limit,
         memory_name=name,
         memory_title=title,
-        ols_label="OLS (fit_grid)",
         n_max=100_000_000 if on_gpu else 1_000_000,
         fit_from={"feasible": _knee_n(fe), "ols": _knee_n(ols)},
         oom={
@@ -255,26 +257,54 @@ def load_run_dir(path: Path) -> Device:
             for k, v in (("feasible", first_oom("feasible")), ("ols", first_oom("ols")))
             if v
         },
+        sampling=sampling,
+        sampling_stem=f"gpu_sampling_{gpu_type}" if gpu_type else "cpu_sampling",
     )
+
+
+def _time_fit_start(pts: list[dict], chunk: dict | None, knee_n: int) -> int:
+    """The smallest batch the time fit uses: the knee, or lower to reach enough points.
+
+    Args:
+        pts: A method's single-batch records.
+        chunk: The chunked run's record, if it counts for this method.
+        knee_n: The batch the fit starts from when there are enough points.
+
+    Returns:
+        int: The smallest batch size in the fit.
+    """
+    sizes = sorted((r["N"] for r in pts), reverse=True)
+    start = knee_n
+    for n in sizes:
+        count = sum(size >= start for size in sizes)
+        count += bool(chunk and chunk["chunk"] >= start)
+        if count >= MIN_PROJECTION_POINTS:
+            break
+        start = min(start, n)
+    return start
 
 
 def models(d: Device) -> tuple[dict, dict]:
     """Time and memory, fitted as a + b * N on each method's linear range.
 
     Time is fitted from the throughput knee on, with the chunked run if its chunks
-    are that large; memory, which has no knee, on at least the three largest batches.
-    A method with fewer than MIN_PROJECTION_POINTS points gets None.
+    are that large. When the time per dataset falls until memory runs out, the knee
+    is the largest batch, so the next smaller batches join until there are
+    MIN_PROJECTION_POINTS points. Memory, which has no knee, is fitted on at least
+    the three largest batches. A method with too few points gets None.
     """
     t_model, m_model = {}, {}
     for key, pts in (("feasible", d.feasible), ("ols", d.ols)):
-        big = [r for r in pts if r["N"] >= d.fit_from[key]]
+        chunk = d.chunk if key == "feasible" else None
+        start = _time_fit_start(pts, chunk, d.fit_from[key])
+        big = [r for r in pts if r["N"] >= start]
         n, t = [r["N"] for r in big], [r["steady_s"] for r in big]
-        if key == "feasible" and d.chunk and d.chunk["chunk"] >= d.fit_from[key]:
-            n, t = [*n, d.chunk["N"]], [*t, d.chunk["fit_s_excl_compile"]]
+        if chunk and chunk["chunk"] >= start:
+            n, t = [*n, chunk["N"]], [*t, chunk["fit_s_excl_compile"]]
         t_model[key] = None
         if len(n) >= MIN_PROJECTION_POINTS:
             a, b = linfit(n, t)
-            t_model[key] = {"a": a, "b": b}
+            t_model[key] = {"a": a, "b": b, "from": start}
         sizes = sorted(r["N"] for r in pts)
         start = min(d.fit_from[key], *sizes[-MIN_PROJECTION_POINTS:])
         fitted = [r for r in pts if r["N"] >= start]
@@ -347,7 +377,7 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
                 if key == "feasible" and d.chunk
                 else max(p["N"] for p in pts)
             )
-            n_solid = np.geomspace(d.fit_from[key], n_hi, 100)
+            n_solid = np.geomspace(t_model[key]["from"], n_hi, 100)
             n_dash = np.geomspace(n_hi, n_max, 100)
             ax_t.plot(
                 n_solid, a + b * n_solid, color=col, linewidth=2, solid_capstyle="round"
@@ -537,7 +567,7 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
             marker="o",
             markersize=6,
             markeredgecolor=c["surface"],
-            label=d.ols_label,
+            label="OLS (fit_grid)",
         ),
     ]
     leg = fig.legend(
@@ -553,12 +583,7 @@ def render(d: Device, theme: str, out_dir: Path, t_model: dict, m_model: dict) -
     for text in leg.get_texts():
         text.set_color(c["ink2"])
 
-    out = out_dir / f"{d.stem}_{theme}.svg"
-    fig.savefig(out, facecolor=c["surface"])
-    if "--png" in sys.argv:
-        fig.savefig(out.with_suffix(".png"), facecolor=c["surface"], dpi=110)
-    plt.close(fig)
-    return out
+    return _save(fig, out_dir / f"{d.stem}_{theme}.svg", c)
 
 
 def render_comparison(devices: list[Device], theme: str, out_dir: Path) -> Path:
@@ -604,7 +629,11 @@ def render_comparison(devices: list[Device], theme: str, out_dir: Path) -> Path:
         color=c["ink2"],
         fontsize=9,
     )
-    out = out_dir / f"gpu_scaling_comparison_{theme}.svg"
+    return _save(fig, out_dir / f"gpu_scaling_comparison_{theme}.svg", c)
+
+
+def _save(fig, out: Path, c: dict) -> Path:
+    """Save a figure as SVG, and as a PNG preview with --png; close it."""
     fig.savefig(out, facecolor=c["surface"])
     if "--png" in sys.argv:
         fig.savefig(out.with_suffix(".png"), facecolor=c["surface"], dpi=110)
@@ -612,9 +641,148 @@ def render_comparison(devices: list[Device], theme: str, out_dir: Path) -> Path:
     return out
 
 
+def render_sampling(d: Device, theme: str, out_dir: Path) -> Path:
+    """Draw each sampling kind's throughput and peak memory against its size."""
+    c = THEMES[theme]
+    plt.rcParams.update({"font.family": "sans-serif", "svg.fonttype": "none"})
+    fig, (ax_r, ax_m) = plt.subplots(1, 2, figsize=(11, 4.9), facecolor=c["surface"])
+    fig.subplots_adjust(left=0.075, right=0.975, top=0.74, bottom=0.13, wspace=0.26)
+    handles = []
+    for (kind, label), color in zip(SAMPLING.items(), SERIES_COLORS, strict=True):
+        rows = d.sampling.get(kind)
+        if not rows:
+            continue
+        n = [r["N"] for r in rows]
+        style = dict(
+            color=color,
+            linewidth=2,
+            marker="o",
+            markersize=6,
+            markeredgecolor=c["surface"],
+        )
+        ax_r.plot(n, [r["points_per_s"] for r in rows], **style)
+        ax_m.plot(n, [r["memory_gb"] for r in rows], **style)
+        handles.append(plt.Line2D([], [], label=label, **style))
+    for ax in (ax_r, ax_m):
+        style_axes(ax, c)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.xaxis.set_major_formatter(FuncFormatter(compact))
+        ax.set_xlabel("Points per call", color=c["ink2"], fontsize=9.5)
+    ax_r.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{compact(v)}/s"))
+    ax_m.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g} GB"))
+    ax_m.axhline(d.memory_limit_gb, color=c["muted"], linewidth=1)
+    ax_m.annotate(
+        f"{d.memory_name} ({d.memory_limit_gb:.3g} GB)",
+        (0.02, d.memory_limit_gb),
+        xycoords=("axes fraction", "data"),
+        xytext=(0, -12),
+        textcoords="offset points",
+        fontsize=8.5,
+        color=c["ink2"],
+    )
+    for ax, title in (
+        (ax_r, "Points per second (compilation excluded)"),
+        (ax_m, "Peak memory per call"),
+    ):
+        ax.set_title(
+            title, loc="left", color=c["ink"], fontsize=11, fontweight="bold", pad=10
+        )
+    fig.text(
+        0.075,
+        0.955,
+        "Sampling a fitted 10-term metalog",
+        color=c["ink"],
+        fontsize=12.5,
+        fontweight="bold",
+    )
+    fig.text(
+        0.075,
+        0.905,
+        f"{d.machine}. Steady state; higher is faster.",
+        color=c["ink2"],
+        fontsize=9,
+    )
+    leg = fig.legend(
+        handles=handles,
+        loc="upper left",
+        bbox_to_anchor=(0.068, 0.885),
+        ncol=len(handles),
+        frameon=False,
+        fontsize=9,
+        handlelength=2.2,
+        columnspacing=1.8,
+    )
+    for text in leg.get_texts():
+        text.set_color(c["ink2"])
+    return _save(fig, out_dir / f"{d.sampling_stem}_{theme}.svg", c)
+
+
+def render_sampling_comparison(
+    devices: list[Device], theme: str, out_dir: Path
+) -> Path:
+    """Draw each sampling kind's best throughput on each device, as grouped bars."""
+    c = THEMES[theme]
+    plt.rcParams.update({"font.family": "sans-serif", "svg.fonttype": "none"})
+    fig, ax = plt.subplots(figsize=(7.5, 4.6), facecolor=c["surface"])
+    fig.subplots_adjust(left=0.2, right=0.97, top=0.8, bottom=0.12)
+    style_axes(ax, c)
+    ax.grid(False, axis="y")
+    ax.set_xscale("log")
+    kinds = [k for k in SAMPLING if any(k in d.sampling for d in devices)]
+    height = 0.8 / len(devices)
+    values = []
+    for i, (d, color) in enumerate(zip(devices, SERIES_COLORS, strict=False)):
+        best = [
+            max((r["points_per_s"] for r in d.sampling.get(k, [])), default=0)
+            for k in kinds
+        ]
+        y = [j + (i - (len(devices) - 1) / 2) * height for j in range(len(kinds))]
+        ax.barh(y, best, height=height * 0.9, color=color, label=d.label)
+        for value, y_i in zip(best, y, strict=True):
+            if value:  # a log axis makes bar lengths relative, so label each value
+                ax.annotate(
+                    f"{compact(value)}/s",
+                    (value, y_i),
+                    xytext=(4, 0),
+                    textcoords="offset points",
+                    va="center",
+                    fontsize=8,
+                    color=c["ink2"],
+                )
+        values += [v for v in best if v]
+    ax.set_xlim(10 ** np.floor(np.log10(min(values))), max(values) * 8)
+    ax.set_yticks(range(len(kinds)), [SAMPLING[k] for k in kinds])
+    ax.invert_yaxis()
+    ax.tick_params(axis="y", colors=c["ink2"])
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{compact(v)}/s"))
+    ax.set_xlabel("Best points per second, at any size", color=c["ink2"], fontsize=9.5)
+    leg = ax.legend(frameon=False, fontsize=9, loc="lower right")
+    for text in leg.get_texts():
+        text.set_color(c["ink2"])
+    fig.text(
+        0.2,
+        0.92,
+        "Sampling throughput",
+        color=c["ink"],
+        fontsize=12.5,
+        fontweight="bold",
+    )
+    fig.text(
+        0.2,
+        0.865,
+        "A fitted 10-term metalog; steady state. Longer is faster.",
+        color=c["ink2"],
+        fontsize=9,
+    )
+    return _save(fig, out_dir / f"gpu_sampling_comparison_{theme}.svg", c)
+
+
 def load(path: Path) -> Device:
-    """A device's results, from a results.json file or a run's directory."""
-    return load_run_dir(path) if path.is_dir() else load_cpu_json(path)
+    """A device's results, from a run's directory."""
+    if not (path / "manifest.json").is_file():
+        sys.exit(f"{path} isn't a results directory: it has no manifest.json")
+    return load_run_dir(path)
 
 
 def main(argv: list[str]) -> int:
@@ -635,6 +803,12 @@ def main(argv: list[str]) -> int:
     if len(devices) > 1:
         for theme in THEMES:
             print(render_comparison(devices, theme, out_dir))
+    sampled = [d for d in devices if d.sampling]
+    for theme in THEMES:
+        for d in sampled:
+            print(render_sampling(d, theme, out_dir))
+        if len(sampled) > 1:
+            print(render_sampling_comparison(sampled, theme, out_dir))
     return 0
 
 

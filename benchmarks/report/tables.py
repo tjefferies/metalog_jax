@@ -1,6 +1,6 @@
 """Print the README's benchmark tables, in Markdown, from run results.
 
-Usage: uv run python benchmarks/gpu/report.py RESULTS_DIR [RESULTS_DIR ...]
+Usage: uv run python benchmarks/report/tables.py RESULTS_DIR [RESULTS_DIR ...]
 
 Each RESULTS_DIR is a pod's (or a local run's) directory from benchmarks/gpu/run.py,
 such as ``benchmarks/gpu/results/<run id>/h100-sxm``. A ``launcher.json`` beside it

@@ -234,7 +234,7 @@ def measure_fit(spec: dict, plan: dict, clock: CompileClock) -> dict:
 
 
 def measure_chunked(spec: dict, plan: dict, clock: CompileClock) -> dict:
-    """Fit up to N datasets in chunks of one size, as bench_chunked.py does.
+    """Fit up to N datasets in chunks of one size, each a fit_grid call.
 
     Stops starting chunks once another wouldn't finish within ``spec["time_s"]``, if
     given, and reports the chunks it fitted, so that running out of time doesn't lose

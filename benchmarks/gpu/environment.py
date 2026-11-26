@@ -2,7 +2,8 @@
 
 Records the image, the software, the GPU (from ``nvidia-smi -q -x``), the host and the
 cloud. Secrets never reach it: environment variables are kept only by prefix, and
-any whose name suggests a credential is dropped.
+any whose name suggests a credential is dropped. Paths in the user's home directory
+start ``~``, so that a local run's manifest doesn't name the user.
 """
 
 import importlib.metadata
@@ -16,6 +17,8 @@ import sys
 # nvidia-smi's own output, never untrusted XML
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from pathlib import Path
+
+from benchmarks.gpu.common import home_as_tilde
 
 # Variables worth recording, by prefix
 _ENV_PREFIXES = ("BENCH_", "CUDA_", "JAX_", "NVIDIA_", "RUNPOD_", "TF_", "XLA_")
@@ -50,11 +53,12 @@ def safe_environment(environ: dict[str, str] | None = None) -> dict[str, str]:
         environ: The environment; ``os.environ`` if None.
 
     Returns:
-        dict[str, str]: The kept variables, sorted by name.
+        dict[str, str]: The kept variables, sorted by name, with paths in the home
+        directory starting ``~``.
     """
     environ = os.environ if environ is None else environ
     return {
-        name: value
+        name: home_as_tilde(value)
         for name, value in sorted(environ.items())
         if name.startswith(_ENV_PREFIXES)
         and name not in _DROPPED
@@ -70,7 +74,7 @@ def software() -> dict:
     }
     return {
         "python": sys.version,
-        "executable": sys.executable,
+        "executable": home_as_tilde(sys.executable),
         "packages": {name: installed.get(name) for name in _KEY_PACKAGES},
         "freeze": dict(sorted(installed.items())),
     }

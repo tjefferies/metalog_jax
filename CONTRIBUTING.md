@@ -204,13 +204,20 @@ Coverage settings live in `[tool.coverage]` in `pyproject.toml`, so `make test` 
 
 ### Performance changes
 
-If you change fitting, feasibility, grid search or sampling performance, include before-and-after numbers and your hardware in the pull request. The benchmarks in `benchmarks/feasible_scaling/` document their own usage, for example:
+If you change fitting, feasibility, grid search or sampling performance, include before-and-after numbers and your hardware in the pull request. Run the CPU benchmark on `development` and on your branch, and compare their tables. Ten minutes each is enough for a comparison:
 
 ```bash
-uv run python benchmarks/feasible_scaling/bench.py MODE N K REPS
+git switch development
+benchmarks/cpu/run.sh --minutes 10 --out benchmarks/cpu/results/before
+git switch your-branch
+benchmarks/cpu/run.sh --minutes 10 --out benchmarks/cpu/results/after
+benchmarks/report/collect.sh --dir benchmarks/cpu/results/before --no-charts
+benchmarks/report/collect.sh --dir benchmarks/cpu/results/after --no-charts
 ```
 
-`benchmarks/gpu/` is the larger benchmark: a time-boxed plan of batch fits and sampling, each measurement in its own process, with the setup recorded for every run. It runs on the CPU from a checkout (`BENCH_LOCAL=1 BENCH_BACKEND=cpu JAX_PLATFORMS=cpu uv run python -m benchmarks.gpu.run`), on your own GPU from its image, or on Runpod's A100, H100 and H200 GPUs through `benchmarks/gpu/launch.py`. Its [README](benchmarks/gpu/README.md) has the details.
+Close other programs while it runs, so that the timings are steady. Leave these results out of your commits.
+
+The benchmark is a time-boxed plan of batch fits and sampling, each measurement in its own process, with the setup recorded for every run. It runs on the CPU from a checkout (`benchmarks/cpu/run.sh`), on your own GPU from its image (`benchmarks/gpu/run_docker.sh`), or on Runpod's A100, H100 and H200 GPUs (`benchmarks/gpu/run_runpod.sh`). Each script's `--help` documents it. [`benchmarks/README.md`](benchmarks/README.md) maps the folder, and the [GPU benchmark's README](benchmarks/gpu/README.md) has the details.
 
 ### Dependencies and licensing
 
