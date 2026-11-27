@@ -595,9 +595,11 @@ def render_comparison(devices: list[Device], theme: str, out_dir: Path) -> Path:
     style_axes(ax, c)
     ax.set_xscale("log")
     ax.set_yscale("log")
+    lowest = float("inf")
     for d, color in zip(devices, SERIES_COLORS, strict=False):
         n = [r["N"] for r in d.feasible]
         ms = [1e3 * r["steady_s"] / r["N"] for r in d.feasible]
+        lowest = min(lowest, *ms)
         ax.plot(
             n,
             ms,
@@ -608,6 +610,8 @@ def render_comparison(devices: list[Device], theme: str, out_dir: Path) -> Path:
             markeredgecolor=c["surface"],
             label=d.label,
         )
+    # Down to a labeled power of ten, so that the fastest point can be read off
+    ax.set_ylim(bottom=10 ** np.floor(np.log10(lowest)))
     ax.xaxis.set_major_formatter(FuncFormatter(compact))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g} ms"))
     ax.set_xlabel("Datasets in one batch", color=c["ink2"], fontsize=9.5)

@@ -1,0 +1,299 @@
+{
+ "billed": {
+  "a100-sxm": null,
+  "h100-sxm": null,
+  "h200-sxm": null
+ },
+ "billing_errors": {},
+ "budget": 5.0,
+ "cap_minutes": 23,
+ "cloud": "SECURE",
+ "ended": "2026-11-27T04:03:34+00:00",
+ "estimated": {
+  "a100-sxm": 0.7549416666666666,
+  "h100-sxm": 1.490161111111111,
+  "h200-sxm": 1.7368833333333333
+ },
+ "image": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+ "plan_sha256": "75cfa529c11879911e137ab6a8f53f3e6ccff92452a81f53cfd38b5be5d6d6c3",
+ "pods": [
+  {
+   "availability": "MEDIUM",
+   "created_at": "2026-11-27T03:42:21+00:00",
+   "error": null,
+   "gpu": "a100-sxm",
+   "gpu_id": "NVIDIA A100-SXM4-80GB",
+   "list_price": 2.19,
+   "pod": {
+    "actions": [
+     "stop",
+     "restart",
+     "terminate"
+    ],
+    "args": "",
+    "cloud": "SECURE",
+    "cost": 2.19,
+    "createdAt": "2026-11-27T03:42:21.747Z",
+    "cudaVersion": "13.2",
+    "dataCenterId": "US-KS-2",
+    "disk": 20,
+    "env": {
+     "BENCH_DEADLINE": "1795752201",
+     "BENCH_GPU": "a100-sxm",
+     "BENCH_IMAGE": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+     "BENCH_RUN_ID": "20261127T034221Z-7b1a"
+    },
+    "globalNetworking": {
+     "enabled": false
+    },
+    "gpu": {
+     "count": 1,
+     "id": "NVIDIA A100-SXM4-80GB",
+     "memory": 251,
+     "vcpuCount": 32
+    },
+    "id": "5qnylloz6w1tfi",
+    "image": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+    "locked": false,
+    "mounts": {},
+    "name": "metalog-bench-20261127T034221Z-7b1a-a100-sxm",
+    "ports": [
+     "8000/http"
+    ],
+    "registry": null,
+    "runtime": {
+     "cpu": {
+      "util": 0
+     },
+     "gpus": [
+      {
+       "memoryUtil": 0,
+       "util": 0
+      }
+     ],
+     "memory": {
+      "util": 0
+     },
+     "ports": [
+      {
+       "ip": "100.65.12.141",
+       "private": 19123,
+       "public": 60433,
+       "type": "http"
+      },
+      {
+       "ip": "100.65.12.141",
+       "private": 8000,
+       "public": 60432,
+       "type": "http"
+      }
+     ],
+     "uptime": 980
+    },
+    "ssh": {
+     "direct": null,
+     "proxy": {
+      "command": "ssh 5qnylloz6w1tfi-64410c8d@ssh.runpod.io",
+      "host": "ssh.runpod.io",
+      "port": 22,
+      "username": "5qnylloz6w1tfi-64410c8d"
+     }
+    },
+    "startedAt": "2026-11-27T03:42:21.74Z",
+    "status": "RUNNING",
+    "tags": [],
+    "template": null
+   },
+   "pod_id": "5qnylloz6w1tfi",
+   "state": "collected",
+   "terminated_at": "2026-11-27T04:03:02+00:00"
+  },
+  {
+   "availability": "HIGH",
+   "created_at": "2026-11-27T03:42:22+00:00",
+   "error": null,
+   "gpu": "h100-sxm",
+   "gpu_id": "NVIDIA H100 80GB HBM3",
+   "list_price": 4.39,
+   "pod": {
+    "actions": [
+     "stop",
+     "restart",
+     "terminate"
+    ],
+    "args": "",
+    "cloud": "SECURE",
+    "cost": 4.39,
+    "createdAt": "2026-11-27T03:42:22.883Z",
+    "cudaVersion": "13.2",
+    "dataCenterId": "EUR-IS-3",
+    "disk": 20,
+    "env": {
+     "BENCH_DEADLINE": "1795752202",
+     "BENCH_GPU": "h100-sxm",
+     "BENCH_IMAGE": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+     "BENCH_RUN_ID": "20261127T034221Z-7b1a"
+    },
+    "globalNetworking": {
+     "enabled": false
+    },
+    "gpu": {
+     "count": 1,
+     "id": "NVIDIA H100 80GB HBM3",
+     "memory": 188,
+     "vcpuCount": 20
+    },
+    "id": "j5f7210o7sqxta",
+    "image": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+    "locked": false,
+    "mounts": {},
+    "name": "metalog-bench-20261127T034221Z-7b1a-h100-sxm",
+    "ports": [
+     "8000/http"
+    ],
+    "registry": null,
+    "runtime": {
+     "cpu": {
+      "util": 5
+     },
+     "gpus": [
+      {
+       "memoryUtil": 0,
+       "util": 0
+      }
+     ],
+     "memory": {
+      "util": 0
+     },
+     "ports": [
+      {
+       "ip": "100.65.15.113",
+       "private": 19123,
+       "public": 60634,
+       "type": "http"
+      },
+      {
+       "ip": "100.65.15.113",
+       "private": 8000,
+       "public": 60633,
+       "type": "http"
+      }
+     ],
+     "uptime": 693
+    },
+    "ssh": {
+     "direct": null,
+     "proxy": {
+      "command": "ssh j5f7210o7sqxta-64410f71@ssh.runpod.io",
+      "host": "ssh.runpod.io",
+      "port": 22,
+      "username": "j5f7210o7sqxta-64410f71"
+     }
+    },
+    "startedAt": "2026-11-27T03:42:22.876Z",
+    "status": "RUNNING",
+    "tags": [],
+    "template": null
+   },
+   "pod_id": "j5f7210o7sqxta",
+   "state": "collected",
+   "terminated_at": "2026-11-27T04:02:44+00:00"
+  },
+  {
+   "availability": "MEDIUM",
+   "created_at": "2026-11-27T03:42:23+00:00",
+   "error": null,
+   "gpu": "h200-sxm",
+   "gpu_id": "NVIDIA H200",
+   "list_price": 5.29,
+   "pod": {
+    "actions": [
+     "stop",
+     "restart",
+     "terminate"
+    ],
+    "args": "",
+    "cloud": "SECURE",
+    "cost": 5.29,
+    "createdAt": "2026-11-27T03:42:24.045Z",
+    "cudaVersion": "13.2",
+    "dataCenterId": "US-CO-1",
+    "disk": 20,
+    "env": {
+     "BENCH_DEADLINE": "1795752203",
+     "BENCH_GPU": "h200-sxm",
+     "BENCH_IMAGE": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+     "BENCH_RUN_ID": "20261127T034221Z-7b1a"
+    },
+    "globalNetworking": {
+     "enabled": false
+    },
+    "gpu": {
+     "count": 1,
+     "id": "NVIDIA H200",
+     "memory": 251,
+     "vcpuCount": 16
+    },
+    "id": "999474mnajyuet",
+    "image": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+    "locked": false,
+    "mounts": {},
+    "name": "metalog-bench-20261127T034221Z-7b1a-h200-sxm",
+    "ports": [
+     "8000/http"
+    ],
+    "registry": null,
+    "runtime": {
+     "cpu": {
+      "util": 8
+     },
+     "gpus": [
+      {
+       "memoryUtil": 0,
+       "util": 0
+      }
+     ],
+     "memory": {
+      "util": 0
+     },
+     "ports": [
+      {
+       "ip": "100.65.36.152",
+       "private": 19123,
+       "public": 60256,
+       "type": "http"
+      },
+      {
+       "ip": "100.65.36.152",
+       "private": 8000,
+       "public": 60255,
+       "type": "http"
+      }
+     ],
+     "uptime": 950
+    },
+    "ssh": {
+     "direct": null,
+     "proxy": {
+      "command": "ssh 999474mnajyuet-64412498@ssh.runpod.io",
+      "host": "ssh.runpod.io",
+      "port": 22,
+      "username": "999474mnajyuet-64412498"
+     }
+    },
+    "startedAt": "2026-11-27T03:42:24.04Z",
+    "status": "RUNNING",
+    "tags": [],
+    "template": null
+   },
+   "pod_id": "999474mnajyuet",
+   "state": "collected",
+   "terminated_at": "2026-11-27T04:02:05+00:00"
+  }
+ ],
+ "run_id": "20261127T034221Z-7b1a",
+ "started": "2026-11-27T03:42:21+00:00",
+ "total_billed": null,
+ "total_estimated": 3.981986111111111,
+ "unavailable": []
+}

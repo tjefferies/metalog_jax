@@ -1,0 +1,238 @@
+{
+ "build": {
+  "git_sha": "b54cf0a386ac310c7d371d9686c437f663be018f",
+  "uv_lock_sha256": "1ac786ed3a7b39e67a590b99139201f75e7f153422c00e4e98775b71b227dfbf",
+  "version": "3.0.0"
+ },
+ "deadline": 1795756363.0,
+ "ended": "2026-11-27T04:54:37+00:00",
+ "environment": {
+  "BENCH_DEADLINE": "1795756363",
+  "BENCH_GPU": "h100-sxm",
+  "BENCH_IMAGE": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+  "BENCH_RESULTS": "/results",
+  "BENCH_RUN_ID": "20261127T043342Z-6680",
+  "JAX_COMPILATION_CACHE_DIR": "/tmp/jax-cache",
+  "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
+  "JAX_PLATFORMS": "cuda,cpu",
+  "NVIDIA_CTK_LIBCUDA_DIR": "/usr/lib/x86_64-linux-gnu",
+  "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+  "NVIDIA_VISIBLE_DEVICES": "void",
+  "RUNPOD_CPU_COUNT": "20",
+  "RUNPOD_DC_ID": "EUR-IS-3",
+  "RUNPOD_GPU_COUNT": "1",
+  "RUNPOD_GPU_NAME": "NVIDIA+H100+80GB+HBM3",
+  "RUNPOD_MEM_GB": "188",
+  "RUNPOD_POD_ID": "6u5kfkff9klmee",
+  "RUNPOD_PROXY_BASE": "proxy.runpod.net",
+  "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.95",
+  "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+ },
+ "gpu": {
+  "cuda": "13.2",
+  "driver": "595.112.07",
+  "gpus": [
+   {
+    "application_clock_sm": "Requested functionality has been deprecated",
+    "ecc": "Enabled",
+    "max_clock_memory": "2619 MHz",
+    "max_clock_sm": "1980 MHz",
+    "memory_total": "81559 MiB",
+    "mig": "Disabled",
+    "name": "NVIDIA H100 80GB HBM3",
+    "pcie": "5",
+    "pcie_width": "16x",
+    "persistence": "Enabled",
+    "power_limit": "700.00 W",
+    "uuid": "GPU-ca86b58d-0862-386a-c507-fc2d16315aa3",
+    "vbios": "96.00.99.00.01"
+   }
+  ]
+ },
+ "gpu_type": "h100-sxm",
+ "host": {
+  "cgroup_cpu_max": "1700000 100000",
+  "cgroup_memory_max": "187999997952",
+  "cpu_count": 160,
+  "cpu_model": "Intel(R) Xeon(R) Platinum 8468",
+  "cpus_available": 160,
+  "kernel": "6.8.0-149-generic",
+  "machine_model": null,
+  "mem_total_bytes": 1623318269952,
+  "platform": "Linux-6.8.0-149-generic-x86_64-with-glibc2.36"
+ },
+ "image": "ghcr.io/tjefferies/metalog_jax/gpu-bench@sha256:122b7deff2caadba19424a7097d1b471adc1612f28383ba9f25f54acf375a902",
+ "plan": {
+  "data": {
+   "boundedness": "STRICTLY_LOWER_BOUND",
+   "lower_bound": 0.0,
+   "probabilities": "DEFAULT_Y",
+   "samples_per_dataset": 200
+  },
+  "description": "metalog_jax GPU benchmark: batch fitting and sampling, time-boxed to the pod's deadline",
+  "num_terms": 10,
+  "phases": [
+   {
+    "min_s": 60,
+    "name": "check",
+    "share": 0.01
+   },
+   {
+    "datasets": 1024,
+    "methods": [
+     "ols",
+     "feasible"
+    ],
+    "min_s": 180,
+    "name": "correctness",
+    "share": 0.09
+   },
+   {
+    "methods": {
+     "feasible": 0.75,
+     "ols": 0.25
+    },
+    "name": "batches",
+    "share": 0.43,
+    "sizes": [
+     1024,
+     4096,
+     32768,
+     131072,
+     524288,
+     2097152
+    ]
+   },
+   {
+    "knee_tolerance": 0.05,
+    "methods": {
+     "feasible": 0.8,
+     "ols": 0.2
+    },
+    "min_chunks": 2,
+    "name": "chunked",
+    "seconds": 75,
+    "share": 0.15
+   },
+   {
+    "datasets": 32768,
+    "name": "terms",
+    "num_terms": [
+     4,
+     6,
+     8,
+     10,
+     12
+    ],
+    "share": 0.2
+   },
+   {
+    "kinds": {
+     "cdf": [
+      1000000,
+      10000000
+     ],
+     "pdf_cdf": [
+      1000000,
+      10000000
+     ],
+     "ppf_jit": [
+      1000000,
+      10000000,
+      100000000,
+      1000000000
+     ],
+     "rvs_hdr": [
+      1000000,
+      10000000
+     ],
+     "rvs_jax": [
+      1000000,
+      10000000
+     ]
+    },
+    "name": "sampling",
+    "share": 0.12
+   }
+  ],
+  "repetition_budget_s": 30,
+  "repetitions": 3,
+  "reserve_s": 30,
+  "seed": 59,
+  "version": 2
+ },
+ "plan_sha256": "75cfa529c11879911e137ab6a8f53f3e6ccff92452a81f53cfd38b5be5d6d6c3",
+ "software": {
+  "executable": "/opt/venv/bin/python",
+  "freeze": {
+   "absl-py": "2.5.1",
+   "aiofiles": "25.1.0",
+   "chex": "0.1.92",
+   "etils": "1.14.0",
+   "flax": "0.12.10",
+   "fsspec": "2026.9.0",
+   "humanize": "4.16.0",
+   "jax": "0.11.2",
+   "jax-cuda12-pjrt": "0.11.2",
+   "jax-cuda12-plugin": "0.11.2",
+   "jaxlib": "0.11.2",
+   "markdown-it-py": "4.2.0",
+   "mdurl": "0.1.2",
+   "metalog-jax": "3.0.0",
+   "ml_dtypes": "0.6.0",
+   "msgpack": "1.2.3",
+   "narwhals": "2.27.1",
+   "numpy": "2.5.4",
+   "nvidia-cublas-cu12": "12.9.2.10",
+   "nvidia-cuda-cccl-cu12": "12.9.27",
+   "nvidia-cuda-cupti-cu12": "12.9.79",
+   "nvidia-cuda-nvcc-cu12": "12.9.86",
+   "nvidia-cuda-nvrtc-cu12": "12.9.86",
+   "nvidia-cuda-runtime-cu12": "12.9.79",
+   "nvidia-cudnn-cu12": "9.27.0.42",
+   "nvidia-cufft-cu12": "11.4.1.4",
+   "nvidia-cusolver-cu12": "11.7.5.82",
+   "nvidia-cusparse-cu12": "12.5.10.65",
+   "nvidia-nccl-cu12": "2.32.3",
+   "nvidia-nvjitlink-cu12": "12.9.86",
+   "nvidia-nvshmem-cu12": "3.8.0",
+   "opt_einsum": "3.4.0",
+   "optax": "0.2.8",
+   "orbax-checkpoint": "0.12.7",
+   "packaging": "26.3",
+   "plotly": "7.1.0",
+   "prometheus_client": "0.26.0",
+   "protobuf": "6.33.6",
+   "psutil": "7.2.2",
+   "pygments": "2.21.0",
+   "pyyaml": "6.0.3",
+   "rich": "15.0.0",
+   "scipy": "1.18.1",
+   "simplejson": "4.2.0",
+   "tensorstore": "0.1.85",
+   "toolz": "1.2.0",
+   "treescope": "0.1.10",
+   "typing_extensions": "4.16.0",
+   "uvloop": "0.23.0",
+   "zipp": "4.1.1"
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "flax": "0.12.10",
+   "jax": "0.11.2",
+   "jax-cuda12-pjrt": "0.11.2",
+   "jax-cuda12-plugin": "0.11.2",
+   "jaxlib": "0.11.2",
+   "metalog-jax": "3.0.0",
+   "numpy": "2.5.4",
+   "nvidia-cublas-cu12": "12.9.2.10",
+   "nvidia-cuda-runtime-cu12": "12.9.79",
+   "nvidia-cudnn-cu12": "9.27.0.42",
+   "nvidia-cusolver-cu12": "11.7.5.82",
+   "nvidia-cusparse-cu12": "12.5.10.65"
+  },
+  "python": "3.13.15 (main, Sep 19 2026, 01:05:56) [GCC 12.2.0]"
+ },
+ "started": "2026-11-27T04:38:48+00:00",
+ "state": "done"
+}

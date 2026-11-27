@@ -467,11 +467,20 @@ class Launcher:
             return
         try:
             self.download(pod, status["files"])
-            fetch(f"{self.url_for(pod.pod_id)}/{pod.token}/ack", 30)
         except (ValueError, urllib.error.URLError, TimeoutError, OSError) as error:
             # Retried at the next poll, until the pod's cap
+            if pod.error != str(error):
+                print(
+                    f"{pod.gpu.slug}: downloading failed, retrying: {error}", flush=True
+                )
             pod.state, pod.error = "download failed", str(error)
             return
+        # Every file is in and checked. The ack only lets the pod exit early, and it's
+        # terminated next anyway, so a failed ack doesn't hold the results back.
+        try:
+            fetch(f"{self.url_for(pod.pod_id)}/{pod.token}/ack", 30)
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            print(f"{pod.gpu.slug}: the ack failed ({error}); terminating", flush=True)
         pod.state = "collected" if status["state"] == "done" else "benchmark failed"
         pod.error = None
         self.terminate(pod)

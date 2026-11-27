@@ -426,9 +426,9 @@ per dataset is:
   distributions. `fit_grid` returns them, marked in `feasible`; pass
   `on_infeasible="raise"` to raise instead, showing which.
 
-The [GPU benchmark](benchmarks/gpu/README.md) measures the same fits on NVIDIA A100, H100
-and H200 GPUs, and [`benchmarks/README.md`](benchmarks/README.md) lists every benchmark.
-To rerun this one on your own machine:
+[On GPUs](#on-gpus), below, has the same fits on NVIDIA A100, H100 and H200 GPUs, and
+[`benchmarks/README.md`](benchmarks/README.md) lists every benchmark. To rerun this one
+on your own machine:
 
 ```bash
 benchmarks/cpu/run.sh                                     # up to an hour; 11 minutes here
@@ -437,6 +437,63 @@ benchmarks/report/collect.sh --dir benchmarks/cpu/results/<the run's time>
 
 `collect.sh` prints the tables above and draws the chart into the run's `charts/`
 folder; this README's copies are `docs/source/_static/feasible_scaling_*.svg`.
+
+#### On GPUs
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/gpu_scaling_comparison_dark.svg">
+  <img alt="A chart of the time per dataset for 10-term Feasible fits against the number of datasets in one batch, on log scales. The Apple M3 CPU levels off near 0.55 ms per dataset from 10,000 datasets. The A100, H100 and H200 GPUs are slower than the CPU at 1,024 datasets, pass it between about 4,000 and 8,000, and keep getting faster as batches grow: at 524,288 datasets, 35 µs per dataset on the A100, 20 µs on the H100 and 15.5 µs on the H200." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/gpu_scaling_comparison_light.svg">
+</picture>
+
+Measured on [Runpod](https://www.runpod.io)'s Secure Cloud on 2026-11-27 by the
+[GPU benchmark](benchmarks/gpu/README.md): the same datasets, fits and timing as on the
+M3 above, one pod per GPU, with JAX 0.11.2, CUDA 13.2 and driver 595.112.07 in
+the image `gpu-bench@sha256:122b7deff2…`. The A100 and H100 come from run
+[`20261127T043342Z-6680`](benchmarks/gpu/results/20261127T043342Z-6680) and the H200
+from run [`20261127T034221Z-7b1a`](benchmarks/gpu/results/20261127T034221Z-7b1a).
+
+| 10 terms | Apple M3 (CPU) | A100 SXM | H100 SXM | H200 SXM |
+|---|---|---|---|---|
+| Feasible, per dataset, at the best batch size | 0.55 ms (10,000) | 35.0 µs (524,288) | 20.1 µs (524,288) | 15.5 µs (524,288) |
+| Feasible fits per hour, in chunks | 6.4 million | 99 million | 177 million | 230 million |
+| OLS fits per hour, in chunks, validity checked | 38.5 million | 568 million | 1.14 billion | 1.29 billion |
+| Price per hour | — | $2.19 | $4.39 | $5.29 |
+| Cost per million Feasible fits | — | 2.2¢ | 2.5¢ | 2.3¢ |
+
+At 32,768 datasets, the time per dataset by term count:
+
+| Terms | 4 | 6 | 8 | 10 | 12 | All five in one grid |
+|---|---|---|---|---|---|---|
+| A100 SXM | 4.5 µs | 27.9 µs | 84.9 µs | 0.14 ms | 0.24 ms | 0.49 ms |
+| H100 SXM | 3.6 µs | 18.3 µs | 61.7 µs | 0.11 ms | 0.19 ms | 0.38 ms |
+| H200 SXM | 3.3 µs | 17.9 µs | 48.2 µs | 81.9 µs | 0.13 ms | 0.27 ms |
+
+Sampling one fitted 10-term metalog, in points per second (10⁹ points for `ppf`, or 10⁸
+on the M3; 10⁷ for the rest):
+
+| | Apple M3 (CPU) | A100 SXM | H100 SXM | H200 SXM |
+|---|---|---|---|---|
+| Jitted `ppf(u)` | 541 million | 44.5 billion | 99.8 billion | 102 billion |
+| `rvs`, `jax.random` | 230 million | 1.14 billion | 1.91 billion | 2.58 billion |
+| `rvs`, HDR | 28 million | 1.46 billion | 1.77 billion | 2.44 billion |
+| `cdf` | 2.3 million | 57 million | 97 million | 121 million |
+| `pdf(cdf(x))` | 2.3 million | 57 million | 96 million | 121 million |
+
+- **Batch big:** a GPU call has a fixed cost of 2-4 s, so below a few thousand datasets
+  the laptop is faster. The time per dataset keeps falling to 524,288 datasets, the largest
+  batch measured: 16 times the M3's speed on the A100, and 35 times on the H200.
+- **Memory:** one batch takes about 65 KB per dataset, so a 2,097,152-dataset batch ran
+  out of the A100's and H100's 80 GB. Chunks of 524,288 held 33 GB and ran as fast as
+  one batch: the H200 fitted 2.6 million datasets in 41 s.
+- **Compilation:** each new batch size or term count compiles for 5-70 s on a GPU,
+  which the times above exclude. Repeated work at one size, such as chunks, compiles once.
+- **Correctness:** each GPU fitted 1,024 datasets that the CPU fitted too. OLS
+  coefficients agreed to within 2e-12 of each fit's largest, and Feasible ones within
+  3e-8 on the A100 and 2e-5 on the H100 and H200. KS distances and validity agreed
+  exactly.
+
+To rerun the GPUs, see the [GPU benchmark](benchmarks/gpu/README.md): a run of all three
+costs under $5.
 
 ### Regularized Fitting
 

@@ -1,0 +1,68 @@
+--- 2026-11-27T03:45:45+00:00 {"plan": "/results/plan.json", "phase": "check", "kind": "check", "backend": "gpu", "device_kind": "NVIDIA H200"}
+
+--- 2026-11-27T03:46:10+00:00 {"plan": "/results/plan.json", "phase": "correctness", "kind": "correctness", "method": "ols", "N": 1024, "K": 10, "methods": ["ols"]}
+
+--- 2026-11-27T03:47:22+00:00 {"plan": "/results/plan.json", "phase": "correctness", "kind": "correctness", "method": "feasible", "N": 1024, "K": 10, "methods": ["feasible"]}
+
+--- 2026-11-27T03:47:48+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 1024, "K": 10}
+
+--- 2026-11-27T03:48:33+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 4096, "K": 10}
+
+--- 2026-11-27T03:49:41+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 32768, "K": 10}
+
+--- 2026-11-27T03:50:44+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 131072, "K": 10}
+
+--- 2026-11-27T03:52:12+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 524288, "K": 10}
+
+--- 2026-11-27T03:52:21+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 1024, "K": 10}
+
+--- 2026-11-27T03:52:33+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 4096, "K": 10}
+
+--- 2026-11-27T03:52:48+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 32768, "K": 10}
+
+--- 2026-11-27T03:52:59+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 131072, "K": 10}
+
+--- 2026-11-27T03:53:14+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 524288, "K": 10}
+
+--- 2026-11-27T03:53:59+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 2097152, "K": 10}
+
+--- 2026-11-27T03:54:17+00:00 {"plan": "/results/plan.json", "phase": "chunked", "kind": "chunked", "method": "ols", "K": 10, "N": 5898240, "chunk": 131072, "time_s": 15.918069431209005}
+
+--- 2026-11-27T03:55:17+00:00 {"plan": "/results/plan.json", "phase": "chunked", "kind": "chunked", "method": "feasible", "K": 10, "N": 4718592, "chunk": 524288, "time_s": 75}
+
+--- 2026-11-27T03:55:29+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 4}
+
+--- 2026-11-27T03:55:58+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 6}
+
+--- 2026-11-27T03:56:43+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 8}
+
+--- 2026-11-27T03:57:11+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 10}
+
+--- 2026-11-27T03:58:23+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 12}
+
+--- 2026-11-27T03:59:48+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 12, "num_terms": [4, 6, 8, 10, 12]}
+
+--- 2026-11-27T04:00:05+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 1000000}
+
+--- 2026-11-27T04:00:14+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 10000000}
+
+--- 2026-11-27T04:00:24+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 100000000}
+
+--- 2026-11-27T04:00:34+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 1000000000}
+
+--- 2026-11-27T04:00:45+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_jax", "N": 1000000}
+
+--- 2026-11-27T04:00:56+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_jax", "N": 10000000}
+
+--- 2026-11-27T04:01:06+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_hdr", "N": 1000000}
+
+--- 2026-11-27T04:01:16+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_hdr", "N": 10000000}
+
+--- 2026-11-27T04:01:25+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "cdf", "N": 1000000}
+
+--- 2026-11-27T04:01:35+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "cdf", "N": 10000000}
+
+--- 2026-11-27T04:01:45+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "pdf_cdf", "N": 1000000}
+
+--- 2026-11-27T04:01:54+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "pdf_cdf", "N": 10000000}
+

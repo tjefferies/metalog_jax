@@ -1,0 +1,116 @@
+--- 2026-11-27T04:37:48+00:00 {"plan": "/results/plan.json", "phase": "check", "kind": "check", "backend": "gpu", "device_kind": "NVIDIA A100-SXM4-80GB"}
+
+--- 2026-11-27T04:38:15+00:00 {"plan": "/results/plan.json", "phase": "correctness", "kind": "correctness", "method": "ols", "N": 1024, "K": 10, "methods": ["ols"]}
+
+--- 2026-11-27T04:39:34+00:00 {"plan": "/results/plan.json", "phase": "correctness", "kind": "correctness", "method": "feasible", "N": 1024, "K": 10, "methods": ["feasible"]}
+
+--- 2026-11-27T04:40:10+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 1024, "K": 10}
+
+--- 2026-11-27T04:41:14+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 4096, "K": 10}
+
+--- 2026-11-27T04:42:31+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 32768, "K": 10}
+
+--- 2026-11-27T04:43:59+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 131072, "K": 10}
+
+--- 2026-11-27T04:45:42+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 524288, "K": 10}
+
+--- 2026-11-27T04:46:38+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "feasible", "N": 2097152, "K": 10}
+W1127 04:46:25.515137   12541 hlo_rematerialization.cc:3363] Can't reduce memory use below 70.54GiB (75738066982 bytes) by rematerialization; only reduced to 122.92GiB (131983774715 bytes), down from 123.04GiB (132109603467 bytes) originally
+W1127 04:46:37.756407   12541 bfc_allocator.cc:598] Allocator (GPU_0_bfc) ran out of memory trying to allocate 121.95GiB (rounded to 130937876736) from the lower end requested by op 
+If this is caused by memory fragmentation, the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' may improve the situation.
+Current allocation summary follows.
+W1127 04:46:37.756814   12541 bfc_allocator.cc:609] ************_______________________________________________________________________________________*
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/opt/metalog_jax/benchmarks/gpu/measure.py", line 366, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/opt/metalog_jax/benchmarks/gpu/measure.py", line 348, in main
+    record = MEASUREMENTS[spec["kind"]](spec, plan, clock)
+  File "/opt/metalog_jax/benchmarks/gpu/measure.py", line 218, in measure_fit
+    result, timing = timed(run, plan["repetitions"], plan["repetition_budget_s"], clock)
+                     ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/metalog_jax/benchmarks/gpu/measure.py", line 109, in timed
+    result = run()
+  File "/opt/metalog_jax/benchmarks/gpu/measure.py", line 216, in run
+    return jax.block_until_ready(fit_grid(x, y, params, num_terms=num_terms))
+                                 ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/metalog_jax/metalog_jax/grid_search.py", line 888, in fit_grid
+    result = _fit_feasible(x, y, params, terms, has_num_terms, shared)
+  File "/opt/metalog_jax/metalog_jax/grid_search.py", line 789, in _fit_feasible
+    fits = {k: fit_terms(k) for k in dict.fromkeys(terms)}
+               ~~~~~~~~~^^^
+  File "/opt/metalog_jax/metalog_jax/grid_search.py", line 776, in fit_terms
+    fits = solve_batch(get_engine(k, params.term_order), Y, z, shared)
+  File "/opt/metalog_jax/metalog_jax/feasibility/a_star.py", line 769, in solve_batch
+    state, feasible = _triage_and_rounds(engine, R, z0, state, options)
+                      ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/metalog_jax/metalog_jax/feasibility/a_star.py", line 807, in _triage_and_rounds
+    it, done = (np.asarray(v)[: active.size] for v in update[3:])
+    ^^^^^^^^
+  File "/opt/metalog_jax/metalog_jax/feasibility/a_star.py", line 807, in <genexpr>
+    it, done = (np.asarray(v)[: active.size] for v in update[3:])
+                ~~~~~~~~~~^^^
+  File "/opt/venv/lib/python3.13/site-packages/jax/_src/array.py", line 409, in __array__
+    return np.asarray(self._value, dtype=dtype, **kwds)  # pyrefly: ignore[no-matching-overload]
+                      ^^^^^^^^^^^
+  File "/opt/venv/lib/python3.13/site-packages/jax/_src/profiler.py", line 420, in wrapper
+    return func(*args, **kwargs)
+  File "/opt/venv/lib/python3.13/site-packages/jax/_src/array.py", line 637, in _value
+    npy_value, did_copy = self._single_device_array_to_np_array_did_copy()
+                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 121.95GiB with allocator GPU_0_bfc on device 0. [executable_name='jit__run_round'] [tf-allocator-allocation-error='']
+
+--- 2026-11-27T04:46:47+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 1024, "K": 10}
+
+--- 2026-11-27T04:47:00+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 4096, "K": 10}
+
+--- 2026-11-27T04:47:14+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 32768, "K": 10}
+
+--- 2026-11-27T04:47:30+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 131072, "K": 10}
+
+--- 2026-11-27T04:47:56+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 524288, "K": 10}
+
+--- 2026-11-27T04:48:49+00:00 {"plan": "/results/plan.json", "phase": "batches", "kind": "fit", "method": "ols", "N": 2097152, "K": 10}
+
+--- 2026-11-27T04:50:06+00:00 {"plan": "/results/plan.json", "phase": "chunked", "kind": "chunked", "method": "ols", "K": 10, "N": 11796480, "chunk": 131072, "time_s": 75}
+
+--- 2026-11-27T04:51:07+00:00 {"plan": "/results/plan.json", "phase": "chunked", "kind": "chunked", "method": "feasible", "K": 10, "N": 2097152, "chunk": 524288, "time_s": 75}
+
+--- 2026-11-27T04:51:21+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 4}
+
+--- 2026-11-27T04:51:53+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 6}
+
+--- 2026-11-27T04:52:47+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 8}
+
+--- 2026-11-27T04:53:27+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 10}
+
+--- 2026-11-27T04:55:14+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 12}
+
+--- 2026-11-27T04:56:52+00:00 {"plan": "/results/plan.json", "phase": "terms", "kind": "fit", "method": "feasible", "N": 32768, "K": 12, "num_terms": [4, 6, 8, 10, 12]}
+
+--- 2026-11-27T04:57:17+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 1000000}
+
+--- 2026-11-27T04:57:28+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 10000000}
+
+--- 2026-11-27T04:57:40+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 100000000}
+
+--- 2026-11-27T04:57:51+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "ppf_jit", "N": 1000000000}
+
+--- 2026-11-27T04:58:04+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_jax", "N": 1000000}
+
+--- 2026-11-27T04:58:16+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_jax", "N": 10000000}
+
+--- 2026-11-27T04:58:27+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_hdr", "N": 1000000}
+
+--- 2026-11-27T04:58:38+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "rvs_hdr", "N": 10000000}
+
+--- 2026-11-27T04:58:49+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "cdf", "N": 1000000}
+
+--- 2026-11-27T04:59:00+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "cdf", "N": 10000000}
+
+--- 2026-11-27T04:59:12+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "pdf_cdf", "N": 1000000}
+
+--- 2026-11-27T04:59:23+00:00 {"plan": "/results/plan.json", "phase": "sampling", "kind": "sampling", "sampling": "pdf_cdf", "N": 10000000}
+

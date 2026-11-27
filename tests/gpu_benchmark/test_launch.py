@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from absl.testing import absltest
 
@@ -348,15 +349,42 @@ class LauncherTest(absltest.TestCase):
         self.assertIn("BENCH_TOKEN", self.api.requests[0][2]["env"])
 
     def test_a_bad_checksum_is_retried_until_the_cap(self):
-        """A download that doesn't match is retried, and the pod deleted at its cap."""
+        """A download that doesn't match is retried, said once, and ended at the cap."""
         make_results(self.pod_dir, corrupt="results.jsonl")
         launcher = self.launcher()
         launcher.create("12.9")
         launcher.pods[0].deadline = time.time() + 1
-        launcher.watch()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            launcher.watch()
         self.assertEqual(launcher.pods[0].state, "cap reached")
         self.assertIn("checksum", launcher.pods[0].error)
+        self.assertEqual(out.getvalue().count("downloading failed, retrying"), 1)
         self.assertFalse(self.server.acknowledged.is_set())
+        self.assertEqual(self.api.deleted(), ["pod0"])
+
+    def test_a_failed_ack_still_collects(self):
+        """Checked results are collected, and the pod deleted, though the ack fails."""
+        digests = make_results(self.pod_dir)
+        respond = ResultsServer.respond
+
+        def refuse_ack(server, path):
+            if path.rstrip("/").endswith("/ack"):
+                return 404, b"not found\n", "text/plain"
+            return respond(server, path)
+
+        self.enter_context(mock.patch.object(ResultsServer, "respond", refuse_ack))
+        launcher = self.launcher()
+        launcher.create("12.9")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            launcher.watch()
+        pod = launcher.pods[0]
+        self.assertEqual((pod.state, pod.error), ("collected", None))
+        self.assertIn("the ack failed (HTTP Error 404", out.getvalue())
+        for name, digest in digests.items():
+            body = (pod.out / name).read_bytes()
+            self.assertEqual(hashlib.sha256(body).hexdigest(), digest)
         self.assertEqual(self.api.deleted(), ["pod0"])
 
     def test_the_cap_terminates_a_pod_without_results(self):
