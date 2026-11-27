@@ -377,8 +377,8 @@ also audits the OLS fits with `check_feasibility`. On its five test datasets, 3 
 #### Scaling to Many Datasets
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_dark.svg">
-  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 0.56 ms per dataset, projecting to about 9 minutes for one million datasets; OLS through fit_grid, its validity check included, is about 6 times faster. Right: peak memory for a single batch grows about 72 KB per dataset and would reach 8 GB near 109,000 datasets, while fitting 160,000 datasets in chunks of 10,000 peaked at 1.7 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/feasible_scaling_light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/development/docs/source/_static/feasible_scaling_dark.svg">
+  <img alt="Two charts. Left: time to fit 10-term Feasible metalogs grows linearly, about 0.56 ms per dataset, projecting to about 9 minutes for one million datasets; OLS through fit_grid, its validity check included, is about 6 times faster. Right: peak memory for a single batch grows about 72 KB per dataset and would reach 8 GB near 109,000 datasets, while fitting 160,000 datasets in chunks of 10,000 peaked at 1.7 GB." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/development/docs/source/_static/feasible_scaling_light.svg">
 </picture>
 
 Measured with `fit_grid` on a **MacBook Pro (Apple M3, 8 cores: 4 performance and 4
@@ -441,8 +441,8 @@ folder; this README's copies are `docs/source/_static/feasible_scaling_*.svg`.
 #### On GPUs
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/gpu_scaling_comparison_dark.svg">
-  <img alt="A chart of the time per dataset for 10-term Feasible fits against the number of datasets in one batch, on log scales. The Apple M3 CPU levels off near 0.55 ms per dataset from 10,000 datasets. The A100, H100 and H200 GPUs are slower than the CPU at 1,024 datasets, pass it between about 4,000 and 8,000, and keep getting faster as batches grow: at 524,288 datasets, 35 µs per dataset on the A100, 20 µs on the H100 and 15.5 µs on the H200." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/main/docs/source/_static/gpu_scaling_comparison_light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tjefferies/metalog_jax/development/docs/source/_static/gpu_scaling_comparison_dark.svg">
+  <img alt="A chart of the time per dataset for 10-term Feasible fits against the number of datasets in one batch, on log scales. The Apple M3 CPU levels off near 0.55 ms per dataset from 10,000 datasets. The A100, H100 and H200 GPUs are slower than the CPU at 1,024 datasets, pass it between about 4,000 and 8,000, and keep getting faster as batches grow: at 524,288 datasets, 35 µs per dataset on the A100, 20 µs on the H100 and 15.5 µs on the H200." src="https://raw.githubusercontent.com/tjefferies/metalog_jax/development/docs/source/_static/gpu_scaling_comparison_light.svg">
 </picture>
 
 Measured on [Runpod](https://www.runpod.io)'s Secure Cloud on 2026-11-27 by the
